@@ -1,0 +1,19 @@
+[package]
+name = "cognitum-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Official Cognitum SDK for Rust"
+license = "MIT"
+keywords = ["cognitum", "ai", "mcp", "sdk", "seed"]
+categories = ["api-bindings", "web-programming::http-client"]
+
+[dependencies]
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+wiremock = "0.6"

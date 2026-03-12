@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cognitum"
+version = "0.1.0"
+description = "Official Cognitum SDK for Python"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = ["httpx>=0.25.0"]
+keywords = ["cognitum", "ai", "mcp", "sdk", "seed"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "respx>=0.21"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cognitum*"]
