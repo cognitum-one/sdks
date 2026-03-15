@@ -6,6 +6,9 @@ description = "Official Cognitum SDK for Rust"
 license = "MIT"
 keywords = ["cognitum", "ai", "mcp", "sdk", "seed"]
 categories = ["api-bindings", "web-programming::http-client"]
+repository = "https://github.com/ruvnet/cognitum"
+homepage = "https://cognitum.one"
+documentation = "https://api.cognitum.one/apiOpenSpec"
 
 [dependencies]
 reqwest = { version = "0.12", features = ["json"] }

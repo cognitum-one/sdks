@@ -16,7 +16,7 @@ export class CatalogResource {
       params.set("category", options.category);
     }
     const query = params.toString();
-    const path = `/listTemplates${query ? `?${query}` : ""}`;
+    const path = `/apiCatalog${query ? `?${query}` : ""}`;
     return this.client.request<CatalogResponse>("GET", path);
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@cognitum/sdk",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "description": "Official Cognitum SDK for Node.js and TypeScript",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -13,13 +13,25 @@
       "require": "./dist/index.cjs"
     }
   },
-  "files": ["dist"],
+  "bin": {
+    "cognitum": "./dist/cli.mjs",
+    "cognitum-sdk": "./dist/cli.mjs"
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
-  "keywords": ["cognitum", "ai", "mcp", "sdk", "seed"],
+  "keywords": [
+    "cognitum",
+    "ai",
+    "mcp",
+    "sdk",
+    "seed"
+  ],
   "license": "MIT",
   "engines": {
     "node": ">=18"

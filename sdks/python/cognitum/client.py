@@ -15,7 +15,7 @@ from cognitum.mcp import McpResource
 from cognitum.orders import OrdersResource
 from cognitum.types import HealthResponse
 
-_DEFAULT_BASE_URL = "https://us-central1-cognitum-20260110.cloudfunctions.net"
+_DEFAULT_BASE_URL = "https://api.cognitum.one"
 
 
 class Cognitum:

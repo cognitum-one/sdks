@@ -107,6 +107,11 @@ export interface McpTool {
 export interface McpToolCallResult {
   content: Array<{ type: string; text?: string; data?: unknown }>;
   isError?: boolean;
+  /** Nested result when the server wraps the response. */
+  result?: {
+    content: Array<{ type: string; text?: string; data?: unknown }>;
+    isError?: boolean;
+  };
 }
 
 // ---------------------------------------------------------------------------

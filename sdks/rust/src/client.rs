@@ -15,7 +15,7 @@ use crate::orders::OrdersResource;
 use crate::types::HealthResponse;
 
 const DEFAULT_BASE_URL: &str =
-    "https://us-central1-cognitum-20260110.cloudfunctions.net";
+    "https://api.cognitum.one";
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_MAX_RETRIES: u32 = 3;
 

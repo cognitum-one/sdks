@@ -21,6 +21,6 @@ export class DevicesResource {
 
   /** Send a device heartbeat / health check. */
   async heartbeat(deviceId: string): Promise<void> {
-    await this.client.request<void>("POST", "/seedHeartbeat", { deviceId });
+    await this.client.request<void>("POST", "/seedHeartbeat", { device_id: deviceId });
   }
 }

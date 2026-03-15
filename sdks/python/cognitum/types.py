@@ -11,7 +11,7 @@ class CognitumConfig:
     """Configuration for Cognitum client instances."""
 
     api_key: str
-    base_url: str = "https://us-central1-cognitum-20260110.cloudfunctions.net"
+    base_url: str = "https://api.cognitum.one"
     timeout: float = 30.0
     max_retries: int = 3
 

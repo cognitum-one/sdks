@@ -8,7 +8,7 @@ import {
 } from "./errors.js";
 
 const DEFAULT_BASE_URL =
-  "https://us-central1-cognitum-20260110.cloudfunctions.net";
+  "https://api.cognitum.one";
 const DEFAULT_TIMEOUT = 30_000;
 const DEFAULT_RETRIES = 3;
 

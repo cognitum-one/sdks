@@ -32,8 +32,11 @@ export class McpResource {
     limit = 5,
   ): Promise<SearchResult[]> {
     const result = await this.callTool("docs_search", { query, limit });
-    // The tool returns results embedded in the content array
-    const textContent = result.content.find((c) => c.type === "text");
+    // MCP response is { result: { content: [...] } } — handle both nested and flat
+    const content = result?.result?.content ?? result?.content ?? [];
+    const textContent = Array.isArray(content)
+      ? content.find((c: any) => c.type === "text")
+      : undefined;
     if (textContent?.text) {
       try {
         return JSON.parse(textContent.text) as SearchResult[];
