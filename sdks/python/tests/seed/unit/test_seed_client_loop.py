@@ -95,7 +95,8 @@ def test_pair_status_and_create_and_delete() -> None:
         st = c.pair.status()
         assert st.pairing_window_open is True
         res = c.pair.create(client_name="tester")
-        assert res.token == "tok"
+        # token wrapped in SecretString (issue #15).
+        assert res.token.as_str() == "tok"
         c.pair.delete("tester")
 
 

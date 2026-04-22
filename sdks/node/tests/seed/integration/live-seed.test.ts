@@ -126,7 +126,8 @@ d("live seed (Phase 1 endpoints)", () => {
     const clientName = `phase1-test-${Date.now()}`;
     try {
       const created = await client.pair.create({ clientName });
-      expect(created.pairing_token).toBeTruthy();
+      expect(created.token.isEmpty()).toBe(false);
+      expect(created.token.reveal().length).toBeGreaterThan(0);
       createdClientName = clientName;
       await pace();
     } catch (err) {

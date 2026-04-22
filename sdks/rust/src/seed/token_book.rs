@@ -12,6 +12,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
+use serde::de::{self, Deserializer};
+use serde::ser::Serializer;
+use serde::{Deserialize, Serialize};
+
 /// A pairing token. Intentionally opaque — the wire value is exposed only
 /// through [`SecretString::as_str`] on the request path.
 ///
@@ -52,9 +56,50 @@ impl Clone for SecretString {
     }
 }
 
+impl Default for SecretString {
+    /// Empty secret. Needed so wire-type response structs that embed
+    /// `SecretString` can use `#[serde(default)]` on the field
+    /// (e.g. `PairCreateResponse.token` per [cognitum-one/sdks#15]).
+    ///
+    /// [cognitum-one/sdks#15]: https://github.com/cognitum-one/sdks/issues/15
+    fn default() -> Self {
+        Self {
+            inner: String::new(),
+        }
+    }
+}
+
 impl fmt::Debug for SecretString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "SecretString(<redacted, {} bytes>)", self.inner.len())
+    }
+}
+
+impl Serialize for SecretString {
+    /// Serialize the raw token value. Required so wire-type response
+    /// structs that embed `SecretString` (e.g. `PairCreateResponse` per
+    /// [cognitum-one/sdks#15]) satisfy the ADR-0010 "Serialize on all
+    /// wire types" convention and can round-trip through JSON.
+    ///
+    /// The Debug impl still redacts — only explicit serde serialization
+    /// reveals the inner value.
+    ///
+    /// [cognitum-one/sdks#15]: https://github.com/cognitum-one/sdks/issues/15
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.inner)
+    }
+}
+
+impl<'de> Deserialize<'de> for SecretString {
+    /// Deserialize from a JSON string into a `SecretString`. Added for
+    /// [cognitum-one/sdks#15] so `PairCreateResponse.token` can hold a
+    /// redacting wrapper while still round-tripping through the seed
+    /// API's `{"token": "..."}` response shape.
+    ///
+    /// [cognitum-one/sdks#15]: https://github.com/cognitum-one/sdks/issues/15
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer).map_err(de::Error::custom)?;
+        Ok(Self::from_owned(raw))
     }
 }
 

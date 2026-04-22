@@ -41,6 +41,9 @@
   "engines": {
     "node": ">=18"
   },
+  "dependencies": {
+    "undici": "^6.0.0"
+  },
   "devDependencies": {
     "tsup": "^8.0.0",
     "typescript": "^5.4.0",

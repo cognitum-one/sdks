@@ -56,9 +56,25 @@ No external crate added; we use the SDK's existing `SecretString`
 (which also zeroes on drop) rather than adding the `secrecy` crate, to
 keep the dep surface tight and consistent with `TokenBook`.
 
-Test totals (`cargo test --features seed`): 21 `seed_unit` (was 19 —
-2 redaction tests added) + 7 `seed_mesh` integration tests + 49 lib
-unit tests = 77 green seed-feature tests. One pre-existing cloud-side
+Follow-up — issue [#15](https://github.com/cognitum-one/sdks/issues/15)
+fixed 2026-04-23 applies the same pattern to
+`PairCreateResponse.token` (the *response* side of the pairing flow):
+the field is now a `SecretString`, the struct derives `Clone, Serialize,
+Deserialize` and has a manual `Debug` impl that prints `token:
+"<redacted>"` while the other fields remain visible. `SecretString`
+gained `Serialize` / `Deserialize` / `Default` impls in
+`src/seed/token_book.rs` so it can back `#[serde(default)]` wire
+fields. `PartialEq` was dropped from `PairCreateResponse` (nothing in
+the SDK compares responses, and we did not want `PartialEq` on
+`SecretString`). Two new regression tests in `tests/seed_unit.rs`
+(`pair_create_response_debug_does_not_leak_token`,
+`pair_create_response_json_round_trip`) assert the sentinel token
+never appears in `format!("{:?}", response)` yet still round-trips
+through JSON.
+
+Test totals (`cargo test --features seed`): 23 `seed_unit` (was 21 —
+2 #15 regression tests added) + 7 `seed_mesh` integration tests + 53
+lib unit tests = 83 green seed-feature tests. One pre-existing cloud-side
 `client::tests::invalid_pem_is_surfaced_as_validation_error` failure
 in `src/client.rs` is tracked separately — outside the Phase 1.5 mesh
 scope. `cargo fmt --all --check` clean; `cargo clippy --features seed

@@ -593,6 +593,7 @@ function labelFor(url) {
 }
 
 // src/seed/transport.ts
+var import_undici = require("undici");
 var warnedInsecure = false;
 function buildSeedFetch(cfg) {
   if (cfg.fetchFn !== globalThis.fetch) {
@@ -606,55 +607,40 @@ function buildSeedFetch(cfg) {
       "[cognitum-sdk/seed] TLS verification disabled (tls.insecure=true). Never use this in production \u2014 pair with a trustRoot CA instead."
     );
   }
-  let dispatcher;
-  let httpsAgent;
-  let resolved = false;
-  const ensureDispatcher = () => {
-    if (resolved) return { dispatcher, agent: httpsAgent };
-    resolved = true;
-    try {
-      const undici = require("undici");
-      dispatcher = new undici.Agent({
-        keepAliveTimeout: 1e4,
-        connections: 16,
-        allowH2: false,
-        connect: {
-          ca,
-          rejectUnauthorized: !insecure
-        }
-      });
-    } catch {
-      try {
-        const https = require("https");
-        httpsAgent = new https.Agent({
-          keepAlive: true,
-          ca,
-          rejectUnauthorized: !insecure
-        });
-      } catch {
-      }
-    }
-    return { dispatcher, agent: httpsAgent };
-  };
+  const dispatcher = buildDispatcher({ insecure, ca });
   return async (input, init) => {
-    const { dispatcher: disp } = ensureDispatcher();
     const finalInit = {
       ...init ?? {}
     };
-    if (disp !== void 0) {
-      finalInit.dispatcher = disp;
-    } else if (insecure) {
-      const prior = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-      process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
-      try {
-        return await globalThis.fetch(input, finalInit);
-      } finally {
-        if (prior === void 0) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-        else process.env.NODE_TLS_REJECT_UNAUTHORIZED = prior;
-      }
+    if (dispatcher !== void 0) {
+      finalInit.dispatcher = dispatcher;
     }
     return globalThis.fetch(input, finalInit);
   };
+}
+function buildDispatcher(tls) {
+  if (tls.insecure) {
+    return new import_undici.Agent({
+      keepAliveTimeout: 1e4,
+      connections: 16,
+      allowH2: false,
+      connect: {
+        rejectUnauthorized: false
+      }
+    });
+  }
+  if (tls.ca !== void 0) {
+    return new import_undici.Agent({
+      keepAliveTimeout: 1e4,
+      connections: 16,
+      allowH2: false,
+      connect: {
+        ca: tls.ca,
+        rejectUnauthorized: true
+      }
+    });
+  }
+  return void 0;
 }
 
 // src/seed/resources/custody.ts
@@ -688,6 +674,96 @@ function makeOtaResource(request) {
   };
 }
 
+// src/seed/tokenBook.ts
+var SecretString = class {
+  #value;
+  constructor(value) {
+    if (typeof value !== "string") {
+      throw new TypeError("SecretString: value must be a string");
+    }
+    this.#value = value;
+  }
+  /**
+   * Borrow the inner token. Use sparingly — never log the result.
+   */
+  reveal() {
+    return this.#value;
+  }
+  /** Whether the underlying string is empty. */
+  isEmpty() {
+    return this.#value.length === 0;
+  }
+  /** Length of the underlying string (exposed for diagnostics). */
+  get length() {
+    return this.#value.length;
+  }
+  toString() {
+    return `SecretString(<redacted, ${this.#value.length} bytes>)`;
+  }
+  toJSON() {
+    return "<redacted>";
+  }
+  /** Node.js `util.inspect` hook so `console.log` prints a redacted form. */
+  [/* @__PURE__ */ Symbol.for("nodejs.util.inspect.custom")]() {
+    return this.toString();
+  }
+};
+var InMemoryTokenBook = class _InMemoryTokenBook {
+  #inner = /* @__PURE__ */ new Map();
+  /**
+   * Build a book from an iterable of `[peerUrl, token]` pairs. Raw
+   * strings are promoted to {@link SecretString} automatically.
+   */
+  static fromEntries(entries) {
+    const book = new _InMemoryTokenBook();
+    for (const [url, token] of entries) {
+      book.set(
+        url,
+        typeof token === "string" ? new SecretString(token) : token
+      );
+    }
+    return book;
+  }
+  get(peerUrl) {
+    return this.#inner.get(normalise(peerUrl));
+  }
+  set(peerUrl, token) {
+    this.#inner.set(normalise(peerUrl), token);
+  }
+  delete(peerUrl) {
+    this.#inner.delete(normalise(peerUrl));
+  }
+  /** Number of entries; exposed for tests and introspection. */
+  get size() {
+    return this.#inner.size;
+  }
+};
+function normalise(peerUrl) {
+  try {
+    return normaliseBaseUrl2(peerUrl);
+  } catch {
+    return peerUrl.replace(/\/+$/, "");
+  }
+}
+async function pairAll(peers, clientName, pair, book) {
+  if (!clientName || typeof clientName !== "string") {
+    throw new TypeError("pairAll: clientName must be a non-empty string");
+  }
+  if (!Array.isArray(peers) || peers.length === 0) {
+    throw new TypeError("pairAll: at least one peer required");
+  }
+  const results = [];
+  for (const peer of peers) {
+    const response = await pair(peer, clientName);
+    const raw = response.pairing_token ?? response.token;
+    if (book && typeof raw === "string" && raw.length > 0) {
+      book.set(peer, new SecretString(raw));
+    }
+    results.push([peer, response]);
+  }
+  return results;
+}
+
 // src/seed/resources/pair.ts
 function makePairResource(request) {
   return {
@@ -696,10 +772,19 @@ function makePairResource(request) {
       if (!params || typeof params.clientName !== "string" || !params.clientName.trim()) {
         throw new TypeError("pair.create: `clientName` is required");
       }
-      return request("POST", "/api/v1/pair", {
+      const wire = await request("POST", "/api/v1/pair", {
         body: { client_name: params.clientName },
         idempotent: false
       });
+      const rawToken = typeof wire?.pairing_token === "string" ? wire.pairing_token : "";
+      const response = {
+        client_name: wire?.client_name ?? params.clientName,
+        token: new SecretString(rawToken)
+      };
+      if (typeof wire?.expires_at === "string") {
+        response.expires_at = wire.expires_at;
+      }
+      return response;
     },
     delete: async (clientName) => {
       if (typeof clientName !== "string" || !clientName.trim()) {
@@ -793,96 +878,6 @@ var SeedSession = class {
     this.ota = makeOtaResource(req);
   }
 };
-
-// src/seed/tokenBook.ts
-var SecretString = class {
-  #value;
-  constructor(value) {
-    if (typeof value !== "string") {
-      throw new TypeError("SecretString: value must be a string");
-    }
-    this.#value = value;
-  }
-  /**
-   * Borrow the inner token. Use sparingly — never log the result.
-   */
-  reveal() {
-    return this.#value;
-  }
-  /** Whether the underlying string is empty. */
-  isEmpty() {
-    return this.#value.length === 0;
-  }
-  /** Length of the underlying string (exposed for diagnostics). */
-  get length() {
-    return this.#value.length;
-  }
-  toString() {
-    return `SecretString(<redacted, ${this.#value.length} bytes>)`;
-  }
-  toJSON() {
-    return "<redacted>";
-  }
-  /** Node.js `util.inspect` hook so `console.log` prints a redacted form. */
-  [/* @__PURE__ */ Symbol.for("nodejs.util.inspect.custom")]() {
-    return this.toString();
-  }
-};
-var InMemoryTokenBook = class _InMemoryTokenBook {
-  #inner = /* @__PURE__ */ new Map();
-  /**
-   * Build a book from an iterable of `[peerUrl, token]` pairs. Raw
-   * strings are promoted to {@link SecretString} automatically.
-   */
-  static fromEntries(entries) {
-    const book = new _InMemoryTokenBook();
-    for (const [url, token] of entries) {
-      book.set(
-        url,
-        typeof token === "string" ? new SecretString(token) : token
-      );
-    }
-    return book;
-  }
-  get(peerUrl) {
-    return this.#inner.get(normalise(peerUrl));
-  }
-  set(peerUrl, token) {
-    this.#inner.set(normalise(peerUrl), token);
-  }
-  delete(peerUrl) {
-    this.#inner.delete(normalise(peerUrl));
-  }
-  /** Number of entries; exposed for tests and introspection. */
-  get size() {
-    return this.#inner.size;
-  }
-};
-function normalise(peerUrl) {
-  try {
-    return normaliseBaseUrl2(peerUrl);
-  } catch {
-    return peerUrl.replace(/\/+$/, "");
-  }
-}
-async function pairAll(peers, clientName, pair, book) {
-  if (!clientName || typeof clientName !== "string") {
-    throw new TypeError("pairAll: clientName must be a non-empty string");
-  }
-  if (!Array.isArray(peers) || peers.length === 0) {
-    throw new TypeError("pairAll: at least one peer required");
-  }
-  const results = [];
-  for (const peer of peers) {
-    const response = await pair(peer, clientName);
-    const raw = response.pairing_token ?? response.token;
-    if (book && typeof raw === "string" && raw.length > 0) {
-      book.set(peer, new SecretString(raw));
-    }
-    results.push([peer, response]);
-  }
-  return results;
-}
 
 // src/seed/client.ts
 var SeedClient = class {

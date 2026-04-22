@@ -148,6 +148,20 @@ the 0.1 → 0.2 version bump in ADR-0015c §15.
 > cross-repo architect's ADR-0016 landing). Non-pinned-host / missing
 > CA validation will land with Phase 1.5 mesh when the pinned-host set
 > is expanded beyond the default single endpoint.
+>
+> ✅ hardened 2026-04-22 (issue cognitum-one/sdks#18 closed) — `undici`
+> is now a hard `dependencies` entry (^6.0.0). `transport.ts` builds a
+> per-client `Agent` at construction time (`buildDispatcher` in
+> `src/seed/transport.ts:70-99`) and attaches it as the `dispatcher`
+> option on every `fetch` call. The process-wide
+> `NODE_TLS_REJECT_UNAUTHORIZED` fallback has been REMOVED — mutating
+> that env var was racy under concurrency and leaked insecure TLS to
+> unrelated fetches in the same Node process (the cloud `Cognitum`
+> client, any user-code fetch, telemetry libraries, etc.). Regression
+> test: `tests/seed/unit/transport-tls-isolation.test.ts` pins the
+> invariant that `process.env.NODE_TLS_REJECT_UNAUTHORIZED` is
+> untouched across 50 parallel dispatcher builds, and that the insecure
+> dispatcher is a distinct `Agent` instance per client.
 
 Two layers; same `undici` dispatcher class, different constructor
 arguments:
@@ -401,6 +415,19 @@ lives on the client instance; no disk.
 > `new Cognitum({apiKey})` contract intact), and the dedicated
 > `redactHeaders`/`redactValue` helpers — the seed client never logs
 > headers at all today, so there's no exposure in the Phase 1 path.
+>
+> ✅ hardened 2026-04-22 (issue cognitum-one/sdks#15 closed) —
+> `PairResource.create()` no longer returns the freshly-minted pairing
+> token as a plain `string` field (`pairing_token`). The wire response
+> is immediately promoted to a curated `PairCreateResponse` where
+> `token: SecretString` redacts itself through `toJSON` /
+> `util.inspect` / `toString`. Callers use `result.token.reveal()` at
+> the single write site (typically `book.set(peerUrl, result.token)`).
+> Regression test: `tests/seed/unit/pair-token-redaction.test.ts`
+> asserts that `JSON.stringify(result)`, `util.inspect(result)`, and
+> `String(result.token)` never contain the raw sentinel token. See
+> `src/seed/resources/pair.ts:23-92` and
+> `src/seed/tokenBook.ts:24-63` (`SecretString`).
 
 Credential resolution order (ADR-0003 §Credential provisioning):
 

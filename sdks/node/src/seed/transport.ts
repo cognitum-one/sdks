@@ -1,23 +1,18 @@
 /**
  * Transport layer for the seed client.
  *
- * ADR-0015b §5 prescribes `undici.Agent` for TLS pinning, but `undici`
- * is not in the dependency list at the time of Phase 1 landing. We
- * degrade gracefully:
- *
- *   - If `undici` is resolvable at runtime, we construct an `Agent`
- *     with the caller's CA / insecure flag and wire it onto `fetch`.
- *   - Otherwise, we fall back to Node's built-in `https.Agent` applied
- *     via an internal `fetch` wrapper that sets the per-request
- *     dispatcher. Native `fetch` in Node 20+ honours the `dispatcher`
- *     option when the process-wide undici shim is present; when it
- *     isn't, we toggle `NODE_TLS_REJECT_UNAUTHORIZED` process-wide for
- *     a single request (dev tooling only) and log a warning each time.
+ * ADR-0015b §5 prescribes `undici.Agent` for TLS pinning. As of
+ * 2026-04-22 (issue #18 remediation) `undici` is a hard dependency and
+ * the agent is scoped to THIS client only — we never touch
+ * `process.env.NODE_TLS_REJECT_UNAUTHORIZED`, which would leak insecure
+ * TLS across the entire process (including unrelated concurrent fetches
+ * on the cloud client or any other library).
  *
  * The key invariant: TLS pinning / insecure-mode choices are resolved
  * once per client at construction — request paths stay pure.
  */
 
+import { Agent } from "undici";
 import type { ResolvedSeedConfig } from "./config.js";
 
 let warnedInsecure = false;
@@ -45,74 +40,63 @@ export function buildSeedFetch(cfg: ResolvedSeedConfig): typeof fetch {
     );
   }
 
-  // Try to load undici at runtime; if unavailable, use Node's https.Agent.
-  // We keep this synchronous-at-first-call: the fetch fn resolves the
-  // dispatcher lazily so import-time doesn't fail on environments
-  // without undici (e.g. edge runtimes, bundled apps).
-  let dispatcher: unknown | undefined;
-  let httpsAgent: unknown | undefined;
-  let resolved = false;
-
-  const ensureDispatcher = (): {
-    dispatcher?: unknown;
-    agent?: unknown;
-  } => {
-    if (resolved) return { dispatcher, agent: httpsAgent };
-    resolved = true;
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const undici = require("undici") as typeof import("undici");
-      dispatcher = new undici.Agent({
-        keepAliveTimeout: 10_000,
-        connections: 16,
-        allowH2: false,
-        connect: {
-          ca,
-          rejectUnauthorized: !insecure,
-        },
-      });
-    } catch {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const https = require("node:https") as typeof import("node:https");
-        httpsAgent = new https.Agent({
-          keepAlive: true,
-          ca: ca as string | Buffer | undefined,
-          rejectUnauthorized: !insecure,
-        });
-      } catch {
-        // Last resort — rely on the global fetch with no TLS override.
-      }
-    }
-    return { dispatcher, agent: httpsAgent };
-  };
+  // Build a dispatcher scoped to this client. Passed via `fetch(url, {
+  // dispatcher })` so it never mutates process-wide state. Closed with
+  // the owning `SeedClient` via `close()` (future work — today we rely
+  // on the `unref`'d keep-alive timer + GC).
+  const dispatcher = buildDispatcher({ insecure, ca });
 
   return async (input, init) => {
-    const { dispatcher: disp } = ensureDispatcher();
-    // `dispatcher` is an undici-specific option. Node's native fetch
-    // accepts it and silently ignores when undici isn't the underlying
-    // impl — that's fine for our purposes.
     const finalInit: RequestInit & { dispatcher?: unknown } = {
       ...(init ?? {}),
     };
-    if (disp !== undefined) {
-      finalInit.dispatcher = disp;
-    } else if (insecure) {
-      // Native fetch without undici cannot disable cert verification on
-      // a per-request basis. For Phase 1, we set the env var for the
-      // duration of this one request, then restore. This is a known
-      // workaround called out in ADR-0015b §"Negative / trade-offs".
-      const prior = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-      process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
-      try {
-        return await globalThis.fetch(input, finalInit);
-      } finally {
-        if (prior === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-        else process.env.NODE_TLS_REJECT_UNAUTHORIZED = prior;
-      }
+    if (dispatcher !== undefined) {
+      finalInit.dispatcher = dispatcher;
     }
     return globalThis.fetch(input, finalInit);
   };
+}
+
+/**
+ * Construct the per-client {@link Agent}. Returns `undefined` when the
+ * caller has not opted into a custom CA AND is not using insecure mode
+ * — in that case Node's default fetch dispatcher is used and the system
+ * trust store applies.
+ *
+ * Exported for testing (see
+ * `tests/seed/unit/transport-tls-isolation.test.ts`).
+ */
+export function buildDispatcher(tls: {
+  insecure: boolean;
+  ca: Buffer | string | undefined;
+}): Agent | undefined {
+  if (tls.insecure) {
+    // Scoped insecure — applies ONLY to requests that use this agent.
+    // Unrelated `fetch()` calls in the same Node process retain
+    // default TLS verification.
+    return new Agent({
+      keepAliveTimeout: 10_000,
+      connections: 16,
+      allowH2: false,
+      connect: {
+        rejectUnauthorized: false,
+      },
+    });
+  }
+  if (tls.ca !== undefined) {
+    return new Agent({
+      keepAliveTimeout: 10_000,
+      connections: 16,
+      allowH2: false,
+      connect: {
+        ca: tls.ca,
+        rejectUnauthorized: true,
+      },
+    });
+  }
+  // No per-client TLS customisation — let Node's default dispatcher
+  // handle the request with the system trust store.
+  return undefined;
 }
 
 /** Reset the insecure-warning latch — test hook only. */

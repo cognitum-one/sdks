@@ -352,6 +352,8 @@ class SyncHttpClient:
 
 <!-- verified 2026-04-22 (Phase 1 delivery): the seed-scoped _SyncTransport (cognitum/seed/_client.py) now composes build_sync_client(options) from cognitum/seed/_transport.py which honours SeedTLS(ca_pem, ca_path, verify, insecure, pinned_sha256, client_cert). Default-host self-signed acceptance + non-default-host ConfigError fail-fast verified in test_seed_config.py::test_non_default_host_without_tls_material_raises. Closes issue #4 (sdks). -->
 
+<!-- verified 2026-04-22 (security pass, issue #17 / P-B1): _DEFAULT_SEED_HOSTS no longer includes `localhost` / `127.0.0.1` — only the physical-cable seed paths (169.254.*, cognitum.local, fe80:*) retain the self-signed exception. The default-host self-signed fallback now applies ONLY when the caller passed no `tls=` argument (tracked via SeedClientOptions.tls_explicit); an explicit `tls=SeedTLS()` is honoured strictly even on default hosts, raising ConfigError instead of silently bypassing verification. Fallback emits a one-time UserWarning per host. Regression suite: tests/seed/unit/test_tls_localhost_strict.py (11 tests). Closes issue #17 (sdks). -->
+
 ### 5.1 TLS pinning (`SeedPinnedVerifier`)
 
 ```python
@@ -758,6 +760,8 @@ A fresh token from `pair()` is handed to the caller as the return value;
 SDK does **not** stash it on `SeedClient`. To use the token for writes,
 either construct a new `SeedClient(pairing_token=token)` or call
 `seed.credentials.attach(token)` (documented escape hatch).
+
+<!-- verified 2026-04-22 (security pass, issue #15 / P-A2): PairCreateResponse.token is wrapped in SecretString (cognitum/seed/_models/pair.py) so repr / str / f-string / logging-formatter paths all redact the freshly-minted pairing token; unwrap on the request path only via `.token.as_str()`. Regression suite: tests/seed/unit/test_pair_token_redaction.py (8 tests, all SENTINEL-not-in-repr/str assertions). _client.py / _async_client.py updated to stop re-wrapping the already-secret token. Closes issue #15 (sdks). -->
 
 ---
 

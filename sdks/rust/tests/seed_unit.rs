@@ -118,7 +118,7 @@ async fn pair_create_sends_strict_body() {
         })
         .await
         .unwrap();
-    assert_eq!(resp.token, "opaque-token-xyz");
+    assert_eq!(resp.token.as_str(), "opaque-token-xyz");
 }
 
 #[tokio::test]
@@ -535,4 +535,56 @@ fn seed_auth_none_debug_is_not_redacted() {
     // case should still be visible for operator debugging.
     let dbg = format!("{:?}", SeedAuth::None);
     assert!(dbg.contains("SeedAuth::None"), "got: {dbg}");
+}
+
+// -----------------------------------------------------------------------------
+// Issue #15 — PairCreateResponse.token redaction + JSON round-trip.
+// -----------------------------------------------------------------------------
+
+#[test]
+fn pair_create_response_debug_does_not_leak_token() {
+    // Sentinel value that must never appear in any debug output.
+    const SENTINEL: &str = "SHOULD_NEVER_APPEAR_FROM_PAIR_RESPONSE_c4d7";
+    let json =
+        format!(r#"{{"client_name":"rust-sdk-test","token":"{SENTINEL}","expires_at":null}}"#);
+    let resp: cognitum_rs::seed::PairCreateResponse =
+        serde_json::from_str(&json).expect("PairCreateResponse deserializes");
+
+    // Token must still round-trip to the caller.
+    assert_eq!(resp.token.as_str(), SENTINEL);
+
+    // But the {:?} dump must redact it.
+    let dbg = format!("{resp:?}");
+    assert!(
+        !dbg.contains(SENTINEL),
+        "PairCreateResponse Debug leaked token: {dbg}"
+    );
+    assert!(
+        dbg.contains("<redacted>"),
+        "missing redaction marker: {dbg}"
+    );
+    // Non-secret fields are still visible.
+    assert!(
+        dbg.contains("rust-sdk-test"),
+        "client_name should still appear: {dbg}"
+    );
+}
+
+#[test]
+fn pair_create_response_json_round_trip() {
+    // Deserialize → re-serialize must preserve the token (wire compat).
+    let json =
+        r#"{"client_name":"rust-sdk-test","token":"abc","expires_at":"2026-05-01T00:00:00Z"}"#;
+    let resp: cognitum_rs::seed::PairCreateResponse =
+        serde_json::from_str(json).expect("deserializes");
+    assert_eq!(resp.client_name, "rust-sdk-test");
+    assert_eq!(resp.token.as_str(), "abc");
+    assert_eq!(resp.expires_at.as_deref(), Some("2026-05-01T00:00:00Z"));
+
+    let round = serde_json::to_string(&resp).expect("serializes");
+    assert!(round.contains(r#""token":"abc""#), "lost token: {round}");
+    assert!(
+        round.contains(r#""client_name":"rust-sdk-test""#),
+        "lost client_name: {round}"
+    );
 }

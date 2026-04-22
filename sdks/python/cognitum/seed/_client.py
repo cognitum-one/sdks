@@ -469,7 +469,8 @@ class SeedClient:
             peer_key=peer_key,
         )
         resp = PairCreateResponse.from_wire(data or {})
-        token = SecretString(resp.token)
+        # `resp.token` is already a SecretString (issue #15 fix).
+        token = resp.token
         self._transport._token_book.set(peer_key, token)
         return token
 

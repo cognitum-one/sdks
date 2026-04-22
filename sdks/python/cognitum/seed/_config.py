@@ -111,6 +111,12 @@ class SeedClientOptions:
     # construction. Kept out of the hash by frozen=True semantics (we
     # don't hash SeedClientOptions).
     token_book: TokenBook | None = None
+    # True when the caller explicitly passed a `tls=...` value to the
+    # client constructor. When False, the default-host allowlist in
+    # :mod:`_transport` is allowed to fall back to self-signed acceptance
+    # (with a one-time warning). When True, the caller's SeedTLS is
+    # honoured strictly regardless of host (issue #17 / P-B1).
+    tls_explicit: bool = False
 
     @property
     def primary(self) -> Endpoint:
@@ -157,6 +163,10 @@ def normalise_options(
 
     parsed = tuple(Endpoint.parse(e) for e in raw_list)
 
+    # Remember whether the caller passed tls explicitly — this gates the
+    # default-host self-signed fallback in `_transport.build_verify`
+    # (issue #17).
+    tls_explicit = tls is not None
     tls_cfg = tls or SeedTLS()
     # Guardrail: insecure requires explicit opt-in.
     if tls_cfg.insecure and tls_cfg.verify:
@@ -219,6 +229,7 @@ def normalise_options(
         user_agent=user_agent,
         health_interval=health_interval,
         token_book=book,
+        tls_explicit=tls_explicit,
     )
 
 

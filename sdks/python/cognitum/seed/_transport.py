@@ -8,6 +8,7 @@ Builds :class:`httpx.Client` / :class:`httpx.AsyncClient` honouring the
 from __future__ import annotations
 
 import ssl
+import warnings
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -17,7 +18,18 @@ from cognitum._errors import ConfigError
 from cognitum.seed._config import Endpoint, SeedAuth, SeedClientOptions, SeedTLS
 
 
-_DEFAULT_SEED_HOSTS = frozenset({"169.254.42.1", "cognitum.local", "localhost", "127.0.0.1"})
+# ADR-0007 §TLS physical-cable seed paths. Self-signed acceptance here is
+# only the fallback when the caller supplied NO tls config at all.
+# Explicitly excludes `localhost` / `127.0.0.1` (issue #17 / P-B1): those
+# are general-purpose loopback addresses on shared dev boxes and must not
+# bypass verification by default — a dev talking to a local seed must opt
+# in via `tls=SeedTLS(insecure=True)`.
+_DEFAULT_SEED_HOSTS = frozenset({"169.254.42.1", "cognitum.local"})
+
+# Module-level latch so we only warn once per (host) about the default
+# self-signed fallback — avoids log-spam while still surfacing the
+# situation in production traces.
+_WARNED_DEFAULT_HOSTS: set[str] = set()
 
 
 def _is_default_host(host: str) -> bool:
@@ -31,9 +43,26 @@ def _is_default_host(host: str) -> bool:
     return False
 
 
+def _warn_default_host_insecure(host: str) -> None:
+    """Emit a one-time warning when a default host falls back to
+    self-signed acceptance without the caller passing a CA or
+    ``insecure=True`` (ADR-0007 §TLS)."""
+    key = host.lower()
+    if key in _WARNED_DEFAULT_HOSTS:
+        return
+    _WARNED_DEFAULT_HOSTS.add(key)
+    warnings.warn(
+        f"SeedClient: TLS verification disabled for host {host!r} by "
+        "default-host allowlist. Set tls=SeedTLS(ca_pem=...) or "
+        "tls=SeedTLS(ca_path=...) for production.",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
 class SeedPinnedVerifier:
-    """Trusts ONLY the supplied CA PEM, or (for default hosts) the seed's
-    self-signed cert.
+    """Trusts ONLY the supplied CA PEM, or (for default hosts with no
+    explicit TLS config) the seed's self-signed cert.
 
     Implements ADR-0007 §TLS pinning interface.
     """
@@ -46,14 +75,21 @@ class SeedPinnedVerifier:
         ca_path: Path | str | None = None,
         pinned_sha256: bytes | None = None,
         insecure: bool = False,
+        allow_default_host_fallback: bool = False,
     ) -> None:
         self.host = host.lower()
         self.ca_pem = ca_pem
         self.ca_path = Path(ca_path) if ca_path is not None else None
         self.pinned_sha256 = pinned_sha256
         self.insecure = insecure
+        self.allow_default_host_fallback = allow_default_host_fallback
 
-        if not insecure and not _is_default_host(host) and ca_pem is None and ca_path is None:
+        if (
+            not insecure
+            and not (allow_default_host_fallback and _is_default_host(host))
+            and ca_pem is None
+            and ca_path is None
+        ):
             raise ConfigError(
                 "TLS trust material required for non-default hosts "
                 "(pass tls=SeedTLS(ca_pem=...) or insecure=True)",
@@ -78,37 +114,63 @@ class SeedPinnedVerifier:
         if self.ca_path is not None:
             ctx.load_verify_locations(cafile=str(self.ca_path))
             return ctx
-        # Default-host fallback: accept self-signed (USB link, ADR-0007).
+        # Default-host fallback — only reached when caller passed NO tls
+        # config (ADR-0007 §TLS USB-link exception).
+        _warn_default_host_insecure(self.host)
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         return ctx
 
 
-def build_verify(host: str, tls: SeedTLS) -> bool | str | ssl.SSLContext:
+def build_verify(
+    host: str,
+    tls: SeedTLS,
+    *,
+    tls_explicit: bool = False,
+) -> bool | str | ssl.SSLContext:
     """Translate :class:`SeedTLS` into httpx's ``verify=`` argument.
 
-    For non-default hosts with ``verify=True`` and no trust material, raise
-    :class:`ConfigError` — the SDK refuses to silently accept the system
-    trust store for a seed-ish target that isn't a default host (ADR-0007
-    §Fail-fast rule).
+    ``tls_explicit`` is ``True`` when the caller passed a ``tls=...``
+    argument to the client constructor. When ``False``, the default-host
+    allowlist is allowed to fall back to self-signed acceptance (with a
+    one-time ``UserWarning``). When ``True``, the caller's ``SeedTLS`` is
+    honoured strictly — ``verify=True`` with no trust material raises
+    :class:`ConfigError` regardless of host (issue #17 / ADR-0007 §TLS
+    Fail-fast rule).
     """
     if tls.insecure:
         return False
     if tls.ca_path is not None and tls.ca_pem is None:
         return str(tls.ca_path)
-    if tls.ca_pem is not None or _is_default_host(host):
+    if tls.ca_pem is not None:
         verifier = SeedPinnedVerifier(
             host=host,
             ca_pem=tls.ca_pem,
             ca_path=tls.ca_path,
             pinned_sha256=tls.pinned_sha256,
             insecure=False,
+            allow_default_host_fallback=False,
         )
         return verifier.to_ssl_context()
-    # Non-default host, no trust material, not insecure. Fail fast.
+    # No CA material. Default-host self-signed fallback ONLY when the
+    # caller provided no tls config — this prevents the prior silent
+    # bypass when a caller explicitly opted into `SeedTLS()` on a host
+    # like `localhost` that was in the (now-shrunk) allowlist.
+    if _is_default_host(host) and not tls_explicit:
+        verifier = SeedPinnedVerifier(
+            host=host,
+            ca_pem=None,
+            ca_path=None,
+            pinned_sha256=tls.pinned_sha256,
+            insecure=False,
+            allow_default_host_fallback=True,
+        )
+        return verifier.to_ssl_context()
+    # Either non-default host, OR caller explicitly passed
+    # tls=SeedTLS(verify=True) and expects strict verification.
     if tls.verify:
         raise ConfigError(
-            f"TLS trust material required for non-default host {host!r} "
+            f"TLS trust material required for host {host!r} "
             "(pass tls=SeedTLS(ca_pem=..., ca_path=...) or insecure=True)",
             field="tls",
         )
@@ -140,7 +202,7 @@ def build_sync_client(options: SeedClientOptions) -> httpx.Client:
     # connection pool across peers.
     ep = options.primary
     connect, read, total = options.timeouts
-    verify = build_verify(ep.host, options.tls)
+    verify = build_verify(ep.host, options.tls, tls_explicit=options.tls_explicit)
     return httpx.Client(
         timeout=httpx.Timeout(connect=connect, read=read, write=read, pool=connect),
         headers=_headers(options.auth, options.user_agent),
@@ -159,7 +221,7 @@ def build_sync_client(options: SeedClientOptions) -> httpx.Client:
 def build_async_client(options: SeedClientOptions) -> httpx.AsyncClient:
     ep = options.primary
     connect, read, total = options.timeouts
-    verify = build_verify(ep.host, options.tls)
+    verify = build_verify(ep.host, options.tls, tls_explicit=options.tls_explicit)
     return httpx.AsyncClient(
         timeout=httpx.Timeout(connect=connect, read=read, write=read, pool=connect),
         headers=_headers(options.auth, options.user_agent),

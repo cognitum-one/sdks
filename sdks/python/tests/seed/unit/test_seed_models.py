@@ -61,7 +61,10 @@ def test_pair_create_response_from_wire() -> None:
     r = PairCreateResponse.from_wire(
         {"paired": True, "token": "t", "client_name": "c"}
     )
-    assert r.token == "t"
+    # token is wrapped in SecretString (issue #15); unwrap to compare.
+    assert r.token.as_str() == "t"
+    assert r.paired is True
+    assert r.client_name == "c"
 
 
 def test_store_query_result_accepts_results_or_matches_key() -> None:

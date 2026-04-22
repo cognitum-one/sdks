@@ -110,7 +110,7 @@ async fn phase1_end_to_end() {
 
     let paired = SeedClient::builder()
         .endpoint(SEED_URL)
-        .auth(SeedAuth::pairing_token(created.token.clone()))
+        .auth(SeedAuth::pairing_token(created.token.as_str().to_owned()))
         .tls(SeedTls::Insecure)
         .max_retries(1)
         .build()
