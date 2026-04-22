@@ -14,12 +14,14 @@
  */
 
 import {
+  AuthError,
   CognitumError,
   NetworkError,
   ParseError,
   RateLimitError,
   ServiceUnavailableError,
   TimeoutError,
+  TrustScoreBlockedError,
 } from "../errors.js";
 import {
   resolveSeedConfig,
@@ -131,6 +133,16 @@ export class SeedClient {
   private readonly fetchFn: typeof fetch;
   /** Active health-probe handle; `undefined` when disabled. */
   private readonly healthProbe: HealthProbeHandle | undefined;
+  /**
+   * Per-peer consecutive-AuthError counter — ADR-0007 §"Trust-score
+   * protection", closes cognitum-one/sdks#16. The seed locks a client
+   * out after 3 failed auth attempts; we abort on the 3rd so the caller
+   * never burns the seed's budget. Reset to 0 on any 2xx from the same
+   * peer, or explicitly via {@link SeedClient.resetTrustScore}.
+   */
+  private readonly authFailures: Map<string, number> = new Map();
+  /** Trust-score threshold — 3 consecutive auth failures triggers block. */
+  private static readonly TRUST_SCORE_LIMIT = 3;
 
   constructor(options: SeedClientOptions) {
     this.config = resolveSeedConfig(options);
@@ -218,6 +230,34 @@ export class SeedClient {
   }
 
   /**
+   * Clear the trust-score counter for a single peer (or, with no
+   * argument, every peer). Call this after the caller has rotated the
+   * pairing token or otherwise resolved the auth failure that triggered
+   * the block — without a reset, the client will keep refusing further
+   * requests to that peer to protect the seed's trust-score budget.
+   *
+   * @param peerKey — canonical peer URL to clear. If omitted, clears
+   *   every peer's counter.
+   */
+  resetTrustScore(peerKey?: string): void {
+    if (peerKey === undefined) {
+      this.authFailures.clear();
+      return;
+    }
+    this.authFailures.delete(peerKey);
+  }
+
+  /**
+   * Current trust-score counter for `peerKey`. Exposed for tests; the
+   * public API surface should consume {@link TrustScoreBlockedError}
+   * from `request()` rather than polling this number.
+   * @internal
+   */
+  trustScoreFailures(peerKey: string): number {
+    return this.authFailures.get(peerKey) ?? 0;
+  }
+
+  /**
    * Perform an HTTP request against the seed mesh and return the parsed
    * JSON body. Implements the Phase 1.5 failover state machine.
    */
@@ -255,6 +295,18 @@ export class SeedClient {
         );
       }
 
+      // -- trust-score gate (ADR-0007, issue #16) -------------------------
+      // If this peer has already hit the threshold, abort before we
+      // send another auth-bearing request that would burn the seed's
+      // trust-score budget. This is checked BEFORE dispatch so that
+      // even the first call after a prior block surfaces the typed
+      // error immediately.
+      if (
+        (this.authFailures.get(peer.key) ?? 0) >= SeedClient.TRUST_SCORE_LIMIT
+      ) {
+        throw new TrustScoreBlockedError(peer.key);
+      }
+
       const attemptBudgetMs = Math.max(1, totalBudgetMs - elapsed);
       const attemptTimeoutMs = Math.min(
         opts.timeoutMs ?? this.config.timeouts.read,
@@ -271,7 +323,23 @@ export class SeedClient {
 
       // -- success --------------------------------------------------------
       if (outcome.kind === "ok") {
+        // 2xx from this peer clears any prior auth-failure streak.
+        this.authFailures.delete(peer.key);
         return outcome.value;
+      }
+
+      // -- trust-score bookkeeping on AuthError ---------------------------
+      // Count consecutive auth failures per-peer. On the 3rd, swap the
+      // thrown error for TrustScoreBlockedError so the failover state
+      // machine does NOT cycle — cycling would burn the next peer's
+      // budget too. Per-peer isolation: a 401 on peer-A does not count
+      // against peer-B.
+      if (outcome.error instanceof AuthError) {
+        const next = (this.authFailures.get(peer.key) ?? 0) + 1;
+        this.authFailures.set(peer.key, next);
+        if (next >= SeedClient.TRUST_SCORE_LIMIT) {
+          throw new TrustScoreBlockedError(peer.key);
+        }
       }
 
       // -- classify for PeerSet bookkeeping --------------------------------

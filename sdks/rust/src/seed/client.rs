@@ -15,6 +15,7 @@
 //! * Opt-in active health probe via `.health_interval(Duration)`.
 //! * `.session()` handle that pins one peer for the life of the handle.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -64,6 +65,18 @@ pub(crate) struct SeedInner {
     /// unset. Dropped with the client to stop the task.
     #[allow(dead_code)]
     pub(crate) health: Option<HealthHandle>,
+    /// Per-peer consecutive-auth-failure counter (ADR-0007 §Trust-score
+    /// protection, [cognitum-one/sdks#16]). Keyed by
+    /// [`Endpoint::key`](super::peers::Endpoint::key).
+    ///
+    /// Incremented on every `Error::Auth(_)` returned from a call on the
+    /// peer; reset to 0 on a 2xx. When the counter hits 3, the request
+    /// loop returns [`seed_err::trust_score_blocked`] for that peer and
+    /// the mesh failover state machine does NOT cycle — the seed has
+    /// already locked the peer out.
+    ///
+    /// [cognitum-one/sdks#16]: https://github.com/cognitum-one/sdks/issues/16
+    pub(crate) auth_failure_counts: Mutex<BTreeMap<String, u32>>,
 }
 
 impl SeedClient {
@@ -130,6 +143,35 @@ impl SeedClient {
             .token_book
             .get(peer_key)
             .map(|s| s.as_str().to_owned())
+    }
+
+    /// Current trust-score auth-failure counter for `peer_key`. Returns 0
+    /// when the peer has no recorded failures. Intended for tests /
+    /// observability per ADR-0007 §Trust-score protection.
+    #[doc(hidden)]
+    pub fn trust_score_failures(&self, peer_key: &str) -> u32 {
+        self.inner
+            .auth_failure_counts
+            .lock()
+            .ok()
+            .and_then(|g| g.get(peer_key).copied())
+            .unwrap_or(0)
+    }
+
+    /// Reset the trust-score counter for one peer (when `peer_url` is
+    /// `Some`) or for every peer (when `None`). Exposed for tests and
+    /// operator recovery flows — production code SHOULD NOT need to call
+    /// this; the counter resets on the next 2xx response from the peer.
+    #[doc(hidden)]
+    pub fn reset_trust_score(&self, peer_url: Option<&str>) {
+        if let Ok(mut guard) = self.inner.auth_failure_counts.lock() {
+            match peer_url {
+                Some(key) => {
+                    guard.remove(key);
+                }
+                None => guard.clear(),
+            }
+        }
     }
 
     // -- top-level conveniences --------------------------------------------
@@ -277,6 +319,10 @@ impl SeedClient {
                     let status = response.status();
                     if status.is_success() {
                         self.mark_peer_success(&peer_key, call_started.elapsed());
+                        // Trust-score protection (#16): a 2xx clears the
+                        // per-peer auth-failure counter so a transient 401
+                        // followed by a successful retry doesn't poison it.
+                        self.reset_auth_failures(&peer_key);
                         return parse_success::<T>(response).await;
                     }
 
@@ -286,6 +332,18 @@ impl SeedClient {
                     // Classify for peer bookkeeping first.
                     if let Some(class) = classify_status(status) {
                         self.mark_peer_failure(&peer_key, class);
+                    }
+
+                    // Trust-score protection (#16, ADR-0007): bump the
+                    // per-peer auth-failure counter when the mapped error
+                    // is `Error::Auth(_)` (401/403). On the 3rd consecutive
+                    // failure on the same peer, short-circuit with a
+                    // `trust_score_blocked` error — no retry, no cycling.
+                    if is_auth_status(status) {
+                        let count = self.bump_auth_failures(&peer_key);
+                        if count >= TRUST_SCORE_THRESHOLD {
+                            return Err(seed_err::trust_score_blocked(&peer_key));
+                        }
                     }
 
                     match dispatch_status_outcome(status) {
@@ -409,6 +467,29 @@ impl SeedClient {
             guard.mark_failure(peer_key, class);
         }
     }
+
+    /// Reset the auth-failure counter for `peer_key`. Called on every
+    /// 2xx response so a single flaky auth failure (e.g. clock skew on
+    /// the seed) doesn't permanently poison the peer.
+    fn reset_auth_failures(&self, peer_key: &str) {
+        if let Ok(mut guard) = self.inner.auth_failure_counts.lock() {
+            guard.remove(peer_key);
+        }
+    }
+
+    /// Increment the auth-failure counter for `peer_key` and return the
+    /// new value. Returns 0 if the lock is poisoned (best-effort; the
+    /// caller surfaces the underlying `Error::Auth` in that case).
+    fn bump_auth_failures(&self, peer_key: &str) -> u32 {
+        match self.inner.auth_failure_counts.lock() {
+            Ok(mut guard) => {
+                let n = guard.entry(peer_key.to_owned()).or_insert(0);
+                *n = n.saturating_add(1);
+                *n
+            }
+            Err(_) => 0,
+        }
+    }
 }
 
 /// High-level status-code disposition for the failover state machine.
@@ -429,6 +510,22 @@ fn dispatch_status_outcome(status: StatusCode) -> StatusOutcome {
         _ => StatusOutcome::Surface,
     }
 }
+
+/// Whether `status` is the auth family (401 Unauthorized / 403 Forbidden).
+/// Used by the trust-score counter to decide whether to bump the
+/// per-peer auth-failure tally.
+fn is_auth_status(status: StatusCode) -> bool {
+    matches!(status.as_u16(), 401 | 403)
+}
+
+/// Trust-score abort threshold (ADR-0007 §Trust-score protection,
+/// [cognitum-one/sdks#16]). The 3rd consecutive `Error::Auth(_)` on one
+/// peer trips the circuit and the request loop returns a
+/// `trust_score_blocked` error without retrying or cycling to another
+/// peer.
+///
+/// [cognitum-one/sdks#16]: https://github.com/cognitum-one/sdks/issues/16
+const TRUST_SCORE_THRESHOLD: u32 = 3;
 
 fn classify_status(status: StatusCode) -> Option<PeerErrorClass> {
     match status.as_u16() {
@@ -601,6 +698,7 @@ impl SeedClientBuilder {
                 routing: self.routing,
                 token_book,
                 health,
+                auth_failure_counts: Mutex::new(BTreeMap::new()),
             }),
         })
     }

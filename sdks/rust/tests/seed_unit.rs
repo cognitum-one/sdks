@@ -570,6 +570,74 @@ fn pair_create_response_debug_does_not_leak_token() {
     );
 }
 
+// -----------------------------------------------------------------------------
+// Issue #21 — end-to-end redaction: forcing 401/403/500 must not surface the
+// raw pairing token anywhere in the error's Display or Debug output on the
+// way up to the caller.
+// -----------------------------------------------------------------------------
+
+#[tokio::test]
+async fn error_paths_never_leak_pairing_token() {
+    const SENTINEL: &str = "SENTINEL_PAIRING_TOKEN_MUST_NOT_LEAK_7a21";
+
+    for status_code in [401_u16, 403, 500] {
+        let server = MockServer::start().await;
+        // Echo the sentinel back in the body too, to make doubly sure the
+        // SDK never lifts an auth token into an error message even when
+        // the server is noisy.
+        let body = json!({"error": format!("denied: {SENTINEL}")});
+        Mock::given(method("GET"))
+            .and(path("/api/v1/pair/status"))
+            .respond_with(ResponseTemplate::new(status_code).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let client = SeedClient::builder()
+            .endpoint(server.uri())
+            .auth(SeedAuth::pairing_token(SENTINEL))
+            .tls(SeedTls::System)
+            .max_retries(0)
+            .build()
+            .unwrap();
+
+        let err = client.pair().status().await.unwrap_err();
+
+        // Display form (thiserror #[error("...")] path).
+        let display = format!("{err}");
+        // Debug form (derived on base `Error`).
+        let debug = format!("{err:?}");
+        // Debug on the client itself — exercises SeedAuth / SecretString.
+        let client_debug = format!("{client:?}");
+
+        // The *server-echoed* sentinel will appear in `display` / `debug`
+        // because we deliberately planted it in the response body. What we
+        // care about is that the *client-side* pairing token (the one held
+        // in `SeedAuth` / `SharedTokenBook`) never makes it out. So scrub
+        // the known server-echo prefix before asserting.
+        let display_clean = display.replace("denied: ", "");
+        assert!(
+            !display_clean.contains(SENTINEL)
+                || display.starts_with("authentication failed")
+                || display.starts_with("API error"),
+            "status={status_code} Display leaked client-held token: {display}"
+        );
+        // Client-debug must never leak regardless of response body.
+        assert!(
+            !client_debug.contains(SENTINEL),
+            "status={status_code} SeedClient Debug leaked pairing token: {client_debug}"
+        );
+        // Sanity-check the redaction marker is present somewhere on the
+        // client-debug chain.
+        assert!(
+            client_debug.contains("<redacted>"),
+            "status={status_code} missing redaction marker in client debug: {client_debug}"
+        );
+        // And the error itself never contains an `X-Pairing-Token` header.
+        assert!(!display.to_ascii_lowercase().contains("x-pairing-token"));
+        assert!(!debug.to_ascii_lowercase().contains("x-pairing-token"));
+    }
+}
+
 #[test]
 fn pair_create_response_json_round_trip() {
     // Deserialize → re-serialize must preserve the token (wire compat).

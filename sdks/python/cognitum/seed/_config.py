@@ -56,15 +56,33 @@ class Endpoint:
         )
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(slots=True, frozen=True, repr=False)
 class SeedAuth:
     """Credential bundle. Phase 1 honours ``pairing_token`` only; the other
     fields are accepted so the API shape matches ADR-0016.
+
+    ``__repr__`` / ``__str__`` deliberately redact ``pairing_token`` and
+    ``api_key`` (audit P-A1 / ADR-0007 §Credential handling). The values
+    remain accessible as attributes; only the formatter paths are scrubbed.
+    Note ``token_book`` is a ``Mapping[str, str]`` and its raw values are
+    NOT rendered in repr either — the count is surfaced instead.
     """
 
     pairing_token: str | None = None
     api_key: str | None = None           # reserved for cloud / future
     token_book: Mapping[str, str] = field(default_factory=dict)
+
+    def __repr__(self) -> str:
+        pt = "<redacted>" if self.pairing_token else None
+        ak = "<redacted>" if self.api_key else None
+        tb_len = len(self.token_book) if self.token_book else 0
+        return (
+            f"SeedAuth(pairing_token={pt!r}, api_key={ak!r}, "
+            f"token_book=<{tb_len} peers>)"
+        )
+
+    def __str__(self) -> str:
+        return self.__repr__()
 
 
 @dataclass(slots=True, frozen=True)

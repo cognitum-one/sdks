@@ -21,6 +21,7 @@ from cognitum._errors import (
     RateLimitError,
     ServiceUnavailableError,
     TimeoutError,  # noqa: A004 — intentional shadow
+    TrustScoreBlockedError,
     ValidationError,
 )
 
@@ -38,5 +39,6 @@ __all__ = [
     "RateLimitError",
     "ServiceUnavailableError",
     "TimeoutError",
+    "TrustScoreBlockedError",
     "ValidationError",
 ]

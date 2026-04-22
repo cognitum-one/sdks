@@ -46,6 +46,7 @@ from cognitum.seed._errors import (
     RateLimitError,
     ServiceUnavailableError,
     TimeoutError,  # noqa: A004
+    TrustScoreBlockedError,
     ValidationError,
 )
 from cognitum.seed._models import (
@@ -117,6 +118,7 @@ __all__ = [
     "RateLimitError",
     "ServiceUnavailableError",
     "TimeoutError",
+    "TrustScoreBlockedError",
     "ValidationError",
     # Models
     "Epoch",

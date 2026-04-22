@@ -588,6 +588,42 @@ def request(
                 if auth_fail_count >= 3:
                     # ADR-0007 §Trust-score protection
                     raise last_exc
+            # <!-- verified 2026-04-22 (security pass, issue #16 / P-D1):
+            #      the pseudocode above carries a REQUEST-LOCAL counter,
+            #      which the audit flagged as inert (resets every call).
+            #      The real implementation lives on _SyncTransport /
+            #      _AsyncTransport as `self._auth_failure_counts: dict[str, int]`
+            #      keyed by peer URL (cognitum/seed/_client.py:176-198 and
+            #      _async_client.py:74-105). Increments on AuthError from
+            #      that peer; resets on any 2xx from that peer; reaching
+            #      3 raises TrustScoreBlockedError (AuthError subclass,
+            #      reason=TRUST_SCORE_BLOCKED, code="trust_score_blocked",
+            #      peer_url=..., retriable=False). Mesh loop does NOT
+            #      cycle on this class because AuthError / AuthError-
+            #      subclass is surfaced immediately per §D3 (only 5xx /
+            #      timeout / NetworkError cycle). SeedClient /
+            #      AsyncSeedClient expose `reset_trust_score(peer_url=None)`
+            #      as a test-only escape hatch. Regression suite:
+            #      tests/seed/unit/test_trust_score.py (7 tests covering:
+            #      3x401 → TrustScoreBlockedError; 401-401-200 resets;
+            #      per-peer independence; not-retriable + no-cycle;
+            #      cycling-on-5xx still works; reset helper; async twin).
+            #      Closes issue #16 (sdks). -->
+            # <!-- verified 2026-04-22 (security pass, issue #21): end-to-end
+            #      redaction conformance test at
+            #      tests/seed/unit/test_redaction_conformance.py asserts a
+            #      sentinel pairing token never appears in str(exc) / repr(exc)
+            #      / traceback.format_exception(...) for 401 / 403 / 429 / 500
+            #      paths, nor in SeedAuth.__repr__ (audit P-A1 — SeedAuth
+            #      now has repr=False and an explicit __repr__ that emits
+            #      "<redacted>" for pairing_token/api_key). Combined with
+            #      the earlier SecretString wrapping of PairCreateResponse.token
+            #      and TokenBook entries, no constructed secret leaks via
+            #      Python's formatter paths. Closes issue #21 (sdks, Python). -->
+            #
+            # Deferred: P-C1 (server-echoed header values in
+            # response.text → exc.message) is a future scrub regex, not
+            # a leak of client-held secrets; tracked separately.
             retriable_now = last_exc.retriable and is_retriable(
                 method=method, status_code=response.status_code,
                 is_transport_error=False, is_timeout=False,

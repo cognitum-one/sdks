@@ -129,3 +129,43 @@ export class ConfigError extends CognitumError {
     this.name = "ConfigError";
   }
 }
+
+/**
+ * Thrown when the SDK aborts a request to protect the seed's trust-score
+ * state (ADR-0007 §Trust-score protection, resolves OQ-9).
+ *
+ * The seed locks a client out after 3 consecutive failed auth attempts.
+ * To prevent the caller from burning that budget (and triggering seed
+ * lockdown), the SDK short-circuits on the third consecutive `AuthError`
+ * against the same peer, raising this error instead of making the 4th
+ * request that would tip the seed into lockdown.
+ *
+ * This error is NOT retryable — the failover state machine must NOT
+ * cycle to another peer on it. The counter resets on a 2xx success
+ * from the same peer, or via `SeedClient.resetTrustScore(peerKey?)`.
+ */
+export class TrustScoreBlockedError extends CognitumError {
+  /** Canonical URL key of the peer whose trust-score budget was exhausted. */
+  readonly peerKey: string;
+  /** Number of consecutive auth failures observed against `peerKey` (always 3). */
+  readonly consecutiveFailures: 3;
+  /**
+   * `null` marker — intentionally not retryable. Exposed so tooling
+   * that inspects `retryableAfter` on transient errors sees a definite
+   * "do not retry" signal rather than `undefined` (which could be
+   * mistaken for "retry immediately").
+   */
+  readonly retryableAfter: null;
+
+  constructor(peerKey: string, message?: string) {
+    super(
+      message ??
+        `trust-score blocked: aborting before 4th consecutive auth failure would trigger seed lockdown (peer=${peerKey})`,
+      "TRUST_SCORE_BLOCKED",
+    );
+    this.name = "TrustScoreBlockedError";
+    this.peerKey = peerKey;
+    this.consecutiveFailures = 3;
+    this.retryableAfter = null;
+  }
+}

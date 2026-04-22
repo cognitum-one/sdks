@@ -103,6 +103,32 @@ pub fn not_implemented(feature: &str) -> BaseError {
     ))
 }
 
+/// Build the "trust-score blocked" error (ADR-0007 §Trust-score protection,
+/// `cognitum-one/sdks#16`).
+///
+/// Emitted by the seed request loop after 3 consecutive `Error::Auth(_)`
+/// failures on the same peer. The resulting error is a sentinel-shaped
+/// `Error::Auth("trust_score_blocked: <peer_url>")` so existing callers
+/// that already match on `Error::Auth(_)` keep working; callers that
+/// want the stronger semantics can match via
+/// [`is_trust_score_blocked`].
+///
+/// The value MUST NOT be retried and MUST NOT cycle to another peer —
+/// the seed has locked the peer out for at least one witness window and
+/// retrying would only poison the counter further.
+pub fn trust_score_blocked(peer_url: &str) -> BaseError {
+    BaseError::Auth(format!("{}: {peer_url}", auth_reason::TRUST_SCORE_BLOCKED))
+}
+
+/// Returns `true` when `err` was produced by [`trust_score_blocked`].
+///
+/// Kept as a free function so the caller doesn't need to string-match
+/// the internal prefix. Used by the mesh failover state machine to
+/// short-circuit peer cycling.
+pub fn is_trust_score_blocked(err: &BaseError) -> bool {
+    matches!(err, BaseError::Auth(m) if m.starts_with(auth_reason::TRUST_SCORE_BLOCKED))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,5 +196,24 @@ mod tests {
             }
             other => panic!("expected Validation (not_implemented), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn trust_score_blocked_wraps_peer_url() {
+        let err = trust_score_blocked("https://s1:8443");
+        match err {
+            BaseError::Auth(ref m) => {
+                assert!(m.starts_with(auth_reason::TRUST_SCORE_BLOCKED));
+                assert!(m.contains("https://s1:8443"));
+            }
+            ref other => panic!("expected Auth, got {other:?}"),
+        }
+        assert!(is_trust_score_blocked(&err));
+    }
+
+    #[test]
+    fn is_trust_score_blocked_rejects_plain_auth() {
+        let err = BaseError::Auth("invalid_credentials: bad".into());
+        assert!(!is_trust_score_blocked(&err));
     }
 }

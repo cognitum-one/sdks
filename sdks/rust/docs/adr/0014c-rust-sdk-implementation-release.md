@@ -80,6 +80,88 @@ in `src/client.rs` is tracked separately — outside the Phase 1.5 mesh
 scope. `cargo fmt --all --check` clean; `cargo clippy --features seed
 --tests -- -D warnings` clean.
 
+### Trust-score protection (#16) + redaction audit (#21) — 2026-04-22
+
+Implemented the 3-strike trust-score circuit from ADR-0007 §Trust-score
+protection for the Rust SDK and landed an end-to-end redaction
+conformance test for #21.
+
+**Trust-score (closes #16 Rust portion):**
+
+- `src/seed/client.rs` — `SeedInner` gained
+  `auth_failure_counts: Mutex<BTreeMap<String, u32>>` keyed on
+  `Endpoint::key()`. The request loop resets the counter to 0 on every
+  2xx and bumps it whenever the response status is 401 or 403. On the
+  3rd consecutive auth failure for one peer the loop returns
+  `seed_err::trust_score_blocked(peer_key)` immediately — no retry, no
+  cycling to another peer. 5xx / 429 / network-level failures do NOT
+  touch the auth counter (test `server_5xx_after_auth_fail_still_cycles`
+  pins that invariant). New helpers
+  `SeedClient::trust_score_failures(peer_key)` and
+  `SeedClient::reset_trust_score(peer_url: Option<&str>)` are gated
+  behind `#[doc(hidden)]` for test/operator-recovery use.
+- `src/seed/error.rs` — new `trust_score_blocked(peer_url)` builder and
+  `is_trust_score_blocked(&Error)` predicate. The returned value is an
+  `Error::Auth("trust_score_blocked: <peer_url>")` so callers that
+  already match on `Error::Auth(_)` keep working while callers wanting
+  the stronger semantics use the predicate. A dedicated variant on the
+  base `Error` was not added because `src/error.rs` is owned by the
+  pre-fix track (ADR-0004) — this follows the same pattern as
+  `auth_reason::NOT_PAIRED` / `PAIRING_WINDOW_CLOSED` already uses. The
+  helper is non-retryable by construction (matches `Error::Auth`, which
+  `retry::should_retry` already excludes) and mesh failover never sees
+  it since the request loop returns before the cycling branch.
+- `tests/seed_trust_score.rs` — new suite with 5 regression tests:
+  `auth_fail_3_consecutive_same_peer_trips_trust_score`,
+  `auth_fail_then_success_resets_counter`,
+  `per_peer_counters_independent` (multi-peer, session-pinned),
+  `trust_score_blocked_is_not_retryable` (even with
+  `max_retries(5)`), and `server_5xx_after_auth_fail_still_cycles`.
+
+**Redaction audit (closes #21 for Rust):**
+
+Grepped `sdks/rust/src/seed/` for `eprintln!`, `println!`, `log::`,
+`tracing::`, `format!`, `write!`, `.to_string()` and `.as_str()` usage
+on auth-carrying fields. Findings:
+
+- `SecretString` has a manual `fmt::Debug` that emits
+  `SecretString(<redacted, N bytes>)` (covered since #19).
+- `SeedAuth::PairingToken` has a manual `fmt::Debug` that prints
+  `SeedAuth::PairingToken(<redacted>)` (covered since #19).
+- `PairCreateResponse` has a manual `fmt::Debug` that emits
+  `token: "<redacted>"` while keeping `client_name` visible (covered
+  since #15).
+- `SharedTokenBook` has a manual `fmt::Debug` that prints
+  `SharedTokenBook { .. }` — no entries leak.
+- Every `tok.as_str()` call site is either on the request path
+  (populating an `X-Pairing-Token` header on a `reqwest::RequestBuilder`)
+  or inside the `#[doc(hidden)]` test-only `SeedClient::token_for_peer`
+  helper. None of these flow into a `format!` / `Debug` / log path.
+- `eprintln!` in `src/seed/client.rs:627` prints only the one-shot TLS
+  insecure warning — no token touches.
+
+New conformance test `error_paths_never_leak_pairing_token` in
+`tests/seed_unit.rs` builds a client with a sentinel pairing token,
+forces a 401/403/500 via wiremock, and asserts the sentinel never
+appears in `format!("{err}")` or `format!("{client:?}")`, and that
+`x-pairing-token` never appears in the error chain (case-insensitive).
+
+**Verification:**
+
+- `cargo fmt --all --check` — clean.
+- `cargo clippy --features seed --tests -- -D warnings` — clean.
+- `cargo test --features seed`:
+  - `seed_unit` — 24 green (was 23, +1 redaction conformance).
+  - `seed_mesh` — 7 green (unchanged).
+  - `seed_trust_score` — 5 green (new).
+  - lib seed tests — 55 green (was 53, +2 `seed::error` trust-score
+    helpers).
+  - Same pre-existing cloud-side `invalid_pem_is_surfaced_as_validation_error`
+    and `builder_trust_root_pem_round_trips` failures in
+    `src/client.rs` / `tests/client_test.rs`, outside scope.
+
+#16 + #21 are closable for the Rust SDK.
+
 Not yet landed (explicitly out of Phase 1.5 scope, tracked for Phase 2):
 
 - mDNS discovery (`Discovery::Mdns` — ADR-0016a §D6, Phase 1.5 opt-in

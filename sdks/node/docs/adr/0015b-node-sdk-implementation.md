@@ -401,6 +401,27 @@ credential within one process, the SDK raises `AuthError("trust_score_blocked")`
 and refuses to retry that credential until the caller resets it. State
 lives on the client instance; no disk.
 
+> ✅ implemented 2026-04-22 (issue cognitum-one/sdks#16 closed for Node)
+> — `src/seed/client.ts:135-146` holds a per-client, per-peer
+> `Map<peerKey, number>` counter. `src/seed/client.ts:297-351` checks
+> the counter BEFORE dispatch (pre-gate on cached block) AND on the
+> returned `AuthError` (post-increment). On the 3rd consecutive
+> `AuthError` against the same peer, the request loop throws the new
+> `TrustScoreBlockedError` from `src/errors.ts:134-178` (`code:
+> "TRUST_SCORE_BLOCKED"`, `peerKey`, `consecutiveFailures: 3`,
+> `retryableAfter: null`). The error is NOT in
+> `shouldBackoffRetry`'s retry set, so the failover state machine does
+> NOT cycle to another peer on it — cycling would burn the next peer's
+> budget too. Any 2xx from the same peer resets the counter; call
+> `client.resetTrustScore(peerKey?)` to clear manually after rotating
+> the token. Per-peer isolation: 401 on peer-A does not count against
+> peer-B. Non-auth errors (5xx / 429 / network / timeout) never
+> increment the counter, so a transient upstream failure after an
+> earlier 401 still cycles normally. Regression tests:
+> `tests/seed/unit/trust-score.test.ts` (8 tests) — covers the 3-strike
+> abort, counter reset on success, per-peer independence, the
+> not-retryable failover invariant, and 5xx cycling after a prior 401.
+
 ### 7. Auth
 
 > ✅ verified 2026-04-22 (partial) against seed v0.20.0 — SDK 0.1.3
@@ -428,6 +449,33 @@ lives on the client instance; no disk.
 > `String(result.token)` never contain the raw sentinel token. See
 > `src/seed/resources/pair.ts:23-92` and
 > `src/seed/tokenBook.ts:24-63` (`SecretString`).
+>
+> ✅ audited 2026-04-22 (issue cognitum-one/sdks#21 closed for Node) —
+> full redaction coverage audit of `src/seed/**`. Outcome: the
+> existing `SecretString` wrapping on per-peer `TokenBook` entries
+> (#19) and `PairCreateResponse.token` (#15) already satisfy ADR-0007
+> §"Cross-SDK redaction contract" for every log + error path in the
+> seed tree. Audit findings: (1) the only `console.*` call is the
+> one-time TLS-insecure warning in `src/seed/transport.ts:36` — a
+> bounded message with no header / token / body content; (2) the
+> `retry.ts:86` debug logger emits only
+> `{attempt, next_delay_ms, reason, path}` — path is the URL path
+> only (no host, no query); (3) all `throw new *Error(...)` messages
+> in `dispatch.ts` / `client.ts` / `peers.ts` / `config.ts` are built
+> from path-only strings, status codes, or the seed's own JSON error
+> envelope (`rec.error` / `rec.message`) — never from request
+> headers or client-supplied credentials; (4) no resource binding
+> threads `token` / `api_key` / `apiKey` / `key` into the query
+> string (verified in `buildUrl` at `client.ts:521-537`). No code
+> changes required — conformance test added at
+> `tests/seed/unit/redaction-conformance.test.ts` (8 tests) pumps a
+> sentinel pairing token + api key through 401 / 403 / 429 / 500 /
+> 503 / 422 status classes and asserts the sentinels never appear in
+> `err.message`, `err.toString()`, `err.stack`, or
+> `util.inspect(err)`. This is the regression guard against future
+> drift; the dedicated `redactHeaders` / `redactValue` helpers listed
+> below remain future work for when the seed client grows a verbose
+> log mode.
 
 Credential resolution order (ADR-0003 §Credential provisioning):
 

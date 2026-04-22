@@ -21,6 +21,7 @@ from cognitum._errors import (
     ServiceUnavailableError,
     TimeoutError,  # noqa: A004
     TimeoutPhase,
+    TrustScoreBlockedError,
     ValidationError,
 )
 
@@ -39,5 +40,6 @@ __all__ = [
     "ServiceUnavailableError",
     "TimeoutError",
     "TimeoutPhase",
+    "TrustScoreBlockedError",
     "ValidationError",
 ]

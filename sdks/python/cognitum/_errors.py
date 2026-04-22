@@ -96,6 +96,46 @@ class AuthError(CognitumError):
         self.reason = reason
 
 
+class TrustScoreBlockedError(AuthError):
+    """Per-peer client-side abort after 3 consecutive 401/403 responses.
+
+    ADR-0007 §Trust-score protection requires SDKs to stop before the
+    seed's own 3-strike counter bans the caller's IP for 5 minutes. The
+    counter lives on the transport instance keyed by peer URL (issue #16
+    / audit finding P-D1); reaching 3 raises this hard-abort exception.
+
+    Never retriable; mesh failover MUST NOT cycle to the next peer on it
+    (it's an SDK-side policy violation signal, not a per-peer transport
+    failure).
+    """
+
+    def __init__(
+        self,
+        message: str = "trust-score blocked: 3 consecutive auth failures",
+        *,
+        peer_url: str,
+        status_code: int | None = None,
+        request_id: str | None = None,
+        raw_body: bytes | None = None,
+        correlation_id: str | None = None,
+        cause: BaseException | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            reason=AuthReason.TRUST_SCORE_BLOCKED,
+            status_code=status_code,
+            request_id=request_id,
+            raw_body=raw_body,
+            correlation_id=correlation_id,
+            cause=cause,
+        )
+        # AuthError sets retriable=False and code="auth_error"; override
+        # the code so callers can distinguish on the wire marker without
+        # matching the class tree.
+        self.code = "trust_score_blocked"
+        self.peer_url = peer_url
+
+
 class RateLimitError(CognitumError):
     """429 — honours Retry-After / retry_after_us / english-language hints."""
 
@@ -372,5 +412,6 @@ __all__ = [
     "ServiceUnavailableError",
     "TimeoutError",
     "TimeoutPhase",
+    "TrustScoreBlockedError",
     "ValidationError",
 ]

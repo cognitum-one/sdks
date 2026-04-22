@@ -36,6 +36,7 @@ __export(seed_exports, {
   SeedSession: () => SeedSession,
   ServiceUnavailableError: () => ServiceUnavailableError,
   TimeoutError: () => TimeoutError,
+  TrustScoreBlockedError: () => TrustScoreBlockedError,
   ValidationError: () => ValidationError,
   normaliseBaseUrl: () => normaliseBaseUrl2,
   pairAll: () => pairAll,
@@ -138,6 +139,29 @@ var ConfigError = class extends CognitumError {
   constructor(message = "Invalid configuration") {
     super(message, "CONFIG_ERROR");
     this.name = "ConfigError";
+  }
+};
+var TrustScoreBlockedError = class extends CognitumError {
+  /** Canonical URL key of the peer whose trust-score budget was exhausted. */
+  peerKey;
+  /** Number of consecutive auth failures observed against `peerKey` (always 3). */
+  consecutiveFailures;
+  /**
+   * `null` marker — intentionally not retryable. Exposed so tooling
+   * that inspects `retryableAfter` on transient errors sees a definite
+   * "do not retry" signal rather than `undefined` (which could be
+   * mistaken for "retry immediately").
+   */
+  retryableAfter;
+  constructor(peerKey, message) {
+    super(
+      message ?? `trust-score blocked: aborting before 4th consecutive auth failure would trigger seed lockdown (peer=${peerKey})`,
+      "TRUST_SCORE_BLOCKED"
+    );
+    this.name = "TrustScoreBlockedError";
+    this.peerKey = peerKey;
+    this.consecutiveFailures = 3;
+    this.retryableAfter = null;
   }
 };
 
@@ -880,7 +904,7 @@ var SeedSession = class {
 };
 
 // src/seed/client.ts
-var SeedClient = class {
+var SeedClient = class _SeedClient {
   /** Resolved config (read-only snapshot). */
   config;
   /** GET /api/v1/status */
@@ -905,6 +929,16 @@ var SeedClient = class {
   fetchFn;
   /** Active health-probe handle; `undefined` when disabled. */
   healthProbe;
+  /**
+   * Per-peer consecutive-AuthError counter — ADR-0007 §"Trust-score
+   * protection", closes cognitum-one/sdks#16. The seed locks a client
+   * out after 3 failed auth attempts; we abort on the 3rd so the caller
+   * never burns the seed's budget. Reset to 0 on any 2xx from the same
+   * peer, or explicitly via {@link SeedClient.resetTrustScore}.
+   */
+  authFailures = /* @__PURE__ */ new Map();
+  /** Trust-score threshold — 3 consecutive auth failures triggers block. */
+  static TRUST_SCORE_LIMIT = 3;
   constructor(options) {
     this.config = resolveSeedConfig(options);
     this.peerSet = new PeerSet(this.config.endpoints);
@@ -974,6 +1008,32 @@ var SeedClient = class {
     return this.tokenBook.get(peerKey)?.reveal();
   }
   /**
+   * Clear the trust-score counter for a single peer (or, with no
+   * argument, every peer). Call this after the caller has rotated the
+   * pairing token or otherwise resolved the auth failure that triggered
+   * the block — without a reset, the client will keep refusing further
+   * requests to that peer to protect the seed's trust-score budget.
+   *
+   * @param peerKey — canonical peer URL to clear. If omitted, clears
+   *   every peer's counter.
+   */
+  resetTrustScore(peerKey) {
+    if (peerKey === void 0) {
+      this.authFailures.clear();
+      return;
+    }
+    this.authFailures.delete(peerKey);
+  }
+  /**
+   * Current trust-score counter for `peerKey`. Exposed for tests; the
+   * public API surface should consume {@link TrustScoreBlockedError}
+   * from `request()` rather than polling this number.
+   * @internal
+   */
+  trustScoreFailures(peerKey) {
+    return this.authFailures.get(peerKey) ?? 0;
+  }
+  /**
    * Perform an HTTP request against the seed mesh and return the parsed
    * JSON body. Implements the Phase 1.5 failover state machine.
    */
@@ -995,6 +1055,9 @@ var SeedClient = class {
           `seed: total deadline ${totalBudgetMs}ms exceeded at ${path}`
         );
       }
+      if ((this.authFailures.get(peer.key) ?? 0) >= _SeedClient.TRUST_SCORE_LIMIT) {
+        throw new TrustScoreBlockedError(peer.key);
+      }
       const attemptBudgetMs = Math.max(1, totalBudgetMs - elapsed);
       const attemptTimeoutMs = Math.min(
         opts.timeoutMs ?? this.config.timeouts.read,
@@ -1008,7 +1071,15 @@ var SeedClient = class {
         attemptTimeoutMs
       );
       if (outcome.kind === "ok") {
+        this.authFailures.delete(peer.key);
         return outcome.value;
+      }
+      if (outcome.error instanceof AuthError) {
+        const next = (this.authFailures.get(peer.key) ?? 0) + 1;
+        this.authFailures.set(peer.key, next);
+        if (next >= _SeedClient.TRUST_SCORE_LIMIT) {
+          throw new TrustScoreBlockedError(peer.key);
+        }
       }
       if (outcome.peerClass !== void 0) {
         this.peerSet.markFailure(peer.key, outcome.peerClass);
@@ -1207,6 +1278,7 @@ function sleep(ms) {
   SeedSession,
   ServiceUnavailableError,
   TimeoutError,
+  TrustScoreBlockedError,
   ValidationError,
   normaliseBaseUrl,
   pairAll,

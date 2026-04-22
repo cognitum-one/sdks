@@ -23,6 +23,7 @@ from cognitum._errors import (
     RateLimitError,
     ServiceUnavailableError,
     TimeoutError as SeedTimeoutError,
+    TrustScoreBlockedError,
     ValidationError,
 )
 from cognitum.seed._config import (
@@ -174,9 +175,35 @@ class _SyncTransport:
         self._peers = PeerSet.new(list(options.endpoints))
         self._peers_lock = threading.Lock()
         self._token_book: TokenBook = options.token_book or InMemoryTokenBook()
+        # Trust-score counter: per-peer consecutive 401/403 count (ADR-0007
+        # §Trust-score protection, issue #16 / audit P-D1). Lives on the
+        # transport instance so it survives across request() calls. Reset
+        # on any 2xx from that peer. Reaching 3 raises
+        # :class:`TrustScoreBlockedError` — a hard abort; NOT a cycle
+        # trigger for the mesh failover loop.
+        self._auth_failure_counts: dict[str, int] = {}
+        self._trust_lock = threading.Lock()
 
     def close(self) -> None:
         self._client.close()
+
+    def _trust_record_failure(self, peer_key: str) -> int:
+        with self._trust_lock:
+            count = self._auth_failure_counts.get(peer_key, 0) + 1
+            self._auth_failure_counts[peer_key] = count
+            return count
+
+    def _trust_reset(self, peer_key: str) -> None:
+        with self._trust_lock:
+            self._auth_failure_counts.pop(peer_key, None)
+
+    def _trust_reset_all(self) -> None:
+        with self._trust_lock:
+            self._auth_failure_counts.clear()
+
+    def _trust_count(self, peer_key: str) -> int:
+        with self._trust_lock:
+            return self._auth_failure_counts.get(peer_key, 0)
 
     def _pick_peer(self, pinned_key: str | None) -> Peer:
         with self._peers_lock:
@@ -221,7 +248,6 @@ class _SyncTransport:
         peers_tried = 0
         attempt = 0
         last_exc: CognitumError | None = None
-        auth_fail_count = 0
 
         while True:
             headers = {"X-Correlation-Id": correlation_id}
@@ -287,6 +313,9 @@ class _SyncTransport:
                     self._mark_success(
                         peer.endpoint.url, time.monotonic() - call_started,
                     )
+                    # Any 2xx from this peer resets its trust-score counter
+                    # (ADR-0007 §Trust-score protection).
+                    self._trust_reset(peer.endpoint.url)
                     return self._decode(response, correlation_id=correlation_id)
 
                 err_body = safe_json(response)
@@ -294,9 +323,22 @@ class _SyncTransport:
                     response, correlation_id=correlation_id, body=err_body,
                 )
                 if isinstance(last_exc, AuthError):
-                    auth_fail_count += 1
-                    if auth_fail_count >= 3:
-                        raise last_exc
+                    # Increment the per-peer consecutive-auth-failure
+                    # counter. The 3rd failure converts to a hard-abort
+                    # TrustScoreBlockedError BEFORE it ever leaves the
+                    # client — we want to stop before the seed's own
+                    # 3-strike counter bans this IP for 5 minutes
+                    # (audit P-D1, issue #16). The counter is per-peer
+                    # and survives across request() calls.
+                    count = self._trust_record_failure(peer.endpoint.url)
+                    if count >= 3:
+                        raise TrustScoreBlockedError(
+                            peer_url=peer.endpoint.url,
+                            status_code=last_exc.status_code,
+                            correlation_id=correlation_id,
+                            raw_body=last_exc.raw_body,
+                            cause=last_exc,
+                        )
                 server_hint = parse_retry_after(response.headers, err_body)
 
                 # Classify for peer bookkeeping.
@@ -456,6 +498,19 @@ class SeedClient:
     def token_for_peer(self, peer_url: str) -> SecretString | None:
         """Introspection helper — look up a pairing token by peer URL."""
         return self._transport._token_book.get(peer_url)
+
+    def reset_trust_score(self, peer_url: str | None = None) -> None:
+        """Test-only: clear the per-peer auth-failure counter.
+
+        Pass ``peer_url=None`` to clear every peer's counter. In
+        production code, successful 2xx responses reset a peer's counter
+        automatically — this escape hatch exists so tests can simulate
+        recovery without roundtripping a fake 2xx response.
+        """
+        if peer_url is None:
+            self._transport._trust_reset_all()
+        else:
+            self._transport._trust_reset(peer_url)
 
     def _pair_on_peer(
         self, peer_key: str, client_name: str
