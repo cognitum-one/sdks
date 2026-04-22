@@ -285,6 +285,17 @@ impl SeedClient {
         let mut peers_tried: usize = 0;
         let mut last_err: Option<Error> = None;
 
+        // #23: serialize the body exactly once, outside the retry loop.
+        // On every attempt / peer cycle we clone the resulting `Vec<u8>`
+        // (a cheap memcpy) instead of re-entering `serde_json` — which
+        // allocates, walks the whole struct, and re-runs every
+        // `#[serde(...)]` hook. For typed `POST` bodies this was the
+        // single largest per-attempt cost in the bench.
+        let body_bytes: Option<Vec<u8>> = match body.as_ref() {
+            Some(b) => Some(serde_json::to_vec(b).map_err(Error::from)?),
+            None => None,
+        };
+
         loop {
             if started.elapsed() > self.inner.timeouts.total {
                 return Err(last_err.unwrap_or(Error::Api {
@@ -308,8 +319,11 @@ impl SeedClient {
             }
             req = req.header(reqwest::header::ACCEPT, "application/json");
 
-            if let Some(b) = body.as_ref() {
-                req = req.json(b);
+            if let Some(bytes) = body_bytes.as_ref() {
+                // Pre-serialized: set content-type and ship the raw bytes.
+                req = req
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .body(bytes.clone());
             }
 
             let send_result = req.send().await;
@@ -854,6 +868,82 @@ mod tests {
         let session = client.session();
         assert!(
             session.pinned_peer() == "https://a:8443" || session.pinned_peer() == "https://b:8443"
+        );
+    }
+
+    /// #23 regression: the request body is serialized exactly once —
+    /// even when the retry loop cycles three attempts. A custom
+    /// `Serialize` impl bumps a counter; we then drive a POST that
+    /// 503s twice (cycles) then 200s, and assert the counter is `1`.
+    ///
+    /// Before the fix, `req.json(&b)` was called on every attempt, so
+    /// the counter would equal the number of attempts.
+    #[tokio::test]
+    async fn post_body_serialized_once_across_retries() {
+        use std::sync::atomic::{AtomicUsize, Ordering as SerdeOrd};
+        use std::sync::Arc as StdArc;
+        use wiremock::matchers::{method as wmethod, path as wpath};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Counter-backed Serialize: bumps on every `serialize` call.
+        struct CountingBody {
+            counter: StdArc<AtomicUsize>,
+        }
+
+        impl serde::Serialize for CountingBody {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                self.counter.fetch_add(1, SerdeOrd::Relaxed);
+                // Emit a minimal valid JSON object so downstream parsing
+                // (wiremock match / reqwest body) stays happy.
+                use serde::ser::SerializeMap;
+                let mut m = s.serialize_map(Some(1))?;
+                m.serialize_entry("probe", "1")?;
+                m.end()
+            }
+        }
+
+        let server = MockServer::start().await;
+        // Two 503s (idempotent POST → cycles/retries), then 200.
+        Mock::given(wmethod("POST"))
+            .and(wpath("/api/v1/store/query"))
+            .respond_with(ResponseTemplate::new(503).set_body_string("{}"))
+            .up_to_n_times(2)
+            .mount(&server)
+            .await;
+        Mock::given(wmethod("POST"))
+            .and(wpath("/api/v1/store/query"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"results": [], "query_ms": 0.0})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = SeedClient::builder()
+            .endpoint(server.uri())
+            .tls(SeedTls::System)
+            .max_retries(3)
+            .build()
+            .unwrap();
+
+        let counter = StdArc::new(AtomicUsize::new(0));
+        let body = CountingBody {
+            counter: StdArc::clone(&counter),
+        };
+
+        // `store/query` is declared idempotent, so 503 cycles through
+        // the retry/backoff path after the peer list is exhausted.
+        let _: serde_json::Value = client
+            .request_post("/store/query", &body, true)
+            .await
+            .expect("eventual success");
+
+        assert_eq!(
+            counter.load(SerdeOrd::Relaxed),
+            1,
+            "body serialized more than once — retry loop re-serialized \
+             per attempt (regression on #23)"
         );
     }
 }

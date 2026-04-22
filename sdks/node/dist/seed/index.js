@@ -586,14 +586,15 @@ function buildSeedFetch(cfg) {
     );
   }
   const dispatcher = buildDispatcher({ insecure, ca });
-  return async (input, init) => {
-    const finalInit = {
-      ...init ?? {}
-    };
-    if (dispatcher !== void 0) {
-      finalInit.dispatcher = dispatcher;
+  if (dispatcher === void 0) {
+    return globalThis.fetch;
+  }
+  return (input, init) => {
+    if (init === void 0) {
+      return globalThis.fetch(input, { dispatcher });
     }
-    return globalThis.fetch(input, finalInit);
+    init.dispatcher = dispatcher;
+    return globalThis.fetch(input, init);
   };
 }
 function buildDispatcher(tls) {
@@ -996,6 +997,8 @@ var SeedClient = class _SeedClient {
     const idempotent = opts.idempotent ?? (methodUpper === "GET" || methodUpper === "HEAD");
     const totalBudgetMs = this.config.timeouts.total ?? DEFAULT_MAX_ELAPSED_MS;
     const startedAt = Date.now();
+    const hasBody = opts.body !== void 0 && methodUpper !== "GET" && methodUpper !== "HEAD";
+    const bodyStr = hasBody ? JSON.stringify(opts.body) : void 0;
     let peer = this.initialPeer(opts.pinnedPeerKey);
     const totalPeers = this.peerSet.len();
     let peersTried = 0;
@@ -1022,7 +1025,8 @@ var SeedClient = class _SeedClient {
         path,
         peer,
         opts,
-        attemptTimeoutMs
+        attemptTimeoutMs,
+        bodyStr
       );
       if (outcome.kind === "ok") {
         this.authFailures.delete(peer.key);
@@ -1123,7 +1127,7 @@ var SeedClient = class _SeedClient {
     }
     return computed;
   }
-  async dispatchOnce(method, path, peer, opts, attemptTimeoutMs) {
+  async dispatchOnce(method, path, peer, opts, attemptTimeoutMs, bodyStr) {
     const url = buildUrl(peer.baseUrl, path, opts.query);
     const headers = {
       Accept: "application/json",
@@ -1137,9 +1141,9 @@ var SeedClient = class _SeedClient {
       headers["X-API-Key"] = this.config.apiKey;
     }
     const init = { method, headers };
-    if (opts.body !== void 0 && method !== "GET" && method !== "HEAD") {
+    if (bodyStr !== void 0) {
       headers["Content-Type"] = "application/json";
-      init.body = JSON.stringify(opts.body);
+      init.body = bodyStr;
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), attemptTimeoutMs);

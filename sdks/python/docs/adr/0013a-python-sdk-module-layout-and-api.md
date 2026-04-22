@@ -78,6 +78,60 @@ endpoints. Live integration tests at `tests/seed/integration/` pass
 the 9th covers the full pair-and-write flow and is opt-in via
 `COGNITUM_PAIR_NAME`.
 
+### Phase 1.6 amendment — lazy import + close lifecycle (2026-04-22)
+
+Two post-validation fixes against the live seed flagged by
+`/tmp/swarm-seed-validation/`:
+
+1. **Cold-start import graph (issue #20).** `from cognitum.seed import
+   SeedClient` used to transitively load ~11 cloud modules — `_http`,
+   `async_client`, `client`, `catalog`, `orders`, `leads`, `contact`,
+   `devices`, `mcp`, `brain`, `types` — because any subpackage import
+   runs the parent `cognitum/__init__.py` first. That added ~32 ms of
+   eager cloud cost (cumulative ~51 ms at
+   `sdks/python/cognitum/__init__.py:1-103` before the fix) to
+   seed-only callers. Fix: convert the top-level re-exports to PEP 562
+   lazy `__getattr__` — each public name (`Cognitum`, `AsyncCognitum`,
+   errors, types, `SeedClient` convenience alias) resolves on first
+   access via a `_LAZY_ATTRS` table at
+   `sdks/python/cognitum/__init__.py:48-92`, then caches the resolved
+   object in `globals()` so subsequent accesses skip the hook. Backward
+   compat is preserved: `from cognitum import Cognitum` still works.
+   After the fix, `from cognitum.seed import SeedClient` drops to
+   ~39 ms cumulative and leaves `sys.modules` free of every cloud
+   module (verified by
+   `tests/seed/unit/test_import_graph.py`, 8 tests).
+
+2. **Explicit `close()` + `aclose()` + idempotent lifecycle.** The
+   live validator flagged: Python's `SeedClient` matched Node (via
+   `close()`) and Rust (via `Drop` + `close()`) for context-manager
+   support, but the semantics were unspecified — close-then-reuse
+   silently issued requests against a dead `httpx.Client`, and async
+   callers had no `aclose()` alias matching the httpx convention. Fix:
+
+   - `SeedClient.close()` / `AsyncSeedClient.close()` set a `_closed`
+     flag on both the client and its transport (`_SyncTransport` /
+     `_AsyncTransport`).
+   - `_SyncTransport.request()` /  `_AsyncTransport.request()` check
+     the flag first and raise `RuntimeError("SeedClient is closed")`
+     or `"AsyncSeedClient is closed"` before any network work.
+   - Second call to `close()` is a no-op (idempotent).
+   - `AsyncSeedClient.aclose()` is added as a proper async alias
+     (matches httpx). Existing `await client.close()` keeps working.
+   - A public `closed: bool` property exposes the state.
+
+   Code: `sdks/python/cognitum/seed/_client.py:187-196, 462-478,
+   532-562` and `sdks/python/cognitum/seed/_async_client.py:85-100,
+   141-143, 352-356, 415-445`. Test:
+   `sdks/python/tests/seed/unit/test_close_and_context_manager.py`
+   (11 tests covering context-manager happy path + exception path,
+   idempotent double-close, post-close `status()`/resource call
+   rejection, and the `aclose` alias for both sync and async).
+
+**Verified in place** — `pytest tests/seed/ -q` → 191 passed, 3 skipped
+(the 3 skips are live-seed integration tests that require
+`COGNITUM_PAIR_NAME`).
+
 ### Phase 1.5 gaps (intentionally deferred)
 
 - Multi-endpoint mesh routing (round-robin, read-any-write-one, failover

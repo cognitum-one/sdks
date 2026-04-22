@@ -273,6 +273,19 @@ export class SeedClient {
       this.config.timeouts.total ?? DEFAULT_MAX_ELAPSED_MS;
     const startedAt = Date.now();
 
+    // Serialise the JSON body ONCE per `request()` call (issue #23). The
+    // retry loop re-dispatches on the same body up to `this.config.retries`
+    // times; re-stringifying on every attempt is pure waste (CPU + GC) and
+    // becomes measurable on vector-ingest payloads (10-100 KB). GET/HEAD
+    // never carry a body, so skip the work entirely.
+    const hasBody =
+      opts.body !== undefined &&
+      methodUpper !== "GET" &&
+      methodUpper !== "HEAD";
+    const bodyStr: string | undefined = hasBody
+      ? JSON.stringify(opts.body)
+      : undefined;
+
     // Resolve the initial peer. When the caller pinned a specific peer
     // (session mode) and it's present, use it; otherwise let `pick`
     // choose the closest-first healthy peer.
@@ -319,6 +332,7 @@ export class SeedClient {
         peer,
         opts,
         attemptTimeoutMs,
+        bodyStr,
       );
 
       // -- success --------------------------------------------------------
@@ -451,6 +465,7 @@ export class SeedClient {
     peer: Peer,
     opts: SeedRequestOptions,
     attemptTimeoutMs: number,
+    bodyStr: string | undefined,
   ): Promise<DispatchOutcome<T>> {
     const url = buildUrl(peer.baseUrl, path, opts.query);
     const headers: Record<string, string> = {
@@ -468,9 +483,9 @@ export class SeedClient {
     }
 
     const init: RequestInit & { duplex?: string } = { method, headers };
-    if (opts.body !== undefined && method !== "GET" && method !== "HEAD") {
+    if (bodyStr !== undefined) {
       headers["Content-Type"] = "application/json";
-      init.body = JSON.stringify(opts.body);
+      init.body = bodyStr;
     }
 
     const controller = new AbortController();

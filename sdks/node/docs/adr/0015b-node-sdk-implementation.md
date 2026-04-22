@@ -162,6 +162,21 @@ the 0.1 → 0.2 version bump in ADR-0015c §15.
 > invariant that `process.env.NODE_TLS_REJECT_UNAUTHORIZED` is
 > untouched across 50 parallel dispatcher builds, and that the insecure
 > dispatcher is a distinct `Agent` instance per client.
+>
+> ✅ perf pass 2026-04-22 (issue cognitum-one/sdks#24 closed) — the
+> `require("undici")` call that previously deferred dispatcher
+> construction to first request has already been a top-level
+> `import { Agent } from "undici"` since the #18 landing above, so cold
+> start no longer pays a ~10-15 ms dynamic-import penalty. The remaining
+> hot-path allocation — a `{...(init ?? {})}` spread on every `fetch`
+> call — was removed in `src/seed/transport.ts:49-71`: when no custom
+> TLS is configured the wrapper now returns `globalThis.fetch` directly
+> (zero wrap overhead), and when a dispatcher IS in play we mutate the
+> caller's fresh `init` in place rather than cloning it. This is safe
+> because `SeedClient.dispatchOnce` builds a new `init` for every
+> attempt — there is no shared-state hazard. Measured p50 overhead vs
+> raw `fetch()` dropped from **0.024 ms → 0.012 ms** (2x improvement)
+> on the `bench/seed-status.ts` micro-bench.
 
 Two layers; same `undici` dispatcher class, different constructor
 arguments:
@@ -273,6 +288,21 @@ cfg.timeout)`, `clearTimeout` in the `finally` block.
 > cloud `src/client.ts:171-195` still ships the 1s/16s/no-jitter loop;
 > migrating cloud onto `src/seed/retry.ts` is tracked for Phase 1.5 to
 > avoid breaking the existing `tests/client.test.ts` suite.
+>
+> ✅ perf pass 2026-04-22 (issue cognitum-one/sdks#23 Node portion
+> closed) — the JSON body is now serialised ONCE per `request()` call
+> and threaded into each `dispatchOnce` invocation via a new `bodyStr`
+> parameter (`src/seed/client.ts:285-295, 453-472`). Before this fix
+> the retry loop paid a full `JSON.stringify(opts.body)` on every
+> attempt; on a 10-100 KB vector-ingest payload with 3 retries that's
+> 30-300 KB of wasted string work per call. GET/HEAD short-circuit the
+> serialiser entirely. Regression test:
+> `tests/seed/unit/retry-body-serialize-once.test.ts` hooks
+> `JSON.stringify` via a `vi.spyOn` wrapper and asserts the
+> marker-tagged POST body is stringified at most once across a 4-peer
+> dispatch + retry chain, while confirming GET requests never stringify
+> their body at all. The Rust half of #23 is tracked separately in
+> `/home/ruvultra/projects/sdks/sdks/rust/docs/adr/`.
 
 Shared `src/retry.ts`. Fixes the 1 s base / 16 s cap / no-jitter bug in
 `/home/ruvultra/projects/sdks/sdks/node/src/client.ts:171-173`.

@@ -81,9 +81,19 @@ class _AsyncTransport:
         # never hold this across an ``await``.
         self._auth_failure_counts: dict[str, int] = {}
         self._trust_lock = threading.Lock()
+        self._closed: bool = False
 
     async def close(self) -> None:
+        # Idempotent — second call is a no-op.
+        if self._closed:
+            return
+        self._closed = True
         await self._client.aclose()
+
+    # Alias to match httpx / asyncpg naming convention. Tests and
+    # existing callers use ``close()``; ``aclose()`` is the preferred
+    # spelling going forward.
+    aclose = close
 
     def _trust_record_failure(self, peer_key: str) -> int:
         with self._trust_lock:
@@ -136,6 +146,8 @@ class _AsyncTransport:
         idempotent: bool | None = None,
         peer_key: str | None = None,
     ) -> Any:
+        if self._closed:
+            raise RuntimeError("AsyncSeedClient is closed")
         method_u = method.upper()
         correlation_id = str(uuid.uuid4())
         deadline = time.monotonic() + self._policy.max_elapsed_ms / 1000.0
@@ -349,6 +361,7 @@ class AsyncSeedClient:
         # AsyncHealthProbe must be started from within a running loop —
         # defer until first use via __aenter__ or explicit start().
         self._health: AsyncHealthProbe | None = None
+        self._closed: bool = False
 
     @property
     def options(self) -> SeedClientOptions:
@@ -413,12 +426,31 @@ class AsyncSeedClient:
             )
 
     async def close(self) -> None:
+        """Release the underlying ``httpx.AsyncClient`` and stop the
+        health probe (if any). Idempotent: calling a second time is a
+        no-op.
+
+        After ``close()``, any method that goes through the transport
+        raises :class:`RuntimeError("AsyncSeedClient is closed")`.
+        Construct a fresh client to continue.
+        """
+        if self._closed:
+            return
+        self._closed = True
         if self._health is not None:
             try:
                 await self._health.close()
             finally:
                 self._health = None
         await self._transport.close()
+
+    # Alias to match httpx's ``aclose`` naming. Both spellings work.
+    async def aclose(self) -> None:
+        await self.close()
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     async def __aenter__(self) -> "AsyncSeedClient":
         self._ensure_health_probe()

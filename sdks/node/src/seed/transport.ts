@@ -46,14 +46,25 @@ export function buildSeedFetch(cfg: ResolvedSeedConfig): typeof fetch {
   // on the `unref`'d keep-alive timer + GC).
   const dispatcher = buildDispatcher({ insecure, ca });
 
-  return async (input, init) => {
-    const finalInit: RequestInit & { dispatcher?: unknown } = {
-      ...(init ?? {}),
-    };
-    if (dispatcher !== undefined) {
-      finalInit.dispatcher = dispatcher;
+  // Hot-path perf (issue #24): when the client has no custom dispatcher
+  // (no insecure mode, no custom CA), there's nothing for this wrapper to
+  // add — defer directly to `globalThis.fetch` and avoid the per-call
+  // object spread. `SeedClient.dispatchOnce` already builds a fresh
+  // `init` per call, so we do NOT need to clone it here.
+  if (dispatcher === undefined) {
+    return globalThis.fetch;
+  }
+
+  // With a custom dispatcher, attach it to the caller's init without a
+  // spread. `init` is either undefined (GETs built server-side) or a
+  // fresh object the caller owns; mutating it in place is safe because
+  // `dispatchOnce` never reuses the same `init` across retry attempts.
+  return (input, init) => {
+    if (init === undefined) {
+      return globalThis.fetch(input, { dispatcher } as RequestInit);
     }
-    return globalThis.fetch(input, finalInit);
+    (init as RequestInit & { dispatcher?: unknown }).dispatcher = dispatcher;
+    return globalThis.fetch(input, init);
   };
 }
 

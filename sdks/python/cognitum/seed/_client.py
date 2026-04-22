@@ -175,6 +175,7 @@ class _SyncTransport:
         self._peers = PeerSet.new(list(options.endpoints))
         self._peers_lock = threading.Lock()
         self._token_book: TokenBook = options.token_book or InMemoryTokenBook()
+        self._closed: bool = False
         # Trust-score counter: per-peer consecutive 401/403 count (ADR-0007
         # §Trust-score protection, issue #16 / audit P-D1). Lives on the
         # transport instance so it survives across request() calls. Reset
@@ -185,6 +186,12 @@ class _SyncTransport:
         self._trust_lock = threading.Lock()
 
     def close(self) -> None:
+        # Idempotent — safe to call twice. httpx.Client.close() is also
+        # idempotent, but we want the `_closed` flag to be the source of
+        # truth for post-close request rejection.
+        if self._closed:
+            return
+        self._closed = True
         self._client.close()
 
     def _trust_record_failure(self, peer_key: str) -> int:
@@ -238,6 +245,8 @@ class _SyncTransport:
         idempotent: bool | None = None,
         peer_key: str | None = None,
     ) -> Any:
+        if self._closed:
+            raise RuntimeError("SeedClient is closed")
         method_u = method.upper()
         correlation_id = str(uuid.uuid4())
         deadline = time.monotonic() + self._policy.max_elapsed_ms / 1000.0
@@ -466,6 +475,10 @@ class SeedClient:
                 self._transport._peers,
                 self._options.health_interval,
             )
+        # Post-close lifecycle guard. Mirrors Node's `Drop`-semantics and
+        # Rust's explicit `close()` so callers can't accidentally reuse a
+        # client whose httpx.Client has been shut down.
+        self._closed: bool = False
 
     @property
     def options(self) -> SeedClientOptions:
@@ -530,12 +543,27 @@ class SeedClient:
         return token
 
     def close(self) -> None:
+        """Release the underlying ``httpx.Client`` and stop the health
+        probe (if any). Idempotent: calling a second time is a no-op.
+
+        After ``close()``, any method that goes through the transport
+        (``status()``, ``identity()``, any resource call) raises
+        :class:`RuntimeError("SeedClient is closed")`. Construct a fresh
+        client to continue.
+        """
+        if self._closed:
+            return
+        self._closed = True
         if self._health is not None:
             try:
                 self._health.close()
             finally:
                 self._health = None
         self._transport.close()
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     def __enter__(self) -> "SeedClient":
         return self

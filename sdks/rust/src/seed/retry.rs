@@ -4,6 +4,7 @@
 //! so they unit-test without a runtime. The `SeedClient::request` loop in
 //! [`super::client`] owns the actual `tokio::time::sleep`.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use reqwest::header::HeaderMap;
@@ -20,10 +21,10 @@ pub const DEFAULT_MAX_ELAPSED_MS: u64 = 60_000;
 ///
 /// `delay = min(cap, base * 2^attempt + uniform(0, base))`
 ///
-/// `attempt` starts at 0. For stability in tests this uses a deterministic
-/// jitter derived from system time nanos modulo `base_ms`; callers that
-/// need RNG-uniform jitter can clamp via `max(server_hint, compute_delay)`
-/// in the retry loop instead.
+/// `attempt` starts at 0. Jitter is drawn from a process-global
+/// `xorshift64*` PRNG that is seeded once from `SystemTime::now()` + an
+/// atomic counter so two calls within the same nanosecond draw distinct
+/// samples (#22 — avoid modulo-bias + correlation under bursts).
 pub fn compute_delay(attempt: u32, base_ms: u64, cap_ms: u64) -> Duration {
     // Saturating shift: cap the exponent at 20 (≈ 17 min worth of 500ms)
     // to stay within u64. In practice we clamp to `cap_ms` just below.
@@ -33,17 +34,64 @@ pub fn compute_delay(attempt: u32, base_ms: u64, cap_ms: u64) -> Duration {
     Duration::from_millis(combined.min(cap_ms))
 }
 
-/// Time-seeded pseudo-jitter. Good enough for AWS-style equal-jitter;
-/// avoids pulling `rand` into the dep tree for Phase 1.
-fn jitter_ms(base_ms: u64) -> u64 {
-    if base_ms == 0 {
-        return 0;
+/// Process-global jitter RNG state.
+///
+/// Seeded lazily on first use from `SystemTime::now().subsec_nanos() ^
+/// UNIX_EPOCH_secs ^ counter_bump`. The counter is bumped on every draw
+/// which (a) advances the PRNG state and (b) decorrelates concurrent
+/// draws from the same wall-clock tick. `0` is never a valid xorshift64
+/// state, so we re-seed to `1` if we ever see it.
+static JITTER_STATE: AtomicU64 = AtomicU64::new(0);
+
+/// xorshift64 step — advances `state` in place and returns the old value
+/// mixed with a Marsaglia-style constant. Produces a full 64-bit value
+/// with period 2^64 − 1.
+#[inline]
+fn xorshift64(state: &mut u64) -> u64 {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    *state = x;
+    x
+}
+
+/// Seed the global state if it hasn't been seeded. Safe to call
+/// concurrently — only the winning thread's seed sticks.
+fn seed_if_needed() -> u64 {
+    let current = JITTER_STATE.load(Ordering::Relaxed);
+    if current != 0 {
+        return current;
     }
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as u64)
-        .unwrap_or(0);
-    nanos % base_ms
+        .map(|d| (d.subsec_nanos() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ d.as_secs())
+        .unwrap_or(0x9E37_79B9_7F4A_7C15);
+    let seed = if nanos == 0 { 1 } else { nanos };
+    let _ = JITTER_STATE.compare_exchange(0, seed, Ordering::Relaxed, Ordering::Relaxed);
+    JITTER_STATE.load(Ordering::Relaxed)
+}
+
+/// Draw a uniform integer in `[0, bound)` using rejection sampling to
+/// avoid modulo bias. Returns 0 when `bound == 0`.
+fn jitter_ms(bound: u64) -> u64 {
+    if bound == 0 {
+        return 0;
+    }
+    let mut state = seed_if_needed();
+    // The only contention window is between the load in `seed_if_needed`
+    // and the store below; we tolerate rare seed loss because each draw
+    // mixes in a fresh counter bump before storing back.
+    // Rejection sampling: reject samples in the top `u64::MAX % bound`
+    // residue range so the remaining range is a multiple of `bound`.
+    let threshold = u64::MAX - (u64::MAX % bound);
+    loop {
+        let x = xorshift64(&mut state);
+        JITTER_STATE.store(state, Ordering::Relaxed);
+        if x < threshold {
+            return x % bound;
+        }
+    }
 }
 
 /// Whether the status code is retriable at all (ADR-0005 §"Retriable
@@ -236,5 +284,68 @@ mod tests {
     fn parse_retry_after_returns_none_without_hint() {
         let h = HeaderMap::new();
         assert_eq!(parse_retry_after(&h, r#"{"error":"other"}"#), None);
+    }
+
+    /// #22 regression: jitter samples are approximately uniform over
+    /// `[0, base_ms)`. A modulo-of-subsec_nanos RNG would bunch into a
+    /// few residues when called in a tight loop (all within the same
+    /// microsecond). Xorshift64 should spread the samples out.
+    #[test]
+    fn jitter_is_roughly_uniform_over_base() {
+        let base: u64 = 100;
+        let iters: usize = 1_000;
+        let mut samples: Vec<u64> = Vec::with_capacity(iters);
+        for _ in 0..iters {
+            samples.push(jitter_ms(base));
+        }
+
+        // Every sample in range.
+        assert!(samples.iter().all(|&s| s < base), "sample out of range");
+
+        // Mean should land near base/2 = 50. For u[0,100) with n=1000,
+        // std ≈ 28.87 / √1000 ≈ 0.91 — 3σ ≈ 2.74. Budget ±5 is loose but
+        // still catches any deterministic bias.
+        let sum: u64 = samples.iter().sum();
+        let mean = sum as f64 / iters as f64;
+        assert!(
+            (45.0..=55.0).contains(&mean),
+            "mean {mean} outside [45, 55]"
+        );
+
+        // At least 20 distinct values — the old `subsec_nanos % base`
+        // impl would collapse to a handful of residues on a fast CPU.
+        let distinct: std::collections::BTreeSet<_> = samples.iter().copied().collect();
+        assert!(distinct.len() >= 20, "only {} distinct", distinct.len());
+    }
+
+    /// #22 regression: bursts within a single microsecond must not
+    /// produce identical consecutive samples. Xorshift64 advances state
+    /// deterministically so each call returns a different value even
+    /// when the wall clock hasn't ticked.
+    #[test]
+    fn jitter_decorrelates_consecutive_calls() {
+        let base: u64 = 1_000;
+        let mut prev = jitter_ms(base);
+        let mut identical_pairs = 0usize;
+        for _ in 0..256 {
+            let next = jitter_ms(base);
+            if next == prev {
+                identical_pairs += 1;
+            }
+            prev = next;
+        }
+        // Expected uniform-random identical-pair rate: ~256/1000 ≈ 0.26.
+        // Tolerate up to 20 (≈8%) — subsec_nanos % base would see 200+.
+        assert!(
+            identical_pairs <= 20,
+            "too many identical consecutive samples: {identical_pairs}"
+        );
+    }
+
+    /// Guards rejection-sampling branch: `bound = 0` returns 0 without
+    /// looping.
+    #[test]
+    fn jitter_zero_bound_returns_zero() {
+        assert_eq!(jitter_ms(0), 0);
     }
 }

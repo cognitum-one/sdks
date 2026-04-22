@@ -162,6 +162,82 @@ appears in `format!("{err}")` or `format!("{client:?}")`, and that
 
 #16 + #21 are closable for the Rust SDK.
 
+### Perf hardening (#22, #23) — 2026-04-23
+
+Two findings from the 2026-04-22 perf audit
+(`/tmp/swarm-seed-validation/OPTIMIZATION-REPORT.md`) fixed against the
+Rust SDK without adding new deps.
+
+**#22 — jitter RNG non-uniform under bursts:**
+
+- `src/seed/retry.rs` — `jitter_ms` replaced. The old impl was
+  `SystemTime::now().subsec_nanos() % base_ms`, which is (a) biased via
+  modulo when `base_ms` isn't a power of two and (b) strongly correlated
+  when many calls fall in the same microsecond (typical under burst
+  retries). The new impl uses a process-global `xorshift64*` PRNG seeded
+  lazily from `SystemTime::now()` mixed with a Marsaglia-style constant,
+  and rejection-sampling to eliminate modulo bias. State is an
+  `AtomicU64` so the PRNG advances across threads; `0` is never stored
+  so xorshift never enters its absorbing state.
+- No new deps — chose the xorshift path over adding `rand = "0.8"`
+  because `rand` is NOT already in the reqwest/tokio tree (verified via
+  `cargo tree --features seed`). The RNG is ~15 lines inside `retry.rs`.
+- 3 regression tests in `src/seed/retry.rs`:
+  - `jitter_is_roughly_uniform_over_base` — 1000 samples at `base=100`;
+    every sample in `[0, 100)`, mean in `[45, 55]`, ≥20 distinct values.
+  - `jitter_decorrelates_consecutive_calls` — ≤20 identical consecutive
+    pairs out of 256 draws at `base=1000` (old impl saw 200+).
+  - `jitter_zero_bound_returns_zero` — guards the rejection-sampling
+    short-circuit.
+
+**#23 — retry body re-serialized per attempt:**
+
+- `src/seed/client.rs` `SeedClient::request` — the `B: Serialize` body
+  is now serialized to `Vec<u8>` exactly once, before the peer-failover /
+  backoff loop. Each attempt clones the byte buffer (memcpy) and
+  attaches it via `req.body(bytes.clone())` + `Content-Type:
+  application/json`, replacing the previous `req.json(b)` which
+  re-entered `serde_json::to_vec` on every attempt. The `Content-Type`
+  header is set explicitly since `.body()` doesn't infer it the way
+  `.json()` does.
+- 1 regression test in `src/seed/client.rs` (`post_body_serialized_once_across_retries`):
+  a `CountingBody` struct with a hand-rolled `Serialize` impl that bumps
+  an `AtomicUsize` on every call. A wiremock server returns 503 twice
+  (cycling the retry loop) then 200; the test asserts the counter
+  equals `1` across the 3 attempts. Before the fix this counter would
+  equal the number of attempts.
+- Micro-bench on a realistic `StoreQuery` body (384-dim vector, `k=10`)
+  with 3 attempts: serialize-per-attempt = 15.6 µs, serialize-once +
+  clone-per-attempt = 5.2 µs → **3.01x speedup** on the happy+retry
+  path. This is pure CPU saved per retried POST; on 429-rich mesh
+  deployments the savings compound.
+
+**Tests + checks:**
+
+- `cargo fmt --all -- --check` — clean.
+- `cargo clippy --features seed --tests -- -D warnings` — clean.
+- `cargo test --features seed --no-fail-fast` — 111 green (was 107);
+  +3 jitter regression tests (`src/seed/retry.rs`) + 1 body-ser
+  regression test (`src/seed/client.rs`). The 2 pre-existing cloud-side
+  `invalid_pem_is_surfaced_as_validation_error` and
+  `builder_trust_root_pem_round_trips` failures in `src/client.rs` /
+  `tests/client_test.rs` remain outside scope (per ADR-0014 task
+  fencing: "Do NOT touch src/client.rs or src/error.rs").
+- `benches/seed_bench.rs` compiles; it uses a non-criterion harness
+  with a `#[tokio::main] fn main()` which `cargo bench` currently skips
+  (no `[[bench]]` entry + `harness = false` in Cargo.toml). Tracking
+  proper wiring under OQ-R3 in §15.
+
+**Files edited:**
+
+- `src/seed/retry.rs` — `jitter_ms` rewritten to xorshift64 + rejection
+  sampling; 3 new tests.
+- `src/seed/client.rs` — `SeedClient::request` serializes body once
+  outside the loop; 1 new test.
+- `docs/adr/0014c-rust-sdk-implementation-release.md` — this section.
+
+#22 + #23 are closable for the Rust SDK.
+
 Not yet landed (explicitly out of Phase 1.5 scope, tracked for Phase 2):
 
 - mDNS discovery (`Discovery::Mdns` — ADR-0016a §D6, Phase 1.5 opt-in
