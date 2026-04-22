@@ -43,10 +43,13 @@
 pub mod client;
 pub mod config;
 pub mod error;
+pub mod health;
 pub mod models;
 pub mod peers;
 pub mod resources;
 pub mod retry;
+pub mod session;
+pub mod token_book;
 
 pub use client::{SeedClient, SeedClientBuilder};
 pub use config::{Failover, Routing, SeedAuth, SeedTls, Timeouts};
@@ -55,4 +58,8 @@ pub use models::{
     PairStatus, Status, StoreIngest, StoreIngestAck, StoreIngestEntry, StoreQuery, StoreQueryHit,
     StoreQueryResult, StoreStatus, WitnessChain,
 };
-pub use peers::{Endpoint, PeerSet};
+pub use peers::{Endpoint, Peer, PeerErrorClass, PeerSet, PeerState};
+pub use session::{
+    SeedSession, SessionCustody, SessionOta, SessionPair, SessionStore, SessionWitness,
+};
+pub use token_book::{InMemoryTokenBook, SecretString, SharedTokenBook, TokenBook};

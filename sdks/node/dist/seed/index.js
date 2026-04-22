@@ -499,14 +499,15 @@ var SeedClient = class {
   async request(method, path, opts = {}) {
     const peer = this.peers[0];
     const url = buildUrl(peer.baseUrl, path, opts.query);
-    const idempotent = opts.idempotent ?? (method.toUpperCase() === "GET" || method.toUpperCase() === "HEAD");
+    const methodUpper = method.toUpperCase();
+    const idempotent = opts.idempotent ?? (methodUpper === "GET" || methodUpper === "HEAD");
     return runWithRetry(
-      async () => this.singleAttempt(method, url, path, peer, opts),
+      async () => this.singleAttempt(methodUpper, url, path, peer, opts),
       {
         retries: this.config.retries,
         maxElapsedMs: this.config.timeouts.total ?? DEFAULT_MAX_ELAPSED_MS,
         rateLimitRetry: this.config.rateLimitRetry,
-        method,
+        method: methodUpper,
         idempotent,
         logger: this.config.logger
       },
@@ -525,7 +526,7 @@ var SeedClient = class {
       headers["X-API-Key"] = this.config.apiKey;
     }
     const init = { method, headers };
-    if (opts.body !== void 0 && method.toUpperCase() !== "GET" && method.toUpperCase() !== "HEAD") {
+    if (opts.body !== void 0 && method !== "GET" && method !== "HEAD") {
       headers["Content-Type"] = "application/json";
       init.body = JSON.stringify(opts.body);
     }

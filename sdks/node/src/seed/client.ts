@@ -134,16 +134,20 @@ export class SeedClient {
     const peer = this.peers[0];
     const url = buildUrl(peer.baseUrl, path, opts.query);
 
+    // Normalize method once per request; hot path used to call
+    // `method.toUpperCase()` 4x (perf-note: was a no-op on GETs but
+    // measurable for POSTs with long method strings).
+    const methodUpper = method.toUpperCase();
     const idempotent =
-      opts.idempotent ?? (method.toUpperCase() === "GET" || method.toUpperCase() === "HEAD");
+      opts.idempotent ?? (methodUpper === "GET" || methodUpper === "HEAD");
 
     return runWithRetry(
-      async () => this.singleAttempt<T>(method, url, path, peer, opts),
+      async () => this.singleAttempt<T>(methodUpper, url, path, peer, opts),
       {
         retries: this.config.retries,
         maxElapsedMs: this.config.timeouts.total ?? DEFAULT_MAX_ELAPSED_MS,
         rateLimitRetry: this.config.rateLimitRetry,
-        method,
+        method: methodUpper,
         idempotent,
         logger: this.config.logger,
       },
@@ -170,7 +174,8 @@ export class SeedClient {
     }
 
     const init: RequestInit & { duplex?: string } = { method, headers };
-    if (opts.body !== undefined && method.toUpperCase() !== "GET" && method.toUpperCase() !== "HEAD") {
+    // `method` here is already upper-cased by `request()` above.
+    if (opts.body !== undefined && method !== "GET" && method !== "HEAD") {
       headers["Content-Type"] = "application/json";
       init.body = JSON.stringify(opts.body);
     }

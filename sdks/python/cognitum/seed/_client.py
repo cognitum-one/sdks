@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 from types import TracebackType
 
 import httpx
@@ -62,10 +62,17 @@ def map_error(
     response: httpx.Response,
     *,
     correlation_id: str | None = None,
+    body: Mapping[str, Any] | None = None,
 ) -> CognitumError:
-    """Translate a 4xx/5xx response to the ADR-0004 taxonomy."""
+    """Translate a 4xx/5xx response to the ADR-0004 taxonomy.
+
+    ``body`` may be pre-parsed by the caller (the request loop already
+    calls :func:`safe_json` for retry-hint extraction) — passing it here
+    avoids a second JSON parse per error response.
+    """
     status = response.status_code
-    body = safe_json(response)
+    if body is None:
+        body = safe_json(response)
     raw = response.content if response.content else None
 
     if body is not None:
@@ -219,14 +226,17 @@ class _SyncTransport:
             else:
                 if response.status_code < 400:
                     return self._decode(response, correlation_id=correlation_id)
-                last_exc = map_error(response, correlation_id=correlation_id)
+                # Parse body once and thread through both error-mapping and
+                # retry-hint extraction (was JSON-parsed twice per 4xx/5xx).
+                err_body = safe_json(response)
+                last_exc = map_error(
+                    response, correlation_id=correlation_id, body=err_body,
+                )
                 if isinstance(last_exc, AuthError):
                     auth_fail_count += 1
                     if auth_fail_count >= 3:
                         raise last_exc
-                server_hint = parse_retry_after(
-                    response.headers, safe_json(response)
-                )
+                server_hint = parse_retry_after(response.headers, err_body)
                 retriable_now = last_exc.retriable and is_retriable(
                     method=method_u,
                     status_code=response.status_code,

@@ -1,8 +1,15 @@
 //! Peer set management.
 //!
-//! Phase 1 ships single-seed mode: a [`PeerSet`] of exactly one endpoint.
-//! The API shape carries a `Vec<Endpoint>` so Phase 1.5 mesh-mode can
-//! extend without a breaking change.
+//! Phase 1.5 ships mesh-mode: a [`PeerSet`] of one or more peers with
+//! per-peer health / latency tracking. Each [`Peer`] carries its own
+//! `state`, `latency_ema_ms`, and `last_used_at` so the routing layer
+//! can pick closest-first and cycle on failure per ADR-0016a §D2/§D3.
+//!
+//! The public types (`Endpoint`, `PeerSet`) continue to expose the
+//! Phase 1 surface; mutable internals live behind `&mut self` methods
+//! on `PeerSet` that are called from `SeedInner` under a `Mutex`.
+
+use std::time::{Duration, Instant};
 
 use url::Url;
 
@@ -13,13 +20,13 @@ use crate::error::Error;
 /// Base URL is of the form `https://<host>:<port>` — no trailing slash, no
 /// `/api/v1` prefix (resources add their own path). If you pass a URL with
 /// a path, the path is kept verbatim and resources concatenate onto it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Endpoint {
     pub(crate) url: Url,
 }
 
 impl Endpoint {
-    /// Parse `raw` as an absolute HTTPS URL. Returns `Error::Validation`
+    /// Parse `raw` as an absolute HTTP(S) URL. Returns `Error::Validation`
     /// for non-HTTP(S) schemes, missing host, or unparseable input.
     pub fn parse(raw: &str) -> Result<Self, Error> {
         let url = Url::parse(raw)
@@ -54,70 +61,249 @@ impl Endpoint {
             .join(&full)
             .map_err(|e| Error::Validation(format!("bad seed path `{path}`: {e}")))
     }
+
+    /// Canonical key used by [`TokenBook`](super::token_book::TokenBook)
+    /// and the routing layer. Strips a trailing slash for stability.
+    pub(crate) fn key(&self) -> String {
+        let s = self.url.as_str();
+        s.trim_end_matches('/').to_owned()
+    }
 }
 
-/// The ordered list of endpoints a [`SeedClient`](super::SeedClient)
-/// talks to.
-///
-/// Phase 1 invariant: `len() == 1`. Phase 1.5 relaxes to `len() >= 1`
-/// under [`Routing::Balanced`](super::config::Routing::Balanced) or
-/// [`Routing::Failover`](super::config::Routing::Failover).
+/// Routing-layer peer health state (ADR-0016a §D7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerState {
+    /// Last observation succeeded.
+    Healthy,
+    /// 1-2 consecutive failures; still routable.
+    Degraded,
+    /// 3+ consecutive failures; skipped unless all peers are unhealthy.
+    Unhealthy,
+}
+
+impl PeerState {
+    fn rank(self) -> u8 {
+        match self {
+            PeerState::Healthy => 0,
+            PeerState::Degraded => 1,
+            PeerState::Unhealthy => 2,
+        }
+    }
+}
+
+/// Error class observed on a peer-level request outcome. Informs the
+/// failure bookkeeping in [`PeerSet::mark_failure`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerErrorClass {
+    /// TCP / TLS / DNS / connect refused — peer looks offline.
+    Network,
+    /// Connect / read timeout — peer looks offline.
+    Timeout,
+    /// 5xx family (500 / 502 / 504) — peer misbehaving.
+    Server5xx,
+    /// 503 Service Unavailable — cycle immediately (ADR-0016a §D3).
+    ServiceUnavailable,
+}
+
+/// One configured seed endpoint plus its latency / health state.
 #[derive(Debug, Clone)]
-pub struct PeerSet {
-    endpoints: Vec<Endpoint>,
+pub struct Peer {
+    /// Constructor-order index (stable regardless of sort order).
+    pub list_index: usize,
+    /// Endpoint URL.
+    pub endpoint: Endpoint,
+    /// Routing-layer health.
+    pub state: PeerState,
+    /// Exponential moving average of observed latency. `None` until the
+    /// first success on this peer.
+    pub latency_ema_ms: Option<f64>,
+    /// Instant of the last dispatch attempt (success or failure).
+    pub last_used_at: Option<Instant>,
+    /// Consecutive failures — Degraded at >=1, Unhealthy at >=3.
+    pub consecutive_failures: u32,
 }
 
-impl PeerSet {
-    /// Single-endpoint constructor — Phase 1 path.
-    pub fn single(endpoint: Endpoint) -> Self {
+impl Peer {
+    fn new(list_index: usize, endpoint: Endpoint) -> Self {
         Self {
-            endpoints: vec![endpoint],
+            list_index,
+            endpoint,
+            state: PeerState::Healthy,
+            latency_ema_ms: None,
+            last_used_at: None,
+            consecutive_failures: 0,
         }
     }
 
-    /// Multi-endpoint constructor — Phase 1.5. Phase 1 rejects with
-    /// `Error::Validation` when more than one endpoint is supplied.
-    pub fn try_from_many(endpoints: Vec<Endpoint>) -> Result<Self, Error> {
+    /// Stable sort key: (state rank, latency EMA, list_index). Peers with
+    /// no EMA sort after peers with a known-fast latency.
+    fn sort_key(&self) -> (u8, u64, usize) {
+        let ema = self
+            .latency_ema_ms
+            .map(|v| (v.max(0.0) * 1_000.0) as u64)
+            .unwrap_or(u64::MAX / 2);
+        (self.state.rank(), ema, self.list_index)
+    }
+}
+
+/// Ordered peer table. Phase 1 accepts one endpoint; Phase 1.5 accepts
+/// 1..N and maintains health/latency per peer.
+#[derive(Debug, Clone)]
+pub struct PeerSet {
+    peers: Vec<Peer>,
+}
+
+impl PeerSet {
+    /// Single-endpoint constructor. Equivalent to
+    /// [`PeerSet::new`](Self::new) with a one-element list.
+    pub fn single(endpoint: Endpoint) -> Self {
+        Self {
+            peers: vec![Peer::new(0, endpoint)],
+        }
+    }
+
+    /// Phase 1.5 constructor — accepts 1..N endpoints. Order is preserved
+    /// as `list_index`.
+    pub fn new(endpoints: Vec<Endpoint>) -> Result<Self, Error> {
         if endpoints.is_empty() {
             return Err(Error::Validation(
                 "PeerSet requires at least one endpoint".into(),
             ));
         }
-        Ok(Self { endpoints })
+        let peers = endpoints
+            .into_iter()
+            .enumerate()
+            .map(|(i, ep)| Peer::new(i, ep))
+            .collect();
+        Ok(Self { peers })
     }
 
-    /// The endpoint selected by the current routing strategy. Phase 1
-    /// always returns the first element (equivalent to `Routing::Pinned`).
+    /// Phase 1 alias retained for back-compat with earlier code paths.
+    pub fn try_from_many(endpoints: Vec<Endpoint>) -> Result<Self, Error> {
+        Self::new(endpoints)
+    }
+
+    /// The first endpoint (constructor order). Kept for single-peer
+    /// call sites that predate mesh routing.
     pub fn primary(&self) -> &Endpoint {
-        &self.endpoints[0]
+        &self.peers[0].endpoint
     }
 
-    /// Total count — Phase 1 always returns 1.
+    /// Total peer count.
     pub fn len(&self) -> usize {
-        self.endpoints.len()
+        self.peers.len()
     }
 
-    /// Whether the peer set is empty. Always `false` for Phase 1 — the
-    /// constructors reject empty lists — but present to satisfy the
+    /// True when the configured list is empty. Always `false` in practice —
+    /// the constructors reject empty lists — but present for the
     /// `len_without_is_empty` lint.
     pub fn is_empty(&self) -> bool {
-        self.endpoints.is_empty()
+        self.peers.is_empty()
     }
 
-    /// Iterator for Phase 1.5 routing (Balanced / Failover).
-    pub fn iter(&self) -> impl Iterator<Item = &Endpoint> {
-        self.endpoints.iter()
-    }
-
-    /// True if more than one peer is configured (Phase 1.5 signal).
+    /// Whether more than one peer is configured.
     pub fn is_mesh(&self) -> bool {
-        self.endpoints.len() > 1
+        self.peers.len() > 1
+    }
+
+    /// Iterate endpoints in constructor order.
+    pub fn iter(&self) -> impl Iterator<Item = &Endpoint> {
+        self.peers.iter().map(|p| &p.endpoint)
+    }
+
+    /// Immutable view of all peers (for introspection / health probe).
+    pub fn peers(&self) -> &[Peer] {
+        &self.peers
+    }
+
+    /// Pick the next peer to dispatch against per closest-first ordering.
+    /// Prefers `Healthy` → `Degraded`; falls back to `Unhealthy` only if
+    /// every peer is unhealthy (so the request still attempts something).
+    pub fn pick(&self) -> &Peer {
+        let mut best: Option<&Peer> = None;
+        for p in &self.peers {
+            match best {
+                None => best = Some(p),
+                Some(current) if p.sort_key() < current.sort_key() => best = Some(p),
+                _ => {}
+            }
+        }
+        best.expect("PeerSet invariant: at least one peer")
+    }
+
+    /// Pick the first peer that matches `wanted_key`, if any.
+    pub fn find_by_key(&self, wanted_key: &str) -> Option<&Peer> {
+        self.peers.iter().find(|p| p.endpoint.key() == wanted_key)
+    }
+
+    /// Next peer to try after `failed` has returned a cycling-eligible
+    /// error. Skips `failed` by `list_index`; scans remaining peers in
+    /// the same closest-first order, preferring healthier / faster /
+    /// earlier-listed peers.
+    pub fn next_after(&self, failed: &Peer) -> Option<&Peer> {
+        let mut best: Option<&Peer> = None;
+        for p in &self.peers {
+            if p.list_index == failed.list_index {
+                continue;
+            }
+            match best {
+                None => best = Some(p),
+                Some(current) if p.sort_key() < current.sort_key() => best = Some(p),
+                _ => {}
+            }
+        }
+        best
+    }
+
+    /// Record a successful outcome: update EMA, clear failure counter,
+    /// promote state to `Healthy`.
+    pub fn mark_success(&mut self, peer_key: &str, latency: Duration) {
+        if let Some(p) = self.peer_mut(peer_key) {
+            let ms = latency.as_secs_f64() * 1_000.0;
+            p.latency_ema_ms = Some(match p.latency_ema_ms {
+                None => ms,
+                Some(prev) => 0.8 * prev + 0.2 * ms,
+            });
+            p.consecutive_failures = 0;
+            p.state = PeerState::Healthy;
+            p.last_used_at = Some(Instant::now());
+        }
+    }
+
+    /// Record a failure. `class` determines the state transition:
+    ///
+    /// * `ServiceUnavailable` — immediate `Unhealthy` (lockdown semantics).
+    /// * `Network` / `Timeout` / `Server5xx` — bumps
+    ///   `consecutive_failures`; `Degraded` at 1-2, `Unhealthy` at >=3.
+    pub fn mark_failure(&mut self, peer_key: &str, class: PeerErrorClass) {
+        if let Some(p) = self.peer_mut(peer_key) {
+            p.consecutive_failures = p.consecutive_failures.saturating_add(1);
+            p.last_used_at = Some(Instant::now());
+            p.state = match class {
+                PeerErrorClass::ServiceUnavailable => PeerState::Unhealthy,
+                _ => {
+                    if p.consecutive_failures >= 3 {
+                        PeerState::Unhealthy
+                    } else {
+                        PeerState::Degraded
+                    }
+                }
+            };
+        }
+    }
+
+    fn peer_mut(&mut self, peer_key: &str) -> Option<&mut Peer> {
+        self.peers.iter_mut().find(|p| p.endpoint.key() == peer_key)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ep(url: &str) -> Endpoint {
+        Endpoint::parse(url).unwrap()
+    }
 
     #[test]
     fn parse_rejects_ws() {
@@ -148,15 +334,107 @@ mod tests {
 
     #[test]
     fn single_peerset_is_len_one() {
-        let ep = Endpoint::parse("https://seed:8443").unwrap();
-        let ps = PeerSet::single(ep);
+        let ps = PeerSet::single(ep("https://seed:8443"));
         assert_eq!(ps.len(), 1);
         assert!(!ps.is_mesh());
     }
 
     #[test]
-    fn try_from_many_rejects_empty() {
-        let err = PeerSet::try_from_many(vec![]).unwrap_err();
+    fn new_rejects_empty() {
+        let err = PeerSet::new(vec![]).unwrap_err();
         assert!(matches!(err, Error::Validation(_)));
+    }
+
+    #[test]
+    fn pick_prefers_lower_list_index_when_no_latency() {
+        let ps = PeerSet::new(vec![
+            ep("https://a:8443"),
+            ep("https://b:8443"),
+            ep("https://c:8443"),
+        ])
+        .unwrap();
+        let picked = ps.pick();
+        assert_eq!(picked.list_index, 0);
+    }
+
+    #[test]
+    fn pick_prefers_lower_latency_ema() {
+        let mut ps = PeerSet::new(vec![ep("https://a:8443"), ep("https://b:8443")]).unwrap();
+        ps.mark_success("https://a:8443", Duration::from_millis(100));
+        ps.mark_success("https://b:8443", Duration::from_millis(10));
+        let picked = ps.pick();
+        assert_eq!(picked.list_index, 1);
+    }
+
+    #[test]
+    fn next_after_cycles() {
+        let ps = PeerSet::new(vec![ep("https://a:8443"), ep("https://b:8443")]).unwrap();
+        let first = ps.pick();
+        let next = ps.next_after(first).expect("second peer");
+        assert_ne!(first.list_index, next.list_index);
+    }
+
+    #[test]
+    fn next_after_single_peer_returns_none() {
+        let ps = PeerSet::new(vec![ep("https://a:8443")]).unwrap();
+        let peer = ps.pick();
+        assert!(ps.next_after(peer).is_none());
+    }
+
+    #[test]
+    fn mark_failure_degrades_then_unhealthy() {
+        let mut ps = PeerSet::new(vec![ep("https://a:8443"), ep("https://b:8443")]).unwrap();
+        let key = "https://a:8443";
+        ps.mark_failure(key, PeerErrorClass::Network);
+        assert_eq!(ps.find_by_key(key).unwrap().state, PeerState::Degraded);
+        ps.mark_failure(key, PeerErrorClass::Network);
+        ps.mark_failure(key, PeerErrorClass::Network);
+        assert_eq!(ps.find_by_key(key).unwrap().state, PeerState::Unhealthy);
+    }
+
+    #[test]
+    fn mark_failure_503_is_immediate_unhealthy() {
+        let mut ps = PeerSet::new(vec![ep("https://a:8443"), ep("https://b:8443")]).unwrap();
+        ps.mark_failure("https://a:8443", PeerErrorClass::ServiceUnavailable);
+        assert_eq!(
+            ps.find_by_key("https://a:8443").unwrap().state,
+            PeerState::Unhealthy
+        );
+    }
+
+    #[test]
+    fn unhealthy_peers_skipped_but_still_pickable_when_all_unhealthy() {
+        let mut ps = PeerSet::new(vec![ep("https://a:8443"), ep("https://b:8443")]).unwrap();
+        ps.mark_failure("https://a:8443", PeerErrorClass::ServiceUnavailable);
+        // b is still healthy — pick prefers b.
+        assert_eq!(ps.pick().list_index, 1);
+        ps.mark_failure("https://b:8443", PeerErrorClass::ServiceUnavailable);
+        // both unhealthy — still return something (closest-first fallback).
+        let picked = ps.pick();
+        assert!(picked.list_index == 0 || picked.list_index == 1);
+    }
+
+    #[test]
+    fn mark_success_clears_unhealthy() {
+        let mut ps = PeerSet::new(vec![ep("https://a:8443")]).unwrap();
+        ps.mark_failure("https://a:8443", PeerErrorClass::Network);
+        ps.mark_failure("https://a:8443", PeerErrorClass::Network);
+        ps.mark_failure("https://a:8443", PeerErrorClass::Network);
+        assert_eq!(
+            ps.find_by_key("https://a:8443").unwrap().state,
+            PeerState::Unhealthy
+        );
+        ps.mark_success("https://a:8443", Duration::from_millis(5));
+        assert_eq!(
+            ps.find_by_key("https://a:8443").unwrap().state,
+            PeerState::Healthy
+        );
+    }
+
+    #[test]
+    fn endpoint_key_strips_trailing_slash() {
+        let a = Endpoint::parse("https://a:8443/").unwrap();
+        let b = Endpoint::parse("https://a:8443").unwrap();
+        assert_eq!(a.key(), b.key());
     }
 }

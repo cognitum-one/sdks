@@ -13,6 +13,12 @@ Usage::
         products = await client.catalog.browse()
 """
 
+# perf-note: these eager imports make `from cognitum.seed import SeedClient`
+# transitively load the cloud surface (catalog, orders, brain, mcp,
+# async_client, _http, types) — ~11 extra modules, ~50 ms cold-start hit
+# for seed-only users. Fix options: (a) lazy `__getattr__` on the root
+# package, (b) drop seed re-exports from root. Either is a minor breakage
+# for unusual import patterns, so routed via ADR rather than changed here.
 from cognitum.async_client import AsyncCognitum
 from cognitum.client import Cognitum
 from cognitum.errors import (

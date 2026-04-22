@@ -7,6 +7,56 @@
      pass. Full `src/auth.rs` split is deferred. Team Rust's Phase 1
      `src/seed/**` ships 52 green tests (33 lib + 19 wiremock). OQ-1 CLOSED. -->
 
+## Phase 1.5 delivery (2026-04-22)
+
+Mesh routing landed on 2026-04-22, executing ADR-0017 against the Rust
+tree. Concrete deliverables relative to the Phase 1 snapshot above:
+
+- `src/seed/peers.rs` — `PeerSet` extended to 1..N with per-peer
+  `PeerState`, `latency_ema_ms`, `last_used_at`, `consecutive_failures`.
+  `pick` / `next_after` / `mark_success` / `mark_failure` per ADR-0016a
+  §D2/§D3/§D7. Earlier Phase 1 "mesh-routing not implemented" reject
+  path removed.
+- `src/seed/token_book.rs` — new `TokenBook` trait + `InMemoryTokenBook`
+  default (ADR-0016a §D5). `SecretString` zeroes on drop. Builder
+  accessor `ClientBuilder::token_book` plumbed.
+- `src/seed/client.rs` — `SeedClient::request` rewrites onto the new
+  `PeerSet`. Failover state machine cycles on `NetworkError` / `5xx` /
+  `503`, pins on `429`, surfaces `Auth` / `Validation` / `NotFound`
+  immediately. ADR-0005 60 s total budget is respected across ALL peer
+  attempts (not multiplied).
+- `src/seed/session.rs` — `SeedClient::session()` returns a peer-pinned
+  `SeedSession<'_>` mirroring the resource accessors (§D9).
+- `src/seed/health.rs` — opt-in active probe via
+  `ClientBuilder::health_interval(Duration)`; spawns a `tokio` task that
+  stops when the client drops via a `oneshot` shutdown channel (§D7).
+- `tests/seed_mesh.rs` — new integration suite; all 7 ADR-0017 §5 tests
+  (`test_mesh_single_peer_behaves_like_single_mode`,
+  `test_mesh_two_peers_round_robin_for_reads`, `test_mesh_cycles_on_5xx`,
+  `test_mesh_pins_on_429`, `test_mesh_session_stickiness`,
+  `test_mesh_token_book_per_peer`,
+  `test_mesh_health_probe_degrades_unhealthy_peer`) green against
+  multi-peer `wiremock` fixtures.
+
+Test totals (`cargo test --features seed`): 19 pre-existing
+`seed_unit` + 7 new `seed_mesh` integration tests = 26 green seed
+integration tests; lib unit tests 53/54 (one pre-existing cloud-side
+`invalid_pem_is_surfaced_as_validation_error` failure in `src/client.rs`
+is tracked separately — outside the Phase 1.5 mesh scope). `cargo fmt
+--all --check` clean; `cargo clippy --features seed --tests -- -D
+warnings` clean.
+
+Not yet landed (explicitly out of Phase 1.5 scope, tracked for Phase 2):
+
+- mDNS discovery (`Discovery::Mdns` — ADR-0016a §D6, Phase 1.5 opt-in
+  upgrade path).
+- Mesh-observability resource (`client.mesh().status/peers/swarm/health`
+  — ADR-0016a §D8 Phase 1 surface addendum).
+- Per-call override args (`peer:` / `prefer:` / `consistency:`) —
+  requires a per-call options bag and is tracked against ADR-0016b
+  §"Per-call knobs".
+- `client.rediscover()` explicit re-resolve helper.
+
 - **Status:** Proposed
 - **Date:** 2026-04-22
 - **Deciders:** SDK WG (Rust lead + cross-cutting)

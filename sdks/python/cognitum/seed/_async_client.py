@@ -127,14 +127,17 @@ class _AsyncTransport:
             else:
                 if response.status_code < 400:
                     return self._decode(response, correlation_id=correlation_id)
-                last_exc = map_error(response, correlation_id=correlation_id)
+                # Parse body once and thread through both error-mapping and
+                # retry-hint extraction (was JSON-parsed twice per 4xx/5xx).
+                err_body = safe_json(response)
+                last_exc = map_error(
+                    response, correlation_id=correlation_id, body=err_body,
+                )
                 if isinstance(last_exc, AuthError):
                     auth_fail_count += 1
                     if auth_fail_count >= 3:
                         raise last_exc
-                server_hint = parse_retry_after(
-                    response.headers, safe_json(response)
-                )
+                server_hint = parse_retry_after(response.headers, err_body)
                 retriable_now = last_exc.retriable and is_retriable(
                     method=method_u,
                     status_code=response.status_code,

@@ -16,10 +16,12 @@ does not reuse `crate::Client` — cloud and seed have different
 auth/host defaults). Summary:
 
 - **Builder**: `SeedClient::builder().endpoint(...).auth(...).tls(...).routing(Pinned).build()?`
-- **Mesh API shape locked**: `.endpoints(&[...])`, `Routing::{Balanced,Failover}`,
-  and multi-peer `PeerSet::try_from_many` are all present but return
-  `Error::Validation("not_implemented: feature `mesh-routing` …")` at
-  `build()` time. Flipping these to real implementations is Phase 1.5.
+- **Mesh API shape locked**: `.endpoints(&[...])`, `Routing::Session`
+  (Phase 1.5 default, closest-first + sticky), and multi-peer
+  `PeerSet::new` now route real traffic. Phase 1.5 landed 2026-04-22 —
+  see ADR-0014c §"Phase 1.5 delivery" for the 7-test integration matrix.
+  `Routing::{Pinned, Balanced, Failover}` remain as constructor aliases
+  for back-compat and behave as `Session` on the current router.
 - **TLS**: `SeedTls::{System, Pinned(Vec<u8>), Insecure}`. Insecure logs
   once per process via `eprintln!`. `Pinned` disables the system trust
   store and plumbs through `reqwest::Certificate::from_pem`.

@@ -48,15 +48,19 @@ pub enum SeedTls {
 
 /// Routing strategy across a [`PeerSet`](super::peers::PeerSet).
 ///
-/// Only [`Routing::Pinned`] is implemented in Phase 1; the other variants
-/// exist so the builder signature does not change when mesh-mode ships.
+/// Phase 1.5 default is `Session` (closest-first, sticky reads per
+/// ADR-0016a §D2). `Pinned`, `Balanced`, and `Failover` are retained so
+/// existing call sites that set them explicitly keep compiling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum Routing {
-    /// Always target the first endpoint in the peer set. Phase 1 default.
+    /// Closest-first with session-sticky reads. Phase 1.5 default.
     #[default]
+    Session,
+    /// Always target the first endpoint in the peer set. Phase 1 alias;
+    /// behaves identically to `Session` when N == 1.
     Pinned,
-    /// Round-robin across peers (Phase 1.5).
+    /// Best-live peer with per-call round-robin opt-in (Phase 1.5).
     Balanced,
     /// Primary endpoint with failover to alternates on error (Phase 1.5).
     Failover,

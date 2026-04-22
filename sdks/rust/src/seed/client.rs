@@ -5,17 +5,18 @@
 //! `X-API-Key` and `https://api.cognitum.one`, and the seed has a
 //! different auth header (`X-Pairing-Token`) and host (`https://<seed>:8443`).
 //!
-//! Phase 1 delivers:
+//! Phase 1.5 delivery:
 //!
-//! * Single-endpoint construction.
-//! * `SeedTls::{System, Pinned, Insecure}` — insecure logs once per process.
-//! * `Routing::Pinned` — mesh variants return `Error::Validation`
-//!   ("not_implemented: feature `mesh-routing`").
-//! * Shared request loop with retry, equal-jitter backoff, `Retry-After`
-//!   parsing.
+//! * 1..N endpoints via `.endpoint(...)` / `.endpoints([...])`.
+//! * Per-peer `TokenBook` (`InMemoryTokenBook` default).
+//! * Session-sticky routing (closest-first) with failover that cycles on
+//!   `NetworkError` / `5xx` / `503`, pins on `429`, and surfaces auth /
+//!   validation / not-found immediately.
+//! * Opt-in active health probe via `.health_interval(Duration)`.
+//! * `.session()` handle that pins one peer for the life of the handle.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use reqwest::{Method, StatusCode};
@@ -26,11 +27,14 @@ use crate::error::Error;
 
 use super::config::{Routing, SeedAuth, SeedTls, Timeouts};
 use super::error as seed_err;
-use super::peers::{Endpoint, PeerSet};
+use super::health::HealthHandle;
+use super::peers::{Endpoint, Peer, PeerErrorClass, PeerSet};
 use super::resources::{
     CustodyResource, OtaResource, PairResource, StoreResource, WitnessResource,
 };
 use super::retry;
+use super::session::SeedSession;
+use super::token_book::{SecretString, SharedTokenBook, TokenBook};
 
 /// One-shot process-global flag for the insecure-TLS warning.
 static INSECURE_WARN: AtomicBool = AtomicBool::new(false);
@@ -46,15 +50,20 @@ pub struct SeedClient {
 #[derive(Debug)]
 pub(crate) struct SeedInner {
     pub(crate) http: reqwest::Client,
-    pub(crate) peers: PeerSet,
+    pub(crate) peers: Arc<Mutex<PeerSet>>,
     pub(crate) auth: SeedAuth,
     pub(crate) timeouts: Timeouts,
     pub(crate) max_retries: u32,
-    /// Current routing mode. Phase 1 always stores `Routing::Pinned`;
-    /// retained so Phase 1.5 can swap the selection logic without
-    /// changing the struct layout.
+    /// Routing mode captured at build-time. Current impl routes per D2
+    /// semantics regardless of the concrete variant, but the field is
+    /// kept so per-call override in Phase 2 has somewhere to read from.
     #[allow(dead_code)]
     pub(crate) routing: Routing,
+    pub(crate) token_book: SharedTokenBook,
+    /// Active health probe handle. `None` when `.health_interval` is
+    /// unset. Dropped with the client to stop the task.
+    #[allow(dead_code)]
+    pub(crate) health: Option<HealthHandle>,
 }
 
 impl SeedClient {
@@ -90,6 +99,39 @@ impl SeedClient {
         OtaResource { client: self }
     }
 
+    /// Open a [`SeedSession`] pinned to the currently closest-first peer.
+    ///
+    /// The session holds the pin for its lifetime; all its resource calls
+    /// go to the same peer unless the peer fails hard, in which case the
+    /// failover state machine transparently cycles (per ADR-0016a §D3).
+    pub fn session(&self) -> SeedSession<'_> {
+        let pinned_peer = {
+            let guard = self.inner.peers.lock().expect("peers lock poisoned");
+            guard.pick().endpoint.key()
+        };
+        SeedSession {
+            client: self,
+            pinned_peer,
+        }
+    }
+
+    /// Snapshot view of the SDK-local peer table (ADR-0016a §D7 —
+    /// `client.peers()`).
+    pub fn peers(&self) -> Vec<Peer> {
+        let guard = self.inner.peers.lock().expect("peers lock poisoned");
+        guard.peers().to_vec()
+    }
+
+    /// Introspection helper for tests: look up a pairing token by
+    /// canonical peer URL. Returns `None` when the book has no entry.
+    #[doc(hidden)]
+    pub fn token_for_peer(&self, peer_key: &str) -> Option<String> {
+        self.inner
+            .token_book
+            .get(peer_key)
+            .map(|s| s.as_str().to_owned())
+    }
+
     // -- top-level conveniences --------------------------------------------
 
     /// `GET /api/v1/status` — combined device / optimizer / delivery
@@ -111,7 +153,8 @@ impl SeedClient {
     }
 
     pub(crate) async fn request_get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
-        self.request::<T, ()>(Method::GET, path, None, false).await
+        self.request::<T, ()>(Method::GET, path, None, false, None)
+            .await
     }
 
     pub(crate) async fn request_post<T, B>(
@@ -124,13 +167,58 @@ impl SeedClient {
         T: DeserializeOwned,
         B: Serialize + ?Sized,
     {
-        self.request::<T, &B>(Method::POST, path, Some(body), idempotent)
+        self.request::<T, &B>(Method::POST, path, Some(body), idempotent, None)
             .await
     }
 
     pub(crate) async fn request_delete<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
-        self.request::<T, ()>(Method::DELETE, path, None, false)
+        self.request::<T, ()>(Method::DELETE, path, None, false, None)
             .await
+    }
+
+    pub(crate) async fn request_on_peer_get<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        pinned: Option<&str>,
+    ) -> Result<T, Error> {
+        self.request::<T, ()>(Method::GET, path, None, false, pinned)
+            .await
+    }
+
+    pub(crate) async fn request_on_peer_post<T, B>(
+        &self,
+        path: &str,
+        body: &B,
+        idempotent: bool,
+        pinned: Option<&str>,
+    ) -> Result<T, Error>
+    where
+        T: DeserializeOwned,
+        B: Serialize + ?Sized,
+    {
+        self.request::<T, &B>(Method::POST, path, Some(body), idempotent, pinned)
+            .await
+    }
+
+    /// Pick a peer — prefer `pinned` if supplied, else use
+    /// [`PeerSet::pick`]. Returns the owned endpoint so we don't hold
+    /// the peers lock across awaits.
+    fn pick_peer(&self, pinned: Option<&str>) -> Result<Endpoint, Error> {
+        let guard = self.inner.peers.lock().map_err(|_| Error::Api {
+            code: 0,
+            message: "seed: peers lock poisoned".into(),
+        })?;
+        let ep = match pinned.and_then(|k| guard.find_by_key(k)) {
+            Some(p) => p.endpoint.clone(),
+            None => guard.pick().endpoint.clone(),
+        };
+        Ok(ep)
+    }
+
+    fn next_peer(&self, failed_key: &str) -> Option<Endpoint> {
+        let guard = self.inner.peers.lock().ok()?;
+        let failed_peer = guard.find_by_key(failed_key)?.clone();
+        guard.next_after(&failed_peer).map(|p| p.endpoint.clone())
     }
 
     async fn request<T, B>(
@@ -139,6 +227,7 @@ impl SeedClient {
         path: &str,
         body: Option<B>,
         idempotent: bool,
+        pinned: Option<&str>,
     ) -> Result<T, Error>
     where
         T: DeserializeOwned,
@@ -146,23 +235,33 @@ impl SeedClient {
     {
         let started = Instant::now();
         let mut attempt: u32 = 0;
-
-        // Phase 1: always the primary endpoint. Mesh routing is rejected
-        // at build time, so `PeerSet::primary()` is the single peer.
-        let endpoint = self.inner.peers.primary();
-        let url = endpoint.join_api(path)?;
+        let mut peer = self.pick_peer(pinned)?;
+        // Track how many distinct peers we've tried during this logical
+        // request so we can surface the last error instead of looping
+        // through an unbounded mesh.
+        let total_peers = self.peer_count();
+        let mut peers_tried: usize = 0;
+        let mut last_err: Option<Error> = None;
 
         loop {
             if started.elapsed() > self.inner.timeouts.total {
-                return Err(Error::Api {
+                return Err(last_err.unwrap_or(Error::Api {
                     code: 0,
                     message: "seed: total deadline exceeded".into(),
-                });
+                }));
             }
+
+            let peer_key = peer.key();
+            let url = peer.join_api(path)?;
+            let call_started = Instant::now();
 
             let mut req = self.inner.http.request(method.clone(), url.clone());
 
-            if let SeedAuth::PairingToken(tok) = &self.inner.auth {
+            // Per-peer pairing token from TokenBook wins over the
+            // client-wide SeedAuth (ADR-0016a §D5).
+            if let Some(tok) = self.inner.token_book.get(&peer_key) {
+                req = req.header("X-Pairing-Token", tok.as_str());
+            } else if let SeedAuth::PairingToken(tok) = &self.inner.auth {
                 req = req.header("X-Pairing-Token", tok.as_str());
             }
             req = req.header(reqwest::header::ACCEPT, "application/json");
@@ -177,56 +276,172 @@ impl SeedClient {
                 Ok(response) => {
                     let status = response.status();
                     if status.is_success() {
-                        // 204 → empty body: try to deserialize a unit tuple;
-                        // fallback to explicit null-body handler.
+                        self.mark_peer_success(&peer_key, call_started.elapsed());
                         return parse_success::<T>(response).await;
                     }
 
-                    // Eagerly read body so retry-after parsing has it.
                     let headers = response.headers().clone();
                     let body_text = response.text().await.unwrap_or_default();
 
-                    if retry::should_retry(&method, status, idempotent)
-                        && attempt < self.inner.max_retries
-                    {
-                        let hint = retry::parse_retry_after(&headers, &body_text);
-                        let delay = delay_for(attempt, hint);
-                        if started.elapsed() + delay > self.inner.timeouts.total {
-                            return Err(seed_err::from_response(status, &body_text, path));
-                        }
-                        tokio::time::sleep(delay).await;
-                        attempt += 1;
-                        continue;
+                    // Classify for peer bookkeeping first.
+                    if let Some(class) = classify_status(status) {
+                        self.mark_peer_failure(&peer_key, class);
                     }
 
-                    return Err(seed_err::from_response(status, &body_text, path));
+                    match dispatch_status_outcome(status) {
+                        StatusOutcome::Cycle => {
+                            peers_tried += 1;
+                            last_err = Some(seed_err::from_response(status, &body_text, path));
+                            if peers_tried >= total_peers {
+                                // All peers tried at least once — fall
+                                // through to ADR-0005 retry on the
+                                // current (last) peer.
+                                if retry::should_retry(&method, status, idempotent)
+                                    && attempt < self.inner.max_retries
+                                {
+                                    let hint = retry::parse_retry_after(&headers, &body_text);
+                                    let delay = delay_for(attempt, hint);
+                                    if started.elapsed() + delay > self.inner.timeouts.total {
+                                        return Err(last_err.take().unwrap_or_else(|| {
+                                            seed_err::from_response(status, &body_text, path)
+                                        }));
+                                    }
+                                    tokio::time::sleep(delay).await;
+                                    attempt += 1;
+                                    continue;
+                                }
+                                return Err(last_err.take().unwrap_or_else(|| {
+                                    seed_err::from_response(status, &body_text, path)
+                                }));
+                            }
+                            match self.next_peer(&peer_key) {
+                                Some(next) => {
+                                    peer = next;
+                                    continue;
+                                }
+                                None => {
+                                    return Err(seed_err::from_response(status, &body_text, path));
+                                }
+                            }
+                        }
+                        StatusOutcome::PinAndBackoff => {
+                            // 429: stay on the same peer, honour ADR-0005
+                            // budget. Do NOT cycle (trust-score protection).
+                            if retry::should_retry(&method, status, idempotent)
+                                && attempt < self.inner.max_retries
+                            {
+                                let hint = retry::parse_retry_after(&headers, &body_text);
+                                let delay = delay_for(attempt, hint);
+                                if started.elapsed() + delay > self.inner.timeouts.total {
+                                    return Err(seed_err::from_response(status, &body_text, path));
+                                }
+                                tokio::time::sleep(delay).await;
+                                attempt += 1;
+                                continue;
+                            }
+                            return Err(seed_err::from_response(status, &body_text, path));
+                        }
+                        StatusOutcome::Surface => {
+                            // 4xx (auth/validation/not-found) or non-cyclable
+                            // 5xx (501). Surface; don't touch peer state.
+                            return Err(seed_err::from_response(status, &body_text, path));
+                        }
+                    }
                 }
                 Err(e) => {
-                    // Transport error. Retry on any method if attempts remain
-                    // and we're still inside the total budget. POST-without-
-                    // idempotency still gets retried on pure connect failures
-                    // per ADR-0005 ("connection refused / TLS failure"),
-                    // which is exactly what surfaces here when the body
-                    // was never accepted.
-                    let retriable = e.is_connect() || e.is_timeout() || e.is_request();
-                    if retriable && attempt < self.inner.max_retries {
+                    let class = if e.is_timeout() {
+                        PeerErrorClass::Timeout
+                    } else {
+                        PeerErrorClass::Network
+                    };
+                    self.mark_peer_failure(&peer_key, class);
+                    last_err = Some(Error::from(reqwest_error_into_transport(e)));
+
+                    peers_tried += 1;
+                    if peers_tried < total_peers {
+                        if let Some(next) = self.next_peer(&peer_key) {
+                            peer = next;
+                            continue;
+                        }
+                    }
+
+                    // All peers attempted. Fall through to ADR-0005 retry
+                    // on the most recent peer for POSTs (if idempotent /
+                    // connection-phase failure) and all other methods.
+                    if attempt < self.inner.max_retries {
                         let delay = retry::compute_delay(
                             attempt,
                             retry::DEFAULT_BASE_MS,
                             retry::DEFAULT_CAP_MS,
                         );
                         if started.elapsed() + delay > self.inner.timeouts.total {
-                            return Err(Error::from(e));
+                            return Err(last_err.take().unwrap_or(Error::Api {
+                                code: 0,
+                                message: "seed: transport exhausted".into(),
+                            }));
                         }
                         tokio::time::sleep(delay).await;
                         attempt += 1;
+                        peers_tried = 0; // reset for this budget round
                         continue;
                     }
-                    return Err(Error::from(e));
+                    return Err(last_err.take().unwrap_or(Error::Api {
+                        code: 0,
+                        message: "seed: transport exhausted".into(),
+                    }));
                 }
             }
         }
     }
+
+    fn peer_count(&self) -> usize {
+        self.inner.peers.lock().map(|g| g.len()).unwrap_or(1)
+    }
+
+    fn mark_peer_success(&self, peer_key: &str, latency: Duration) {
+        if let Ok(mut guard) = self.inner.peers.lock() {
+            guard.mark_success(peer_key, latency);
+        }
+    }
+
+    fn mark_peer_failure(&self, peer_key: &str, class: PeerErrorClass) {
+        if let Ok(mut guard) = self.inner.peers.lock() {
+            guard.mark_failure(peer_key, class);
+        }
+    }
+}
+
+/// High-level status-code disposition for the failover state machine.
+enum StatusOutcome {
+    /// Peer failed in a way that justifies trying another peer.
+    Cycle,
+    /// Keep the same peer and apply ADR-0005 backoff (429).
+    PinAndBackoff,
+    /// Surface to the caller (auth / validation / not-found / 501).
+    Surface,
+}
+
+fn dispatch_status_outcome(status: StatusCode) -> StatusOutcome {
+    match status.as_u16() {
+        500 | 502 | 503 | 504 => StatusOutcome::Cycle,
+        429 => StatusOutcome::PinAndBackoff,
+        // 501 is non-retriable per ADR-0005; surface directly.
+        _ => StatusOutcome::Surface,
+    }
+}
+
+fn classify_status(status: StatusCode) -> Option<PeerErrorClass> {
+    match status.as_u16() {
+        503 => Some(PeerErrorClass::ServiceUnavailable),
+        500 | 502 | 504 => Some(PeerErrorClass::Server5xx),
+        _ => None,
+    }
+}
+
+fn reqwest_error_into_transport(e: reqwest::Error) -> reqwest::Error {
+    // Pass-through: we just want to keep `Error::Http` semantics. Split
+    // out for readability now that the request loop is larger.
+    e
 }
 
 fn delay_for(attempt: u32, server_hint: Option<Duration>) -> Duration {
@@ -244,7 +459,6 @@ async fn parse_success<T: DeserializeOwned>(response: reqwest::Response) -> Resu
     let text = response.text().await?;
 
     if status == StatusCode::NO_CONTENT || text.is_empty() {
-        // Try to deserialize "null" for `Option<T>` / unit-like responses.
         return serde_json::from_str::<T>("null")
             .or_else(|_| serde_json::from_str::<T>("{}"))
             .map_err(Error::from);
@@ -254,7 +468,7 @@ async fn parse_success<T: DeserializeOwned>(response: reqwest::Response) -> Resu
 }
 
 /// Fluent builder for [`SeedClient`].
-#[derive(Debug, Clone, Default)]
+#[derive(Default)]
 pub struct SeedClientBuilder {
     endpoints: Vec<String>,
     auth: SeedAuth,
@@ -262,6 +476,23 @@ pub struct SeedClientBuilder {
     timeouts: Timeouts,
     routing: Routing,
     max_retries: Option<u32>,
+    token_book: Option<Box<dyn TokenBook>>,
+    health_interval: Option<Duration>,
+}
+
+impl std::fmt::Debug for SeedClientBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SeedClientBuilder")
+            .field("endpoints", &self.endpoints)
+            .field("auth", &self.auth)
+            .field("tls", &self.tls)
+            .field("timeouts", &self.timeouts)
+            .field("routing", &self.routing)
+            .field("max_retries", &self.max_retries)
+            .field("token_book", &self.token_book.is_some())
+            .field("health_interval", &self.health_interval)
+            .finish()
+    }
 }
 
 impl SeedClientBuilder {
@@ -271,15 +502,15 @@ impl SeedClientBuilder {
         self
     }
 
-    /// Multiple endpoints (Phase 1.5). Accepted at builder-time but
-    /// rejected at [`build`](Self::build) unless `routing == Pinned` with
-    /// exactly one element.
+    /// Multiple endpoints (Phase 1.5). Order is preserved as peer list
+    /// index for tie-breaking in the closest-first picker.
     pub fn endpoints<S: AsRef<str>>(mut self, urls: &[S]) -> Self {
         self.endpoints = urls.iter().map(|u| u.as_ref().to_owned()).collect();
         self
     }
 
-    /// Attach a pairing token / mTLS cert.
+    /// Attach a pairing token. When `token_book` is also set, the
+    /// per-peer TokenBook entries take priority.
     pub fn auth(mut self, auth: SeedAuth) -> Self {
         self.auth = auth;
         self
@@ -297,7 +528,7 @@ impl SeedClientBuilder {
         self
     }
 
-    /// Routing strategy — Phase 1 only accepts [`Routing::Pinned`].
+    /// Routing strategy.
     pub fn routing(mut self, routing: Routing) -> Self {
         self.routing = routing;
         self
@@ -309,6 +540,19 @@ impl SeedClientBuilder {
         self
     }
 
+    /// Supply a per-peer [`TokenBook`]. Default is [`InMemoryTokenBook`].
+    pub fn token_book<B: TokenBook + 'static>(mut self, book: B) -> Self {
+        self.token_book = Some(Box::new(book));
+        self
+    }
+
+    /// Enable the active health probe (ADR-0016a §D7). Disabled by
+    /// default — the SDK observes outcomes opportunistically.
+    pub fn health_interval(mut self, interval: Duration) -> Self {
+        self.health_interval = Some(interval);
+        self
+    }
+
     /// Build the client.
     pub fn build(self) -> Result<SeedClient, Error> {
         if self.endpoints.is_empty() {
@@ -317,18 +561,35 @@ impl SeedClientBuilder {
             ));
         }
 
-        // Phase 1: only Routing::Pinned is implemented.
-        if self.routing != Routing::Pinned {
-            return Err(seed_err::not_implemented("mesh-routing"));
-        }
-        if self.endpoints.len() > 1 {
-            return Err(seed_err::not_implemented("mesh-routing"));
-        }
+        let endpoints = self
+            .endpoints
+            .iter()
+            .map(|s| Endpoint::parse(s))
+            .collect::<Result<Vec<_>, _>>()?;
 
-        let endpoint = Endpoint::parse(&self.endpoints[0])?;
-        let peers = PeerSet::single(endpoint);
-
+        let peer_set = PeerSet::new(endpoints)?;
+        let peers = Arc::new(Mutex::new(peer_set));
         let http = build_http_client(&self.tls, &self.timeouts)?;
+
+        let token_book = match self.token_book {
+            Some(book) => SharedTokenBook::new_boxed(book),
+            None => SharedTokenBook::default(),
+        };
+        // If caller supplied a single PairingToken via `.auth(...)`,
+        // seed the TokenBook for every peer (ADR-0016a §D5 "single token
+        // for all peers when the caller asserts they share").
+        if let SeedAuth::PairingToken(tok) = &self.auth {
+            let guard = peers.lock().expect("peers lock poisoned");
+            for p in guard.peers() {
+                if token_book.get(&p.endpoint.key()).is_none() {
+                    token_book.set(&p.endpoint.key(), SecretString::new(tok.clone()));
+                }
+            }
+        }
+
+        let health = self
+            .health_interval
+            .map(|interval| HealthHandle::spawn(http.clone(), Arc::clone(&peers), interval));
 
         Ok(SeedClient {
             inner: Arc::new(SeedInner {
@@ -338,6 +599,8 @@ impl SeedClientBuilder {
                 timeouts: self.timeouts,
                 max_retries: self.max_retries.unwrap_or(3),
                 routing: self.routing,
+                token_book,
+                health,
             }),
         })
     }
@@ -351,9 +614,7 @@ fn build_http_client(tls: &SeedTls, timeouts: &Timeouts) -> Result<reqwest::Clie
         .pool_idle_timeout(Some(Duration::from_secs(60)));
 
     match tls {
-        SeedTls::System => {
-            // Reqwest default trust store.
-        }
+        SeedTls::System => {}
         SeedTls::Pinned(pem) => {
             let cert = reqwest::Certificate::from_pem(pem)
                 .map_err(|e| Error::Validation(format!("invalid seed trust root PEM: {e}")))?;
@@ -363,8 +624,6 @@ fn build_http_client(tls: &SeedTls, timeouts: &Timeouts) -> Result<reqwest::Clie
         }
         SeedTls::Insecure => {
             if !INSECURE_WARN.swap(true, Ordering::Relaxed) {
-                // Prefer `log::warn!` style via eprintln — we intentionally
-                // do not introduce a log-facade dep in Phase 1.
                 eprintln!(
                     "cognitum-rs seed: TLS verification is DISABLED via \
                      SeedTls::Insecure. Never use this in production — \
@@ -380,6 +639,14 @@ fn build_http_client(tls: &SeedTls, timeouts: &Timeouts) -> Result<reqwest::Clie
         .map_err(|e| Error::Validation(format!("seed http client: {e}")))
 }
 
+// Convenience helpers so `SharedTokenBook` can accept a pre-boxed value
+// from the builder path without allocating twice.
+impl SharedTokenBook {
+    pub(crate) fn new_boxed(book: Box<dyn TokenBook>) -> Self {
+        Self::from_boxed(book)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,28 +658,22 @@ mod tests {
     }
 
     #[test]
-    fn builder_rejects_mesh_routing() {
-        let err = SeedClient::builder()
-            .endpoint("https://s:8443")
-            .routing(Routing::Balanced)
+    fn builder_accepts_session_routing_with_mesh() {
+        let client = SeedClient::builder()
+            .endpoints(&["https://s1:8443", "https://s2:8443"])
+            .routing(Routing::Session)
             .build()
-            .unwrap_err();
-        match err {
-            Error::Validation(m) => assert!(m.contains("mesh-routing")),
-            other => panic!("expected Validation, got {other:?}"),
-        }
+            .expect("mesh builds");
+        assert_eq!(client.inner().peers.lock().unwrap().len(), 2);
     }
 
     #[test]
-    fn builder_rejects_multi_endpoint_in_phase1() {
-        let err = SeedClient::builder()
-            .endpoints(&["https://s1:8443", "https://s2:8443"])
+    fn builder_accepts_multi_endpoint_phase_1_5() {
+        let client = SeedClient::builder()
+            .endpoints(&["https://s1:8443", "https://s2:8443", "https://s3:8443"])
             .build()
-            .unwrap_err();
-        match err {
-            Error::Validation(m) => assert!(m.contains("mesh-routing")),
-            other => panic!("expected Validation, got {other:?}"),
-        }
+            .expect("three-peer mesh builds");
+        assert_eq!(client.peers().len(), 3);
     }
 
     #[test]
@@ -422,7 +683,7 @@ mod tests {
             .tls(SeedTls::System)
             .build()
             .expect("system-TLS seed client should build");
-        assert_eq!(client.inner().peers.len(), 1);
+        assert_eq!(client.peers().len(), 1);
     }
 
     #[test]
@@ -432,7 +693,7 @@ mod tests {
             .tls(SeedTls::Insecure)
             .build()
             .expect("insecure seed client should build");
-        assert_eq!(client.inner().peers.len(), 1);
+        assert_eq!(client.peers().len(), 1);
     }
 
     #[test]
@@ -446,11 +707,6 @@ mod tests {
 
     #[test]
     fn builder_accepts_pinned_tls_bytes() {
-        // `reqwest::Certificate::from_pem` is lazy on this version and
-        // accepts garbage without erroring. We only assert that the
-        // plumbing path is exercised. Live-seed integration and the
-        // mutually-exclusive TLS test in `client.rs` cover the runtime
-        // failure mode.
         let result = SeedClient::builder()
             .endpoint("https://seed:8443")
             .tls(SeedTls::Pinned(b"not a real pem".to_vec()))
@@ -462,5 +718,44 @@ mod tests {
             }
             Err(other) => panic!("unexpected: {other:?}"),
         }
+    }
+
+    #[test]
+    fn builder_seeds_token_book_from_single_pairing_token() {
+        let client = SeedClient::builder()
+            .endpoints(&["https://a:8443", "https://b:8443"])
+            .auth(SeedAuth::PairingToken("shared".into()))
+            .build()
+            .expect("build");
+        assert_eq!(
+            client
+                .inner()
+                .token_book
+                .get("https://a:8443")
+                .unwrap()
+                .as_str(),
+            "shared"
+        );
+        assert_eq!(
+            client
+                .inner()
+                .token_book
+                .get("https://b:8443")
+                .unwrap()
+                .as_str(),
+            "shared"
+        );
+    }
+
+    #[test]
+    fn session_pins_peer_key() {
+        let client = SeedClient::builder()
+            .endpoints(&["https://a:8443", "https://b:8443"])
+            .build()
+            .unwrap();
+        let session = client.session();
+        assert!(
+            session.pinned_peer() == "https://a:8443" || session.pinned_peer() == "https://b:8443"
+        );
     }
 }

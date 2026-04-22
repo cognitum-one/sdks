@@ -13,3 +13,20 @@ node_modules/
 # IDE
 .idea/
 .vscode/
+
+# Local / per-machine Claude context (not committed)
+CLAUDE.local.md
+.claude-flow/
+/tmp-swarm/
+
+# Python build artifacts
+*.egg-info/
+**/__pycache__/
+*.pyc
+
+# Claude Code / claude-flow runtime state
+.claude/
+.claude-flow/
+
+# Test / validation scratch
+/tmp-swarm/
