@@ -1,52 +1,61 @@
 /**
- * SeedClient — Phase 1 single-seed implementation.
+ * SeedClient — Phase 1.5 mesh-aware implementation. Composes `config.ts`,
+ * `peers.ts`, `tokenBook.ts`, `session.ts`, `health.ts`, `transport.ts`,
+ * `retry.ts`, and the ADR-0004 error taxonomy in `../errors.ts`.
  *
- * Layered on:
- *   - `config.ts`    — options validation + defaults
- *   - `transport.ts` — TLS-aware `fetch` wrapper
- *   - `retry.ts`     — equal-jitter backoff loop (ADR-0005)
- *   - `errors.ts`    — cross-SDK taxonomy (ADR-0004)
- *
- * Resource bindings (`resources/*`) are instantiated eagerly so method
- * chains like `client.pair.status()` Just Work without async deferment.
+ * Failover state machine (ADR-0016a §D3, ADR-0017 §Step 4):
+ * NetworkError / TimeoutError / 500 / 502 / 503 / 504 → mark peer, cycle
+ * via `PeerSet.nextAfter`, else fall through to ADR-0005 retry. 429 → pin
+ * on the same peer, honour `Retry-After` / `retry_after_us`, apply
+ * equal-jitter backoff (trust-score protection — do NOT cycle). 4xx
+ * auth / validation / not-found / 501 → surface immediately. The 60 s
+ * total-elapsed budget covers ALL peer attempts combined — N peers × M
+ * retries is NOT allowed (invariant I10).
  */
 
 import {
-  AuthError,
   CognitumError,
-  ConflictError,
   NetworkError,
-  NotFoundError,
-  NotImplementedError,
   ParseError,
   RateLimitError,
   ServiceUnavailableError,
   TimeoutError,
-  ValidationError,
 } from "../errors.js";
 import {
   resolveSeedConfig,
   type ResolvedSeedConfig,
   type SeedClientOptions,
 } from "./config.js";
-import { singlePeer, type Peer } from "./peers.js";
+import { classifyErrorResponse, type DispatchOutcome } from "./dispatch.js";
+import { startHealthProbe, type HealthProbeHandle } from "./health.js";
+import { PeerSet, type Peer } from "./peers.js";
 import { buildSeedFetch } from "./transport.js";
+import { BASE_MS, CAP_MS, DEFAULT_MAX_ELAPSED_MS } from "./retry.js";
+import { SeedSession } from "./session.js";
 import {
-  DEFAULT_MAX_ELAPSED_MS,
-  parseRetryAfterHeader,
-  parseSeedRetryAfter,
-  runWithRetry,
-} from "./retry.js";
+  InMemoryTokenBook,
+  SecretString,
+  type TokenBook,
+} from "./tokenBook.js";
 
 import { makeStatusResource, type StatusResource } from "./resources/status.js";
-import { makeIdentityResource, type IdentityResource } from "./resources/identity.js";
+import {
+  makeIdentityResource,
+  type IdentityResource,
+} from "./resources/identity.js";
 import { makePairResource, type PairResource } from "./resources/pair.js";
-import { makeWitnessResource, type WitnessResource } from "./resources/witness.js";
-import { makeCustodyResource, type CustodyResource } from "./resources/custody.js";
+import {
+  makeWitnessResource,
+  type WitnessResource,
+} from "./resources/witness.js";
+import {
+  makeCustodyResource,
+  type CustodyResource,
+} from "./resources/custody.js";
 import { makeStoreResource, type StoreResource } from "./resources/store.js";
 import { makeOtaResource, type OtaResource } from "./resources/ota.js";
 
-/** Options passed to `SeedClient.request()` per call. */
+/** Options passed to {@link SeedClient.request} per call. */
 export interface SeedRequestOptions {
   /** JSON body to serialise; omit for GET/DELETE. */
   body?: unknown;
@@ -56,28 +65,43 @@ export interface SeedRequestOptions {
    * Idempotency hint — GETs, HEADs, and read-only POSTs (e.g. k-NN
    * search) set this to `true` so the retry loop will retry read
    * timeouts. Non-idempotent POSTs (e.g. `pair`, `ingest`) set it
-   * to `false` (the default).
+   * to `false` (the default for POSTs).
    */
   idempotent?: boolean;
   /** Timeout override for this request (ms). */
   timeoutMs?: number;
+  /**
+   * Pin this one request to `peerKey` (canonical URL, no trailing
+   * slash). Used by {@link SeedSession}; the failover state machine
+   * still cycles when the pinned peer hard-fails.
+   */
+  pinnedPeerKey?: string;
 }
 
 /**
- * The Phase 1 seed client — single-endpoint, no mesh failover.
+ * Phase 1.5 seed client — supports 1..N peers with closest-first
+ * routing + failover state machine.
  *
  * @example
  * ```ts
  * import { SeedClient } from "@cognitum/sdk/seed";
  *
  * const client = new SeedClient({
- *   endpoints: "https://localhost:18443",
+ *   endpoints: ["https://seed-a:8443", "https://seed-b:8443"],
  *   auth: { pairingToken: process.env.COGNITUM_SEED_TOKEN },
- *   tls: { insecure: true },          // dev only — use ca: in prod
+ *   tls: { insecure: true }, // dev only
+ *   healthInterval: 30_000,  // opt-in active probe
  * });
  *
+ * // Mesh-aware read:
  * const status = await client.status();
- * console.log(status.device_id, status.paired);
+ *
+ * // Session pins both to the same peer:
+ * const session = client.session();
+ * await session.store.ingest({ vectors: [{ values: [1,2,3] }] });
+ * await session.store.query({ vector: [1,2,3], k: 1 });
+ *
+ * client.close(); // stop active health probe, if any
  * ```
  */
 export class SeedClient {
@@ -99,18 +123,37 @@ export class SeedClient {
   /** OTA — config + check-now. */
   readonly ota: OtaResource;
 
-  /** Peer list (always length 1 in Phase 1). */
-  private readonly peers: Peer[];
+  /** Peer set — closest-first picker with per-peer health state. */
+  private readonly peerSet: PeerSet;
+  /** Per-peer pairing-token store. */
+  private readonly tokenBook: TokenBook;
   /** TLS-aware fetch bound to this client. */
   private readonly fetchFn: typeof fetch;
+  /** Active health-probe handle; `undefined` when disabled. */
+  private readonly healthProbe: HealthProbeHandle | undefined;
 
   constructor(options: SeedClientOptions) {
     this.config = resolveSeedConfig(options);
-    this.peers = singlePeer(this.config.baseUrl, this.config.pairingToken);
+    this.peerSet = new PeerSet(this.config.endpoints);
+
+    // Prefer the caller-supplied TokenBook. Fall back to a fresh
+    // InMemoryTokenBook seeded from the client-wide `pairingToken`
+    // (ADR-0016a §D5 "single token for all peers when the caller
+    // asserts they share").
+    this.tokenBook = this.config.tokenBook ?? new InMemoryTokenBook();
+    if (this.config.pairingToken !== undefined) {
+      const shared = new SecretString(this.config.pairingToken);
+      for (const peer of this.peerSet.iter()) {
+        if (this.tokenBook.get(peer.key) === undefined) {
+          this.tokenBook.set(peer.key, shared);
+        }
+      }
+    }
+
     this.fetchFn = buildSeedFetch(this.config);
 
-    // Bind the resource bundles. Each is a plain object literal of
-    // functions so there's zero class-instance overhead per request.
+    // Bind the resource bundles. Each wraps `request()` so every call
+    // passes through the failover pipeline.
     const req = this.request.bind(this);
     this.status = makeStatusResource(req);
     this.identity = makeIdentityResource(req);
@@ -119,137 +162,293 @@ export class SeedClient {
     this.custody = makeCustodyResource(req);
     this.store = makeStoreResource(req);
     this.ota = makeOtaResource(req);
+
+    // Opt-in active health probe (ADR-0016a §D7). Starts a `setInterval`
+    // that `unref`'s itself so it never keeps the process alive.
+    if (this.config.healthInterval !== undefined) {
+      this.healthProbe = startHealthProbe({
+        peers: this.peerSet,
+        fetchFn: this.fetchFn,
+        intervalMs: this.config.healthInterval,
+        tokenForPeer: (peerKey) => {
+          const tok = this.tokenBook.get(peerKey);
+          return tok?.reveal();
+        },
+      });
+    }
   }
 
   /**
-   * Perform an HTTP request against the seed and return the parsed JSON
-   * body. Wraps every attempt in the retry loop. Maps HTTP / network /
-   * parse failures onto the ADR-0004 error taxonomy.
+   * Snapshot view of the SDK-local peer table (ADR-0016a §D7 —
+   * `client.peers()`). The returned array is a shallow copy; mutations
+   * do not affect routing.
+   */
+  peers(): Peer[] {
+    return this.peerSet.snapshot();
+  }
+
+  /**
+   * Open a {@link SeedSession} pinned to the currently closest-first
+   * peer. The session holds the pin for its lifetime; all its resource
+   * calls go to the same peer unless the peer hard-fails, in which case
+   * the failover state machine transparently cycles.
+   */
+  session(): SeedSession {
+    return new SeedSession(this, this.peerSet.pick().key);
+  }
+
+  /**
+   * Stop the active health probe (if any) so the Node event loop can
+   * exit cleanly. Idempotent — safe to call more than once.
+   *
+   * Does NOT revoke pairing or wipe the TokenBook; callers own token
+   * lifetimes per ADR-0007.
+   */
+  close(): void {
+    this.healthProbe?.stop();
+  }
+
+  /**
+   * Introspection helper for tests: look up a pairing token by
+   * canonical peer URL. Returns `undefined` when the book has no entry.
+   * @internal
+   */
+  tokenForPeer(peerKey: string): string | undefined {
+    return this.tokenBook.get(peerKey)?.reveal();
+  }
+
+  /**
+   * Perform an HTTP request against the seed mesh and return the parsed
+   * JSON body. Implements the Phase 1.5 failover state machine.
    */
   async request<T>(
     method: string,
     path: string,
     opts: SeedRequestOptions = {},
   ): Promise<T> {
-    const peer = this.peers[0];
-    const url = buildUrl(peer.baseUrl, path, opts.query);
-
-    // Normalize method once per request; hot path used to call
-    // `method.toUpperCase()` 4x (perf-note: was a no-op on GETs but
-    // measurable for POSTs with long method strings).
     const methodUpper = method.toUpperCase();
     const idempotent =
       opts.idempotent ?? (methodUpper === "GET" || methodUpper === "HEAD");
+    const totalBudgetMs =
+      this.config.timeouts.total ?? DEFAULT_MAX_ELAPSED_MS;
+    const startedAt = Date.now();
 
-    return runWithRetry(
-      async () => this.singleAttempt<T>(methodUpper, url, path, peer, opts),
-      {
-        retries: this.config.retries,
-        maxElapsedMs: this.config.timeouts.total ?? DEFAULT_MAX_ELAPSED_MS,
-        rateLimitRetry: this.config.rateLimitRetry,
-        method: methodUpper,
-        idempotent,
-        logger: this.config.logger,
-      },
-      path,
-    );
+    // Resolve the initial peer. When the caller pinned a specific peer
+    // (session mode) and it's present, use it; otherwise let `pick`
+    // choose the closest-first healthy peer.
+    let peer: Peer = this.initialPeer(opts.pinnedPeerKey);
+
+    const totalPeers = this.peerSet.len();
+    let peersTried = 0;
+    let retryAttempt = 0;
+    let lastErr: CognitumError | undefined;
+
+    for (;;) {
+      const elapsed = Date.now() - startedAt;
+      if (elapsed >= totalBudgetMs) {
+        throw (
+          lastErr ??
+          new TimeoutError(
+            "read",
+            `seed: total deadline ${totalBudgetMs}ms exceeded at ${path}`,
+          )
+        );
+      }
+
+      const attemptBudgetMs = Math.max(1, totalBudgetMs - elapsed);
+      const attemptTimeoutMs = Math.min(
+        opts.timeoutMs ?? this.config.timeouts.read,
+        attemptBudgetMs,
+      );
+
+      const outcome = await this.dispatchOnce<T>(
+        methodUpper,
+        path,
+        peer,
+        opts,
+        attemptTimeoutMs,
+      );
+
+      // -- success --------------------------------------------------------
+      if (outcome.kind === "ok") {
+        return outcome.value;
+      }
+
+      // -- classify for PeerSet bookkeeping --------------------------------
+      if (outcome.peerClass !== undefined) {
+        this.peerSet.markFailure(peer.key, outcome.peerClass);
+      }
+
+      lastErr = outcome.error;
+
+      switch (outcome.disposition) {
+        case "cycle": {
+          peersTried += 1;
+          if (peersTried < totalPeers) {
+            const next = this.peerSet.nextAfter(peer);
+            if (next) {
+              peer = next;
+              continue;
+            }
+          }
+          // All peers tried at least once — fall through to the ADR-0005
+          // retry loop on the most recent peer.
+          if (this.shouldBackoffRetry(outcome.error, methodUpper, idempotent)) {
+            const delayMs = this.backoffDelay(
+              retryAttempt,
+              outcome.retryHintMs,
+            );
+            if (Date.now() - startedAt + delayMs > totalBudgetMs) {
+              throw outcome.error;
+            }
+            if (retryAttempt + 1 > this.config.retries) {
+              throw outcome.error;
+            }
+            await sleep(delayMs);
+            retryAttempt += 1;
+            peersTried = 0; // new budget round across the mesh
+            peer = this.initialPeer(opts.pinnedPeerKey);
+            continue;
+          }
+          throw outcome.error;
+        }
+        case "pin": {
+          // 429 — stay on the same peer, honour ADR-0005 budget.
+          if (!this.shouldBackoffRetry(outcome.error, methodUpper, idempotent)) {
+            throw outcome.error;
+          }
+          if (retryAttempt + 1 > this.config.retries) {
+            throw outcome.error;
+          }
+          const delayMs = this.backoffDelay(retryAttempt, outcome.retryHintMs);
+          if (Date.now() - startedAt + delayMs > totalBudgetMs) {
+            throw outcome.error;
+          }
+          await sleep(delayMs);
+          retryAttempt += 1;
+          continue;
+        }
+        case "surface": {
+          throw outcome.error;
+        }
+      }
+    }
   }
 
-  private async singleAttempt<T>(
+  // ------------------------------------------------------------------ //
+  // internals                                                          //
+  // ------------------------------------------------------------------ //
+
+  private initialPeer(pinnedKey: string | undefined): Peer {
+    if (pinnedKey) {
+      const pinned = this.peerSet.findByKey(pinnedKey);
+      if (pinned) return pinned;
+    }
+    return this.peerSet.pick();
+  }
+
+  private shouldBackoffRetry(
+    err: CognitumError,
     method: string,
-    url: string,
-    pathForLog: string,
+    idempotent: boolean,
+  ): boolean {
+    if (err instanceof RateLimitError) return this.config.rateLimitRetry;
+    if (err instanceof ServiceUnavailableError) return true;
+    if (err instanceof NetworkError) return true;
+    if (err instanceof TimeoutError) {
+      if (err.phase === "connect") return true;
+      if (method === "POST" && !idempotent) return false;
+      return true;
+    }
+    if (err instanceof CognitumError) {
+      const sc = err.statusCode;
+      if (sc !== undefined && sc >= 500 && sc !== 501) return true;
+    }
+    return false;
+  }
+
+  private backoffDelay(attempt: number, hintMs: number | undefined): number {
+    const expo = BASE_MS * 2 ** attempt;
+    const jitter = Math.random() * BASE_MS; // equal-jitter (ADR-0005)
+    const computed = Math.min(CAP_MS, expo + jitter);
+    if (hintMs !== undefined) {
+      return Math.min(CAP_MS, Math.max(computed, hintMs));
+    }
+    return computed;
+  }
+
+  private async dispatchOnce<T>(
+    method: string,
+    path: string,
     peer: Peer,
     opts: SeedRequestOptions,
-  ): Promise<T> {
+    attemptTimeoutMs: number,
+  ): Promise<DispatchOutcome<T>> {
+    const url = buildUrl(peer.baseUrl, path, opts.query);
     const headers: Record<string, string> = {
       Accept: "application/json",
-      "User-Agent": "cognitum-sdk-node/0.2.0-seed-phase1",
+      "User-Agent": "cognitum-sdk-node/0.2.0-seed-phase1.5",
     };
-    if (peer.pairingToken) {
-      headers["X-Pairing-Token"] = peer.pairingToken;
+
+    // Per-peer token wins over the client-wide fallback (ADR-0016a §D5).
+    const tok = this.tokenBook.get(peer.key);
+    if (tok) {
+      headers["X-Pairing-Token"] = tok.reveal();
     }
     if (this.config.apiKey) {
       headers["X-API-Key"] = this.config.apiKey;
     }
 
     const init: RequestInit & { duplex?: string } = { method, headers };
-    // `method` here is already upper-cased by `request()` above.
     if (opts.body !== undefined && method !== "GET" && method !== "HEAD") {
       headers["Content-Type"] = "application/json";
       init.body = JSON.stringify(opts.body);
     }
 
-    const timeoutMs = opts.timeoutMs ?? this.config.timeouts.read;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), attemptTimeoutMs);
     init.signal = controller.signal;
 
+    const callStarted = Date.now();
     let response: Response;
     try {
       response = await this.fetchFn(url, init);
     } catch (err) {
       clearTimeout(timer);
-      if (err instanceof DOMException && err.name === "AbortError") {
-        throw new TimeoutError("read", `timeout after ${timeoutMs}ms at ${pathForLog}`);
-      }
       if (isAbortError(err)) {
-        throw new TimeoutError("read", `timeout after ${timeoutMs}ms at ${pathForLog}`);
+        const e = new TimeoutError(
+          "read",
+          `timeout after ${attemptTimeoutMs}ms at ${path}`,
+        );
+        return {
+          kind: "err",
+          disposition: "cycle",
+          peerClass: "timeout",
+          error: e,
+        };
       }
-      throw new NetworkError(
+      const e = new NetworkError(
         err instanceof Error ? err.message : String(err),
         err,
       );
+      return {
+        kind: "err",
+        disposition: "cycle",
+        peerClass: "network",
+        error: e,
+      };
     }
     clearTimeout(timer);
 
     if (response.ok) {
-      if (response.status === 204) return undefined as T;
-      return (await parseJson<T>(response)) as T;
+      const value =
+        response.status === 204 ? (undefined as T) : await parseJson<T>(response);
+      this.peerSet.markSuccess(peer.key, Date.now() - callStarted);
+      return { kind: "ok", value };
     }
 
-    // Non-2xx — map to the taxonomy.
-    throw await this.mapHttpError(response, pathForLog);
-  }
-
-  /** Translate an HTTP error response into an ADR-0004 `CognitumError`. */
-  private async mapHttpError(res: Response, pathForLog: string): Promise<CognitumError> {
-    const rawBody = await res.text().catch(() => "");
-    const parsed = tryJson(rawBody);
-    const message = extractMessage(parsed) ?? res.statusText ?? `HTTP ${res.status}`;
-
-    switch (res.status) {
-      case 400:
-      case 422:
-        return new ValidationError(message);
-      case 401:
-        return new AuthError(`unauthorized: ${message}`);
-      case 403:
-        return new AuthError(`forbidden: ${message}`);
-      case 404:
-        return new NotFoundError(message);
-      case 409:
-        return new ConflictError(message);
-      case 429: {
-        const headerHint = parseRetryAfterHeader(res.headers.get("Retry-After"));
-        const bodyHint = parseSeedRetryAfter(parsed);
-        const retryAfterMs = headerHint ?? bodyHint ?? 1000;
-        return new RateLimitError(retryAfterMs, message);
-      }
-      case 501:
-        return new NotImplementedError(pathForLog, message);
-      case 503: {
-        const headerHint = parseRetryAfterHeader(res.headers.get("Retry-After"));
-        return new ServiceUnavailableError(headerHint, message);
-      }
-      default:
-        if (res.status >= 500) {
-          // Generic 5xx — map to ServiceUnavailableError so the retry
-          // loop classifies it as retryable per ADR-0005.
-          return new ServiceUnavailableError(undefined, `HTTP ${res.status}: ${message}`);
-        }
-        return new CognitumError(`HTTP ${res.status}: ${message}`, "API_ERROR", res.status);
-    }
+    // Non-2xx → map to the taxonomy + decide disposition.
+    return classifyErrorResponse<T>(response, path);
   }
 }
 
@@ -277,31 +476,24 @@ async function parseJson<T>(res: Response): Promise<T> {
   try {
     return JSON.parse(text) as T;
   } catch (err) {
-    throw new ParseError("JSON", `invalid JSON in ${res.status} response: ${(err as Error).message}`);
+    throw new ParseError(
+      "JSON",
+      `invalid JSON in ${res.status} response: ${(err as Error).message}`,
+    );
   }
-}
-
-function tryJson(body: string): unknown {
-  if (!body) return undefined;
-  try {
-    return JSON.parse(body);
-  } catch {
-    return undefined;
-  }
-}
-
-function extractMessage(parsed: unknown): string | undefined {
-  if (parsed && typeof parsed === "object") {
-    const rec = parsed as Record<string, unknown>;
-    if (typeof rec.error === "string") return rec.error;
-    if (typeof rec.message === "string") return rec.message;
-  }
-  return undefined;
 }
 
 function isAbortError(err: unknown): boolean {
-  if (err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError")) {
+  if (err instanceof DOMException && err.name === "AbortError") return true;
+  if (
+    err instanceof Error &&
+    (err.name === "AbortError" || err.name === "TimeoutError")
+  ) {
     return true;
   }
   return false;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, Math.max(0, ms)));
 }

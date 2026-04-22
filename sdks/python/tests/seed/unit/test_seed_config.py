@@ -1,4 +1,4 @@
-"""Unit tests for cognitum.seed._config — Phase 1 single-endpoint mode."""
+"""Unit tests for cognitum.seed._config — Phase 1.5 mesh-aware."""
 
 from __future__ import annotations
 
@@ -50,13 +50,14 @@ class TestNormaliseOptions:
         opts = normalise_options(["https://cognitum.local:8443"])
         assert opts.primary.host == "cognitum.local"
 
-    def test_mesh_rejected_with_phase_1_5_message(self) -> None:
-        with pytest.raises(ConfigError) as exc:
-            normalise_options([
-                "https://a:8443",
-                "https://b:8443",
-            ])
-        assert "mesh mode in Phase 1.5" in str(exc.value.message)
+    def test_mesh_accepted_phase_1_5(self) -> None:
+        opts = normalise_options([
+            "https://a:8443",
+            "https://b:8443",
+        ])
+        assert len(opts.endpoints) == 2
+        assert opts.is_mesh is True
+        assert opts.primary.host == "a"
 
     def test_empty_list_rejected(self) -> None:
         with pytest.raises(ConfigError):
@@ -96,13 +97,13 @@ class TestSeedClientConstruction:
         assert client.options.primary.port == 18443
         client.close()
 
-    def test_mesh_list_raises(self) -> None:
-        with pytest.raises(ConfigError) as exc:
-            SeedClient(
-                ["https://a:8443", "https://b:8443"],
-                tls=SeedTLS(insecure=True),
-            )
-        assert "mesh mode in Phase 1.5" in str(exc.value.message)
+    def test_mesh_list_accepted_phase_1_5(self) -> None:
+        client = SeedClient(
+            ["https://a:8443", "https://b:8443"],
+            tls=SeedTLS(insecure=True),
+        )
+        assert len(client.peers_snapshot()) == 2
+        client.close()
 
     def test_has_all_resources(self) -> None:
         with SeedClient(
@@ -117,15 +118,19 @@ class TestSeedClientConstruction:
             assert callable(client.status)
             assert callable(client.identity)
 
-    def test_auth_token_attached(self) -> None:
+    def test_auth_token_propagated_to_token_book(self) -> None:
+        # Phase 1.5: auth.pairing_token seeds the per-peer TokenBook
+        # rather than being attached as a global httpx client header.
+        # This is ADR-0016a §D5 "single token for all peers when the
+        # caller asserts they share".
         client = SeedClient(
             "https://cognitum.local:8443",
             auth=SeedAuth(pairing_token="abc"),
             tls=SeedTLS(insecure=True),
         )
-        # httpx normalises header names to lowercase; both should be present.
-        hdrs = client._transport._client.headers
-        assert hdrs.get("X-Pairing-Token") == "abc"
+        tok = client.token_for_peer("https://cognitum.local:8443")
+        assert tok is not None
+        assert tok.as_str() == "abc"
         client.close()
 
     def test_non_default_host_without_tls_material_raises(self) -> None:

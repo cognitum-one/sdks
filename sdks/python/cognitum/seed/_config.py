@@ -1,7 +1,9 @@
 """Typed configuration dataclasses for :class:`SeedClient` (ADR-0016 shape).
 
-Phase 1 accepts a single endpoint (``str`` or a one-element list). Multi-peer
-lists raise :class:`ConfigError` with a "mesh mode in Phase 1.5" message.
+Phase 1.5 accepts 1..N endpoints; with N==1 the client degenerates to
+single-mode behaviour (zero API change). Mesh routing is delivered via
+:class:`PeerSet`, per-peer :class:`TokenBook`, and the session-sticky
+request loop in :mod:`cognitum.seed._client`.
 """
 
 from __future__ import annotations
@@ -13,9 +15,10 @@ from typing import Any, Literal, Mapping, Sequence, Union
 from urllib.parse import urlparse
 
 from cognitum._errors import ConfigError
+from cognitum.seed._token_book import InMemoryTokenBook, TokenBook
 
 
-Routing = Literal["pinned", "round-robin", "read-any-write-one"]
+Routing = Literal["session", "pinned", "round-robin", "read-any-write-one"]
 VerifyInput = Union[bool, str, Path, ssl.SSLContext, "object"]
 
 
@@ -92,21 +95,30 @@ class SeedFailover:
 
 @dataclass(slots=True, frozen=True)
 class SeedClientOptions:
-    """Canonical, normalised client configuration."""
+    """Canonical, normalised client configuration (Phase 1.5 mesh-aware)."""
 
     endpoints: tuple[Endpoint, ...]
     auth: SeedAuth
     tls: SeedTLS
-    routing: Routing = "pinned"
+    routing: Routing = "session"
     failover: SeedFailover | None = None
     timeouts: tuple[float, float, float] = (5.0, 30.0, 60.0)
     max_retries: int = 3
     max_elapsed_ms: int = 60_000
     user_agent: str = "cognitum-python-seed/0.2.0"
+    health_interval: float | None = None
+    # token_book is mutable by design — callers can pair_all() after
+    # construction. Kept out of the hash by frozen=True semantics (we
+    # don't hash SeedClientOptions).
+    token_book: TokenBook | None = None
 
     @property
     def primary(self) -> Endpoint:
         return self.endpoints[0]
+
+    @property
+    def is_mesh(self) -> bool:
+        return len(self.endpoints) > 1
 
 
 def normalise_options(
@@ -114,14 +126,22 @@ def normalise_options(
     *,
     auth: SeedAuth | None = None,
     tls: SeedTLS | None = None,
-    routing: Routing = "pinned",
+    routing: Routing = "session",
     failover: SeedFailover | None = None,
     timeouts: tuple[float, float, float] = (5.0, 30.0, 60.0),
     max_retries: int = 3,
     max_elapsed_ms: int = 60_000,
     user_agent: str = "cognitum-python-seed/0.2.0",
+    health_interval: float | None = None,
+    token_book: TokenBook | None = None,
 ) -> SeedClientOptions:
-    """Phase 1 validation: accept a single endpoint, reject mesh lists."""
+    """Phase 1.5 validation: accept 1..N endpoints.
+
+    N==1 degenerates to Phase 1 single-mode semantics. For N>1 the caller
+    should also provide a :class:`TokenBook` if peers need distinct
+    pairing tokens — a single ``auth.pairing_token`` will be propagated
+    to every peer via the book at client-build time.
+    """
 
     if isinstance(endpoints, str):
         raw_list: list[str] = [endpoints]
@@ -134,11 +154,6 @@ def normalise_options(
 
     if len(raw_list) == 0:
         raise ConfigError("endpoints must not be empty", field="endpoints")
-    if len(raw_list) > 1:
-        raise ConfigError(
-            "mesh mode in Phase 1.5 — pass a single endpoint string for now",
-            field="endpoints",
-        )
 
     parsed = tuple(Endpoint.parse(e) for e in raw_list)
 
@@ -167,8 +182,30 @@ def normalise_options(
                 f"timeouts.{name} must be a positive number", field="timeouts"
             )
 
-    if routing not in ("pinned", "round-robin", "read-any-write-one"):
+    if routing not in ("session", "pinned", "round-robin", "read-any-write-one"):
         raise ConfigError(f"unknown routing mode: {routing!r}", field="routing")
+
+    if health_interval is not None and health_interval <= 0:
+        raise ConfigError(
+            "health_interval must be a positive number of seconds",
+            field="health_interval",
+        )
+
+    book = token_book if token_book is not None else InMemoryTokenBook()
+
+    # If the caller supplied a single pairing token via `auth`, seed the
+    # book for every peer that doesn't already have an entry (ADR-0016a
+    # §D5 "single token for all peers when the caller asserts they
+    # share"). We do this here (not in the client) so the public
+    # SeedClientOptions carries the propagated state.
+    if (auth or SeedAuth()).pairing_token:
+        from cognitum.seed._token_book import SecretString
+
+        tok_str = (auth or SeedAuth()).pairing_token
+        assert tok_str is not None
+        for ep in parsed:
+            if book.get(ep.url) is None:
+                book.set(ep.url, SecretString(tok_str))
 
     return SeedClientOptions(
         endpoints=parsed,
@@ -180,6 +217,8 @@ def normalise_options(
         max_retries=max_retries,
         max_elapsed_ms=max_elapsed_ms,
         user_agent=user_agent,
+        health_interval=health_interval,
+        token_book=book,
     )
 
 

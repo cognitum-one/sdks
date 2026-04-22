@@ -104,7 +104,6 @@ var ConfigError = class extends CognitumError {
 };
 
 // src/seed/config.ts
-var PHASE_1_5_MSG = "mesh mode (multiple endpoints) lands in Phase 1.5 \u2014 track issue #TBD";
 function resolveSeedConfig(opts) {
   if (!opts || typeof opts !== "object") {
     throw new ConfigError("SeedClient options are required");
@@ -116,30 +115,33 @@ function resolveSeedConfig(opts) {
   if (endpointList.length === 0) {
     throw new ConfigError("at least one endpoint is required");
   }
-  if (endpointList.length > 1) {
-    throw new ConfigError(PHASE_1_5_MSG);
-  }
-  const raw = endpointList[0];
-  if (typeof raw !== "string" || !raw.trim()) {
-    throw new ConfigError("endpoint must be a non-empty URL string");
-  }
-  const baseUrl = normaliseBaseUrl(raw);
+  const endpoints = endpointList.map((raw, idx) => {
+    if (typeof raw !== "string" || !raw.trim()) {
+      throw new ConfigError(
+        `endpoints[${idx}] must be a non-empty URL string`
+      );
+    }
+    return normaliseBaseUrl(raw);
+  });
   let pairingToken;
+  let pairingTokenMap;
   if (opts.auth?.pairingToken !== void 0) {
     if (typeof opts.auth.pairingToken === "string") {
       pairingToken = opts.auth.pairingToken;
+    } else if (opts.auth.pairingToken !== null && typeof opts.auth.pairingToken === "object") {
+      pairingTokenMap = { ...opts.auth.pairingToken };
     } else {
       throw new ConfigError(
-        "TokenBook (per-peer pairing tokens) lands in Phase 1.5 \u2014 pass a string for now"
+        "`auth.pairingToken` must be a string or { [clientName]: token } map"
       );
     }
   } else if (typeof process !== "undefined" && process.env?.COGNITUM_SEED_TOKEN) {
     pairingToken = process.env.COGNITUM_SEED_TOKEN;
   }
-  const routing = opts.routing ?? "pinned";
-  if (routing !== "pinned") {
+  const routing = opts.routing ?? "session";
+  if (routing !== "pinned" && routing !== "session" && routing !== "round-robin" && routing !== "read-any-write-one") {
     throw new ConfigError(
-      `routing="${routing}" lands in Phase 1.5 \u2014 only "pinned" is supported`
+      `routing="${routing}" is not recognised \u2014 expected "pinned" | "session" | "round-robin" | "read-any-write-one"`
     );
   }
   const tls = {
@@ -152,12 +154,23 @@ function resolveSeedConfig(opts) {
     total: opts.timeouts?.total ?? 6e4
   };
   const failover = {
-    onConnectError: opts.failover?.onConnectError ?? "retry-same",
-    onStatus5xx: opts.failover?.onStatus5xx ?? "retry-same"
+    onConnectError: opts.failover?.onConnectError ?? "next-peer",
+    onStatus5xx: opts.failover?.onStatus5xx ?? "next-peer"
   };
+  let healthInterval;
+  if (opts.healthInterval !== void 0) {
+    if (typeof opts.healthInterval !== "number" || !Number.isFinite(opts.healthInterval) || opts.healthInterval <= 0) {
+      throw new ConfigError(
+        `healthInterval must be a positive number of ms (got ${opts.healthInterval})`
+      );
+    }
+    healthInterval = opts.healthInterval;
+  }
   return {
-    baseUrl,
+    endpoints,
+    baseUrl: endpoints[0],
     pairingToken,
+    pairingTokenMap,
     apiKey: opts.auth?.apiKey,
     tls,
     routing,
@@ -165,6 +178,8 @@ function resolveSeedConfig(opts) {
     timeouts,
     retries: opts.retries ?? 3,
     rateLimitRetry: opts.rateLimitRetry ?? true,
+    tokenBook: opts.tokenBook,
+    healthInterval,
     fetchFn: opts.fetch ?? globalThis.fetch,
     logger: opts.logger ?? {}
   };
@@ -184,15 +199,351 @@ function normaliseBaseUrl(raw) {
   return url.toString().replace(/\/+$/, "");
 }
 
-// src/seed/peers.ts
-function singlePeer(baseUrl, pairingToken) {
-  return [
-    {
-      baseUrl,
-      pairingToken,
-      label: labelFor(baseUrl)
+// src/seed/retry.ts
+var BASE_MS = 500;
+var CAP_MS = 3e4;
+var DEFAULT_MAX_ELAPSED_MS = 6e4;
+function parseRetryAfterHeader(h) {
+  if (!h) return void 0;
+  const secs = Number(h);
+  if (!Number.isNaN(secs) && secs >= 0) return Math.round(secs * 1e3);
+  const date = Date.parse(h);
+  if (!Number.isNaN(date)) return Math.max(date - Date.now(), 0);
+  return void 0;
+}
+function parseSeedRetryAfter(body) {
+  if (typeof body !== "object" || body === null) return void 0;
+  const rec = body;
+  if (typeof rec.retry_after_us === "number") {
+    return Math.round(rec.retry_after_us / 1e3);
+  }
+  if (typeof rec.error === "string") {
+    const m = /retry after (\d+)\s*s/i.exec(rec.error);
+    if (m) return Number(m[1]) * 1e3;
+  }
+  return void 0;
+}
+
+// src/seed/dispatch.ts
+async function classifyErrorResponse(res, path) {
+  const rawBody = await res.text().catch(() => "");
+  const parsed = tryJson(rawBody);
+  const message = extractMessage(parsed) ?? res.statusText ?? `HTTP ${res.status}`;
+  const status = res.status;
+  switch (status) {
+    case 400:
+    case 422:
+      return surface(new ValidationError(message));
+    case 401:
+      return surface(new AuthError(`unauthorized: ${message}`));
+    case 403:
+      return surface(new AuthError(`forbidden: ${message}`));
+    case 404:
+      return surface(new NotFoundError(message));
+    case 409:
+      return surface(new ConflictError(message));
+    case 429: {
+      const headerHint = parseRetryAfterHeader(res.headers.get("Retry-After"));
+      const bodyHint = parseSeedRetryAfter(parsed);
+      const retryAfterMs = headerHint ?? bodyHint ?? 1e3;
+      return {
+        kind: "err",
+        disposition: "pin",
+        retryHintMs: retryAfterMs,
+        error: new RateLimitError(retryAfterMs, message)
+      };
     }
-  ];
+    case 501:
+      return surface(new NotImplementedError(path, message));
+    case 503: {
+      const headerHint = parseRetryAfterHeader(res.headers.get("Retry-After"));
+      return {
+        kind: "err",
+        disposition: "cycle",
+        peerClass: "serviceUnavailable",
+        retryHintMs: headerHint ?? void 0,
+        error: new ServiceUnavailableError(headerHint, message)
+      };
+    }
+    default:
+      if (status >= 500) {
+        return {
+          kind: "err",
+          disposition: "cycle",
+          peerClass: "server5xx",
+          error: new ServiceUnavailableError(
+            void 0,
+            `HTTP ${status}: ${message}`
+          )
+        };
+      }
+      return surface(
+        new CognitumError(`HTTP ${status}: ${message}`, "API_ERROR", status)
+      );
+  }
+}
+function extractMessage(parsed) {
+  if (parsed && typeof parsed === "object") {
+    const rec = parsed;
+    if (typeof rec.error === "string") return rec.error;
+    if (typeof rec.message === "string") return rec.message;
+  }
+  return void 0;
+}
+function tryJson(body) {
+  if (!body) return void 0;
+  try {
+    return JSON.parse(body);
+  } catch {
+    return void 0;
+  }
+}
+function surface(error) {
+  return { kind: "err", disposition: "surface", error };
+}
+
+// src/seed/health.ts
+function startHealthProbe(opts) {
+  const { peers, fetchFn, intervalMs } = opts;
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+    throw new RangeError(
+      `startHealthProbe: intervalMs must be > 0 (got ${intervalMs})`
+    );
+  }
+  const probeTimeout = opts.probeTimeoutMs ?? intervalMs;
+  let stopped = false;
+  const controllers = /* @__PURE__ */ new Set();
+  const tick = async () => {
+    if (stopped) return;
+    const snapshot = peers.snapshot();
+    await Promise.all(
+      snapshot.map(async (p) => {
+        if (stopped) return;
+        const ctrl = new AbortController();
+        controllers.add(ctrl);
+        const timer = setTimeout(() => ctrl.abort(), probeTimeout);
+        try {
+          const headers = {
+            Accept: "application/json"
+          };
+          const tok = opts.tokenForPeer?.(p.key);
+          if (tok) headers["X-Pairing-Token"] = tok;
+          const res = await fetchFn(`${p.baseUrl}/api/v1/status`, {
+            method: "GET",
+            headers,
+            signal: ctrl.signal
+          });
+          if (res.ok) {
+            peers.markSuccess(p.key, probeTimeout);
+          } else {
+            const cls = classifyProbeStatus(res.status);
+            if (cls) peers.markFailure(p.key, cls);
+          }
+          try {
+            await res.text();
+          } catch {
+          }
+        } catch (err) {
+          if (stopped) return;
+          const cls = classifyProbeError(err);
+          peers.markFailure(p.key, cls);
+        } finally {
+          clearTimeout(timer);
+          controllers.delete(ctrl);
+        }
+      })
+    );
+  };
+  const interval = setInterval(() => {
+    void tick();
+  }, intervalMs);
+  if (typeof interval.unref === "function") {
+    interval.unref();
+  }
+  return {
+    stop() {
+      if (stopped) return;
+      stopped = true;
+      clearInterval(interval);
+      for (const c of controllers) {
+        try {
+          c.abort();
+        } catch {
+        }
+      }
+      controllers.clear();
+    }
+  };
+}
+function classifyProbeStatus(status) {
+  if (status === 503) return "serviceUnavailable";
+  if (status === 500 || status === 502 || status === 504) return "server5xx";
+  return void 0;
+}
+function classifyProbeError(err) {
+  if (err instanceof Error) {
+    if (err.name === "AbortError" || err.name === "TimeoutError") {
+      return "timeout";
+    }
+  }
+  return "network";
+}
+
+// src/seed/peers.ts
+function stateRank(state) {
+  switch (state) {
+    case "healthy":
+      return 0;
+    case "degraded":
+      return 1;
+    case "unhealthy":
+      return 2;
+  }
+}
+function makePeer(listIndex, rawUrl) {
+  const normalised = normaliseBaseUrl2(rawUrl);
+  return {
+    listIndex,
+    baseUrl: normalised,
+    key: normalised,
+    label: labelFor(normalised),
+    state: "healthy",
+    latencyEmaMs: void 0,
+    lastUsedAt: void 0,
+    consecutiveFailures: 0
+  };
+}
+function sortKey(p) {
+  const ema = p.latencyEmaMs === void 0 ? Number.MAX_SAFE_INTEGER / 2 : Math.max(0, p.latencyEmaMs);
+  return [stateRank(p.state), ema, p.listIndex];
+}
+function compareSortKeys(a, b) {
+  if (a[0] !== b[0]) return a[0] - b[0];
+  if (a[1] !== b[1]) return a[1] - b[1];
+  return a[2] - b[2];
+}
+var PeerSet = class {
+  peers;
+  constructor(endpoints) {
+    if (!Array.isArray(endpoints) || endpoints.length === 0) {
+      throw new ConfigError("PeerSet requires at least one endpoint");
+    }
+    this.peers = endpoints.map((url, i) => makePeer(i, url));
+  }
+  /** Total peer count. */
+  len() {
+    return this.peers.length;
+  }
+  /** Whether more than one peer is configured. */
+  isMesh() {
+    return this.peers.length > 1;
+  }
+  /** Snapshot of all peers (shallow copy so callers can't mutate state). */
+  snapshot() {
+    return this.peers.map((p) => ({ ...p }));
+  }
+  /** Primary peer — the first in constructor order. */
+  primary() {
+    return this.peers[0];
+  }
+  /** Iterator over peers in constructor order. */
+  *iter() {
+    for (const p of this.peers) yield p;
+  }
+  /**
+   * Pick the next peer to dispatch against per closest-first ordering.
+   * Prefers `healthy` → `degraded`; falls back to `unhealthy` only if
+   * every peer is unhealthy (so the request still attempts something).
+   */
+  pick() {
+    let best;
+    let bestKey;
+    for (const p of this.peers) {
+      const k = sortKey(p);
+      if (!best || !bestKey || compareSortKeys(k, bestKey) < 0) {
+        best = p;
+        bestKey = k;
+      }
+    }
+    if (!best) {
+      throw new ConfigError("PeerSet invariant: at least one peer");
+    }
+    return best;
+  }
+  /**
+   * Next peer to try after `failed` has returned a cycling-eligible
+   * error. Skips `failed` by `listIndex`; scans remaining peers in the
+   * same closest-first order.
+   */
+  nextAfter(failed) {
+    let best;
+    let bestKey;
+    for (const p of this.peers) {
+      if (p.listIndex === failed.listIndex) continue;
+      const k = sortKey(p);
+      if (!best || !bestKey || compareSortKeys(k, bestKey) < 0) {
+        best = p;
+        bestKey = k;
+      }
+    }
+    return best;
+  }
+  /** Look up a peer by canonical URL key. */
+  findByKey(peerKey) {
+    const wanted = normaliseBaseUrl2(peerKey);
+    return this.peers.find((p) => p.key === wanted);
+  }
+  /**
+   * Record a successful outcome: update EMA, clear failure counter,
+   * promote state to `healthy`.
+   */
+  markSuccess(peerKey, latencyMs) {
+    const p = this.peerMut(peerKey);
+    if (!p) return;
+    const ms = Math.max(0, latencyMs);
+    p.latencyEmaMs = p.latencyEmaMs === void 0 ? ms : 0.8 * p.latencyEmaMs + 0.2 * ms;
+    p.consecutiveFailures = 0;
+    p.state = "healthy";
+    p.lastUsedAt = Date.now();
+  }
+  /**
+   * Record a failure. `class` determines the state transition:
+   *
+   * - `serviceUnavailable` — immediate `unhealthy` (lockdown semantics).
+   * - `network` / `timeout` / `server5xx` — bumps `consecutiveFailures`;
+   *   `degraded` at 1-2, `unhealthy` at >=3.
+   */
+  markFailure(peerKey, cls) {
+    const p = this.peerMut(peerKey);
+    if (!p) return;
+    p.consecutiveFailures += 1;
+    p.lastUsedAt = Date.now();
+    if (cls === "serviceUnavailable") {
+      p.state = "unhealthy";
+    } else if (p.consecutiveFailures >= 3) {
+      p.state = "unhealthy";
+    } else {
+      p.state = "degraded";
+    }
+  }
+  peerMut(peerKey) {
+    const wanted = normaliseBaseUrl2(peerKey);
+    return this.peers.find((p) => p.key === wanted);
+  }
+};
+function normaliseBaseUrl2(raw) {
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new ConfigError(`invalid endpoint URL: ${raw}`);
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new ConfigError(
+      `endpoint must use http(s); got ${url.protocol}${url.host}`
+    );
+  }
+  return url.toString().replace(/\/+$/, "");
 }
 function labelFor(url) {
   try {
@@ -268,96 +619,13 @@ function buildSeedFetch(cfg) {
   };
 }
 
-// src/seed/retry.ts
-var BASE_MS = 500;
-var CAP_MS = 3e4;
-var DEFAULT_MAX_ELAPSED_MS = 6e4;
-async function runWithRetry(op, cfg, pathForLog) {
-  const started = Date.now();
-  let attempt = 0;
-  for (; ; ) {
-    try {
-      return await op(attempt);
-    } catch (err) {
-      const elapsed = Date.now() - started;
-      const { retriable, hintMs } = classify(err, cfg);
-      const outOfBudget = attempt >= cfg.retries || elapsed >= cfg.maxElapsedMs;
-      if (!retriable || outOfBudget) throw err;
-      const expo = BASE_MS * 2 ** attempt;
-      const jitter = Math.random() * BASE_MS;
-      const computed = Math.min(CAP_MS, expo + jitter);
-      const delay = Math.max(computed, hintMs ?? 0);
-      const remaining = cfg.maxElapsedMs - elapsed;
-      cfg.logger?.debug?.({
-        attempt,
-        next_delay_ms: Math.min(delay, remaining),
-        reason: err.name,
-        path: pathForLog
-      });
-      await sleep(Math.min(delay, Math.max(0, remaining)));
-      attempt += 1;
-    }
-  }
-}
-function classify(err, cfg) {
-  if (err instanceof RateLimitError) {
-    return { retriable: cfg.rateLimitRetry, hintMs: err.retryAfterMs };
-  }
-  if (err instanceof ServiceUnavailableError) {
-    return { retriable: true, hintMs: err.retryAfterMs };
-  }
-  if (err instanceof NetworkError) {
-    return { retriable: true };
-  }
-  if (err instanceof TimeoutError) {
-    if (err.phase === "connect") return { retriable: true };
-    if (cfg.method.toUpperCase() === "POST" && !cfg.idempotent) {
-      return { retriable: false };
-    }
-    return { retriable: true };
-  }
-  if (err instanceof CognitumError) {
-    const sc = err.statusCode;
-    if (sc !== void 0 && sc >= 500 && sc !== 501) {
-      return { retriable: true };
-    }
-  }
-  if (err instanceof AuthError || err instanceof ValidationError || err instanceof NotFoundError || err instanceof ConflictError || err instanceof NotImplementedError || err instanceof ParseError) {
-    return { retriable: false };
-  }
-  return { retriable: false };
-}
-function parseRetryAfterHeader(h) {
-  if (!h) return void 0;
-  const secs = Number(h);
-  if (!Number.isNaN(secs) && secs >= 0) return Math.round(secs * 1e3);
-  const date = Date.parse(h);
-  if (!Number.isNaN(date)) return Math.max(date - Date.now(), 0);
-  return void 0;
-}
-function parseSeedRetryAfter(body) {
-  if (typeof body !== "object" || body === null) return void 0;
-  const rec = body;
-  if (typeof rec.retry_after_us === "number") {
-    return Math.round(rec.retry_after_us / 1e3);
-  }
-  if (typeof rec.error === "string") {
-    const m = /retry after (\d+)\s*s/i.exec(rec.error);
-    if (m) return Number(m[1]) * 1e3;
-  }
-  return void 0;
-}
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, Math.max(0, ms)));
-}
-
-// src/seed/resources/status.ts
-function makeStatusResource(request) {
-  const fn = (() => request("GET", "/api/v1/status", {
-    idempotent: true
-  }));
-  fn.get = fn;
-  return fn;
+// src/seed/resources/custody.ts
+function makeCustodyResource(request) {
+  return {
+    epoch: () => request("GET", "/api/v1/custody/epoch", {
+      idempotent: true
+    })
+  };
 }
 
 // src/seed/resources/identity.ts
@@ -367,6 +635,19 @@ function makeIdentityResource(request) {
   }));
   fn.get = fn;
   return fn;
+}
+
+// src/seed/resources/ota.ts
+function makeOtaResource(request) {
+  return {
+    config: () => request("GET", "/api/v1/ota/config", {
+      idempotent: true
+    }),
+    checkNow: () => request("POST", "/api/v1/ota/check-now", {
+      idempotent: true
+      // the seed merely re-checks; no destructive effect
+    })
+  };
 }
 
 // src/seed/resources/pair.ts
@@ -393,22 +674,13 @@ function makePairResource(request) {
   };
 }
 
-// src/seed/resources/witness.ts
-function makeWitnessResource(request) {
-  return {
-    chain: () => request("GET", "/api/v1/witness/chain", {
-      idempotent: true
-    })
-  };
-}
-
-// src/seed/resources/custody.ts
-function makeCustodyResource(request) {
-  return {
-    epoch: () => request("GET", "/api/v1/custody/epoch", {
-      idempotent: true
-    })
-  };
+// src/seed/resources/status.ts
+function makeStatusResource(request) {
+  const fn = (() => request("GET", "/api/v1/status", {
+    idempotent: true
+  }));
+  fn.get = fn;
+  return fn;
 }
 
 // src/seed/resources/store.ts
@@ -443,17 +715,135 @@ function makeStoreResource(request) {
   };
 }
 
-// src/seed/resources/ota.ts
-function makeOtaResource(request) {
+// src/seed/resources/witness.ts
+function makeWitnessResource(request) {
   return {
-    config: () => request("GET", "/api/v1/ota/config", {
+    chain: () => request("GET", "/api/v1/witness/chain", {
       idempotent: true
-    }),
-    checkNow: () => request("POST", "/api/v1/ota/check-now", {
-      idempotent: true
-      // the seed merely re-checks; no destructive effect
     })
   };
+}
+
+// src/seed/session.ts
+var SeedSession = class {
+  /** Canonical URL key of the pinned peer (no trailing slash). */
+  pinnedPeer;
+  /** GET /api/v1/status on the pinned peer. */
+  status;
+  /** GET /api/v1/identity on the pinned peer. */
+  identity;
+  /** Pairing resource on the pinned peer. */
+  pair;
+  /** Witness resource on the pinned peer. */
+  witness;
+  /** Custody resource on the pinned peer. */
+  custody;
+  /** Store resource on the pinned peer. */
+  store;
+  /** OTA resource on the pinned peer. */
+  ota;
+  /** @internal — constructed by {@link SeedClient.session}. */
+  constructor(client, pinnedPeer) {
+    this.pinnedPeer = pinnedPeer;
+    const req = (method, path, opts) => client.request(method, path, { ...opts ?? {}, pinnedPeerKey: pinnedPeer });
+    this.status = makeStatusResource(req);
+    this.identity = makeIdentityResource(req);
+    this.pair = makePairResource(req);
+    this.witness = makeWitnessResource(req);
+    this.custody = makeCustodyResource(req);
+    this.store = makeStoreResource(req);
+    this.ota = makeOtaResource(req);
+  }
+};
+
+// src/seed/tokenBook.ts
+var SecretString = class {
+  #value;
+  constructor(value) {
+    if (typeof value !== "string") {
+      throw new TypeError("SecretString: value must be a string");
+    }
+    this.#value = value;
+  }
+  /**
+   * Borrow the inner token. Use sparingly — never log the result.
+   */
+  reveal() {
+    return this.#value;
+  }
+  /** Whether the underlying string is empty. */
+  isEmpty() {
+    return this.#value.length === 0;
+  }
+  /** Length of the underlying string (exposed for diagnostics). */
+  get length() {
+    return this.#value.length;
+  }
+  toString() {
+    return `SecretString(<redacted, ${this.#value.length} bytes>)`;
+  }
+  toJSON() {
+    return "<redacted>";
+  }
+  /** Node.js `util.inspect` hook so `console.log` prints a redacted form. */
+  [/* @__PURE__ */ Symbol.for("nodejs.util.inspect.custom")]() {
+    return this.toString();
+  }
+};
+var InMemoryTokenBook = class _InMemoryTokenBook {
+  #inner = /* @__PURE__ */ new Map();
+  /**
+   * Build a book from an iterable of `[peerUrl, token]` pairs. Raw
+   * strings are promoted to {@link SecretString} automatically.
+   */
+  static fromEntries(entries) {
+    const book = new _InMemoryTokenBook();
+    for (const [url, token] of entries) {
+      book.set(
+        url,
+        typeof token === "string" ? new SecretString(token) : token
+      );
+    }
+    return book;
+  }
+  get(peerUrl) {
+    return this.#inner.get(normalise(peerUrl));
+  }
+  set(peerUrl, token) {
+    this.#inner.set(normalise(peerUrl), token);
+  }
+  delete(peerUrl) {
+    this.#inner.delete(normalise(peerUrl));
+  }
+  /** Number of entries; exposed for tests and introspection. */
+  get size() {
+    return this.#inner.size;
+  }
+};
+function normalise(peerUrl) {
+  try {
+    return normaliseBaseUrl2(peerUrl);
+  } catch {
+    return peerUrl.replace(/\/+$/, "");
+  }
+}
+async function pairAll(peers, clientName, pair, book) {
+  if (!clientName || typeof clientName !== "string") {
+    throw new TypeError("pairAll: clientName must be a non-empty string");
+  }
+  if (!Array.isArray(peers) || peers.length === 0) {
+    throw new TypeError("pairAll: at least one peer required");
+  }
+  const results = [];
+  for (const peer of peers) {
+    const response = await pair(peer, clientName);
+    const raw = response.pairing_token ?? response.token;
+    if (book && typeof raw === "string" && raw.length > 0) {
+      book.set(peer, new SecretString(raw));
+    }
+    results.push([peer, response]);
+  }
+  return results;
 }
 
 // src/seed/client.ts
@@ -474,13 +864,26 @@ var SeedClient = class {
   store;
   /** OTA — config + check-now. */
   ota;
-  /** Peer list (always length 1 in Phase 1). */
-  peers;
+  /** Peer set — closest-first picker with per-peer health state. */
+  peerSet;
+  /** Per-peer pairing-token store. */
+  tokenBook;
   /** TLS-aware fetch bound to this client. */
   fetchFn;
+  /** Active health-probe handle; `undefined` when disabled. */
+  healthProbe;
   constructor(options) {
     this.config = resolveSeedConfig(options);
-    this.peers = singlePeer(this.config.baseUrl, this.config.pairingToken);
+    this.peerSet = new PeerSet(this.config.endpoints);
+    this.tokenBook = this.config.tokenBook ?? new InMemoryTokenBook();
+    if (this.config.pairingToken !== void 0) {
+      const shared = new SecretString(this.config.pairingToken);
+      for (const peer of this.peerSet.iter()) {
+        if (this.tokenBook.get(peer.key) === void 0) {
+          this.tokenBook.set(peer.key, shared);
+        }
+      }
+    }
     this.fetchFn = buildSeedFetch(this.config);
     const req = this.request.bind(this);
     this.status = makeStatusResource(req);
@@ -490,37 +893,187 @@ var SeedClient = class {
     this.custody = makeCustodyResource(req);
     this.store = makeStoreResource(req);
     this.ota = makeOtaResource(req);
+    if (this.config.healthInterval !== void 0) {
+      this.healthProbe = startHealthProbe({
+        peers: this.peerSet,
+        fetchFn: this.fetchFn,
+        intervalMs: this.config.healthInterval,
+        tokenForPeer: (peerKey) => {
+          const tok = this.tokenBook.get(peerKey);
+          return tok?.reveal();
+        }
+      });
+    }
   }
   /**
-   * Perform an HTTP request against the seed and return the parsed JSON
-   * body. Wraps every attempt in the retry loop. Maps HTTP / network /
-   * parse failures onto the ADR-0004 error taxonomy.
+   * Snapshot view of the SDK-local peer table (ADR-0016a §D7 —
+   * `client.peers()`). The returned array is a shallow copy; mutations
+   * do not affect routing.
+   */
+  peers() {
+    return this.peerSet.snapshot();
+  }
+  /**
+   * Open a {@link SeedSession} pinned to the currently closest-first
+   * peer. The session holds the pin for its lifetime; all its resource
+   * calls go to the same peer unless the peer hard-fails, in which case
+   * the failover state machine transparently cycles.
+   */
+  session() {
+    return new SeedSession(this, this.peerSet.pick().key);
+  }
+  /**
+   * Stop the active health probe (if any) so the Node event loop can
+   * exit cleanly. Idempotent — safe to call more than once.
+   *
+   * Does NOT revoke pairing or wipe the TokenBook; callers own token
+   * lifetimes per ADR-0007.
+   */
+  close() {
+    this.healthProbe?.stop();
+  }
+  /**
+   * Introspection helper for tests: look up a pairing token by
+   * canonical peer URL. Returns `undefined` when the book has no entry.
+   * @internal
+   */
+  tokenForPeer(peerKey) {
+    return this.tokenBook.get(peerKey)?.reveal();
+  }
+  /**
+   * Perform an HTTP request against the seed mesh and return the parsed
+   * JSON body. Implements the Phase 1.5 failover state machine.
    */
   async request(method, path, opts = {}) {
-    const peer = this.peers[0];
-    const url = buildUrl(peer.baseUrl, path, opts.query);
     const methodUpper = method.toUpperCase();
     const idempotent = opts.idempotent ?? (methodUpper === "GET" || methodUpper === "HEAD");
-    return runWithRetry(
-      async () => this.singleAttempt(methodUpper, url, path, peer, opts),
-      {
-        retries: this.config.retries,
-        maxElapsedMs: this.config.timeouts.total ?? DEFAULT_MAX_ELAPSED_MS,
-        rateLimitRetry: this.config.rateLimitRetry,
-        method: methodUpper,
-        idempotent,
-        logger: this.config.logger
-      },
-      path
-    );
+    const totalBudgetMs = this.config.timeouts.total ?? DEFAULT_MAX_ELAPSED_MS;
+    const startedAt = Date.now();
+    let peer = this.initialPeer(opts.pinnedPeerKey);
+    const totalPeers = this.peerSet.len();
+    let peersTried = 0;
+    let retryAttempt = 0;
+    let lastErr;
+    for (; ; ) {
+      const elapsed = Date.now() - startedAt;
+      if (elapsed >= totalBudgetMs) {
+        throw lastErr ?? new TimeoutError(
+          "read",
+          `seed: total deadline ${totalBudgetMs}ms exceeded at ${path}`
+        );
+      }
+      const attemptBudgetMs = Math.max(1, totalBudgetMs - elapsed);
+      const attemptTimeoutMs = Math.min(
+        opts.timeoutMs ?? this.config.timeouts.read,
+        attemptBudgetMs
+      );
+      const outcome = await this.dispatchOnce(
+        methodUpper,
+        path,
+        peer,
+        opts,
+        attemptTimeoutMs
+      );
+      if (outcome.kind === "ok") {
+        return outcome.value;
+      }
+      if (outcome.peerClass !== void 0) {
+        this.peerSet.markFailure(peer.key, outcome.peerClass);
+      }
+      lastErr = outcome.error;
+      switch (outcome.disposition) {
+        case "cycle": {
+          peersTried += 1;
+          if (peersTried < totalPeers) {
+            const next = this.peerSet.nextAfter(peer);
+            if (next) {
+              peer = next;
+              continue;
+            }
+          }
+          if (this.shouldBackoffRetry(outcome.error, methodUpper, idempotent)) {
+            const delayMs = this.backoffDelay(
+              retryAttempt,
+              outcome.retryHintMs
+            );
+            if (Date.now() - startedAt + delayMs > totalBudgetMs) {
+              throw outcome.error;
+            }
+            if (retryAttempt + 1 > this.config.retries) {
+              throw outcome.error;
+            }
+            await sleep(delayMs);
+            retryAttempt += 1;
+            peersTried = 0;
+            peer = this.initialPeer(opts.pinnedPeerKey);
+            continue;
+          }
+          throw outcome.error;
+        }
+        case "pin": {
+          if (!this.shouldBackoffRetry(outcome.error, methodUpper, idempotent)) {
+            throw outcome.error;
+          }
+          if (retryAttempt + 1 > this.config.retries) {
+            throw outcome.error;
+          }
+          const delayMs = this.backoffDelay(retryAttempt, outcome.retryHintMs);
+          if (Date.now() - startedAt + delayMs > totalBudgetMs) {
+            throw outcome.error;
+          }
+          await sleep(delayMs);
+          retryAttempt += 1;
+          continue;
+        }
+        case "surface": {
+          throw outcome.error;
+        }
+      }
+    }
   }
-  async singleAttempt(method, url, pathForLog, peer, opts) {
+  // ------------------------------------------------------------------ //
+  // internals                                                          //
+  // ------------------------------------------------------------------ //
+  initialPeer(pinnedKey) {
+    if (pinnedKey) {
+      const pinned = this.peerSet.findByKey(pinnedKey);
+      if (pinned) return pinned;
+    }
+    return this.peerSet.pick();
+  }
+  shouldBackoffRetry(err, method, idempotent) {
+    if (err instanceof RateLimitError) return this.config.rateLimitRetry;
+    if (err instanceof ServiceUnavailableError) return true;
+    if (err instanceof NetworkError) return true;
+    if (err instanceof TimeoutError) {
+      if (err.phase === "connect") return true;
+      if (method === "POST" && !idempotent) return false;
+      return true;
+    }
+    if (err instanceof CognitumError) {
+      const sc = err.statusCode;
+      if (sc !== void 0 && sc >= 500 && sc !== 501) return true;
+    }
+    return false;
+  }
+  backoffDelay(attempt, hintMs) {
+    const expo = BASE_MS * 2 ** attempt;
+    const jitter = Math.random() * BASE_MS;
+    const computed = Math.min(CAP_MS, expo + jitter);
+    if (hintMs !== void 0) {
+      return Math.min(CAP_MS, Math.max(computed, hintMs));
+    }
+    return computed;
+  }
+  async dispatchOnce(method, path, peer, opts, attemptTimeoutMs) {
+    const url = buildUrl(peer.baseUrl, path, opts.query);
     const headers = {
       Accept: "application/json",
-      "User-Agent": "cognitum-sdk-node/0.2.0-seed-phase1"
+      "User-Agent": "cognitum-sdk-node/0.2.0-seed-phase1.5"
     };
-    if (peer.pairingToken) {
-      headers["X-Pairing-Token"] = peer.pairingToken;
+    const tok = this.tokenBook.get(peer.key);
+    if (tok) {
+      headers["X-Pairing-Token"] = tok.reveal();
     }
     if (this.config.apiKey) {
       headers["X-API-Key"] = this.config.apiKey;
@@ -530,68 +1083,45 @@ var SeedClient = class {
       headers["Content-Type"] = "application/json";
       init.body = JSON.stringify(opts.body);
     }
-    const timeoutMs = opts.timeoutMs ?? this.config.timeouts.read;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), attemptTimeoutMs);
     init.signal = controller.signal;
+    const callStarted = Date.now();
     let response;
     try {
       response = await this.fetchFn(url, init);
     } catch (err) {
       clearTimeout(timer);
-      if (err instanceof DOMException && err.name === "AbortError") {
-        throw new TimeoutError("read", `timeout after ${timeoutMs}ms at ${pathForLog}`);
-      }
       if (isAbortError(err)) {
-        throw new TimeoutError("read", `timeout after ${timeoutMs}ms at ${pathForLog}`);
+        const e2 = new TimeoutError(
+          "read",
+          `timeout after ${attemptTimeoutMs}ms at ${path}`
+        );
+        return {
+          kind: "err",
+          disposition: "cycle",
+          peerClass: "timeout",
+          error: e2
+        };
       }
-      throw new NetworkError(
+      const e = new NetworkError(
         err instanceof Error ? err.message : String(err),
         err
       );
+      return {
+        kind: "err",
+        disposition: "cycle",
+        peerClass: "network",
+        error: e
+      };
     }
     clearTimeout(timer);
     if (response.ok) {
-      if (response.status === 204) return void 0;
-      return await parseJson(response);
+      const value = response.status === 204 ? void 0 : await parseJson(response);
+      this.peerSet.markSuccess(peer.key, Date.now() - callStarted);
+      return { kind: "ok", value };
     }
-    throw await this.mapHttpError(response, pathForLog);
-  }
-  /** Translate an HTTP error response into an ADR-0004 `CognitumError`. */
-  async mapHttpError(res, pathForLog) {
-    const rawBody = await res.text().catch(() => "");
-    const parsed = tryJson(rawBody);
-    const message = extractMessage(parsed) ?? res.statusText ?? `HTTP ${res.status}`;
-    switch (res.status) {
-      case 400:
-      case 422:
-        return new ValidationError(message);
-      case 401:
-        return new AuthError(`unauthorized: ${message}`);
-      case 403:
-        return new AuthError(`forbidden: ${message}`);
-      case 404:
-        return new NotFoundError(message);
-      case 409:
-        return new ConflictError(message);
-      case 429: {
-        const headerHint = parseRetryAfterHeader(res.headers.get("Retry-After"));
-        const bodyHint = parseSeedRetryAfter(parsed);
-        const retryAfterMs = headerHint ?? bodyHint ?? 1e3;
-        return new RateLimitError(retryAfterMs, message);
-      }
-      case 501:
-        return new NotImplementedError(pathForLog, message);
-      case 503: {
-        const headerHint = parseRetryAfterHeader(res.headers.get("Retry-After"));
-        return new ServiceUnavailableError(headerHint, message);
-      }
-      default:
-        if (res.status >= 500) {
-          return new ServiceUnavailableError(void 0, `HTTP ${res.status}: ${message}`);
-        }
-        return new CognitumError(`HTTP ${res.status}: ${message}`, "API_ERROR", res.status);
-    }
+    return classifyErrorResponse(response, path);
   }
 };
 function buildUrl(baseUrl, path, query) {
@@ -610,44 +1140,42 @@ async function parseJson(res) {
   try {
     return JSON.parse(text);
   } catch (err) {
-    throw new ParseError("JSON", `invalid JSON in ${res.status} response: ${err.message}`);
+    throw new ParseError(
+      "JSON",
+      `invalid JSON in ${res.status} response: ${err.message}`
+    );
   }
-}
-function tryJson(body) {
-  if (!body) return void 0;
-  try {
-    return JSON.parse(body);
-  } catch {
-    return void 0;
-  }
-}
-function extractMessage(parsed) {
-  if (parsed && typeof parsed === "object") {
-    const rec = parsed;
-    if (typeof rec.error === "string") return rec.error;
-    if (typeof rec.message === "string") return rec.message;
-  }
-  return void 0;
 }
 function isAbortError(err) {
+  if (err instanceof DOMException && err.name === "AbortError") return true;
   if (err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError")) {
     return true;
   }
   return false;
+}
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, Math.max(0, ms)));
 }
 export {
   AuthError,
   CognitumError,
   ConfigError,
   ConflictError,
+  InMemoryTokenBook,
   NetworkError,
   NotFoundError,
   NotImplementedError,
   ParseError,
+  PeerSet,
   RateLimitError,
+  SecretString,
   SeedClient,
+  SeedSession,
   ServiceUnavailableError,
   TimeoutError,
-  ValidationError
+  ValidationError,
+  normaliseBaseUrl2 as normaliseBaseUrl,
+  pairAll,
+  startHealthProbe
 };
 //# sourceMappingURL=index.js.map

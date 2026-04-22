@@ -24,6 +24,14 @@ from cognitum.seed._config import (
     SeedTLS,
     normalise_options,
 )
+from cognitum.seed._peers import Peer, PeerErrorClass, PeerSet, PeerState
+from cognitum.seed._session import AsyncSeedSession, SeedSession
+from cognitum.seed._token_book import (
+    InMemoryTokenBook,
+    SecretString,
+    TokenBook,
+    pair_all,
+)
 from cognitum.seed._errors import (
     ApiError,
     AuthError,
@@ -68,6 +76,8 @@ __all__ = [
     # Clients
     "SeedClient",
     "AsyncSeedClient",
+    "SeedSession",
+    "AsyncSeedSession",
     # Config
     "Endpoint",
     "Routing",
@@ -76,6 +86,15 @@ __all__ = [
     "SeedFailover",
     "SeedTLS",
     "normalise_options",
+    # Mesh (Phase 1.5)
+    "Peer",
+    "PeerErrorClass",
+    "PeerSet",
+    "PeerState",
+    "TokenBook",
+    "InMemoryTokenBook",
+    "SecretString",
+    "pair_all",
     # TLS
     "SeedPinnedVerifier",
     # Retry helpers

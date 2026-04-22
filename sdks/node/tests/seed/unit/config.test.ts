@@ -6,7 +6,7 @@ describe("resolveSeedConfig", () => {
   it("accepts a single-string endpoint", () => {
     const cfg = resolveSeedConfig({ endpoints: "https://cognitum.local:8443" });
     expect(cfg.baseUrl).toBe("https://cognitum.local:8443");
-    expect(cfg.routing).toBe("pinned");
+    expect(cfg.routing).toBe("session"); // Phase 1.5 default
     expect(cfg.retries).toBe(3);
     expect(cfg.rateLimitRetry).toBe(true);
   });
@@ -16,10 +16,12 @@ describe("resolveSeedConfig", () => {
     expect(cfg.baseUrl).toBe("https://localhost:18443");
   });
 
-  it("rejects a 2+ element array with Phase 1.5 note", () => {
-    expect(() =>
-      resolveSeedConfig({ endpoints: ["https://a:8443", "https://b:8443"] }),
-    ).toThrow(/Phase 1\.5/);
+  it("accepts a 2+ element array (Phase 1.5 mesh mode)", () => {
+    const cfg = resolveSeedConfig({
+      endpoints: ["https://a:8443", "https://b:8443"],
+    });
+    expect(cfg.endpoints).toEqual(["https://a:8443", "https://b:8443"]);
+    expect(cfg.baseUrl).toBe("https://a:8443");
   });
 
   it("rejects an empty endpoint list", () => {
@@ -50,13 +52,13 @@ describe("resolveSeedConfig", () => {
     expect(cfg.baseUrl).toBe("https://seed:8443");
   });
 
-  it("rejects `TokenBook` auth in Phase 1", () => {
-    expect(() =>
-      resolveSeedConfig({
-        endpoints: "https://seed:8443",
-        auth: { pairingToken: { laptop: "tok" } },
-      }),
-    ).toThrow(/TokenBook/);
+  it("accepts an inline pairingToken map (Phase 1.5 legacy shape)", () => {
+    const cfg = resolveSeedConfig({
+      endpoints: "https://seed:8443",
+      auth: { pairingToken: { laptop: "tok" } },
+    });
+    expect(cfg.pairingToken).toBeUndefined();
+    expect(cfg.pairingTokenMap).toEqual({ laptop: "tok" });
   });
 
   it("accepts a string pairing token", () => {
@@ -67,13 +69,27 @@ describe("resolveSeedConfig", () => {
     expect(cfg.pairingToken).toBe("tok-abc");
   });
 
-  it("rejects a non-pinned routing strategy in Phase 1", () => {
+  it("accepts Phase 1.5 routing strategies", () => {
+    const cfg = resolveSeedConfig({
+      endpoints: "https://seed:8443",
+      routing: "round-robin",
+    });
+    expect(cfg.routing).toBe("round-robin");
+  });
+
+  it("rejects unknown routing strategy", () => {
     expect(() =>
       resolveSeedConfig({
         endpoints: "https://seed:8443",
-        routing: "round-robin",
+        // @ts-expect-error runtime guard under test
+        routing: "nope",
       }),
-    ).toThrow(/Phase 1\.5/);
+    ).toThrow(/not recognised/);
+  });
+
+  it("defaults routing to session (Phase 1.5)", () => {
+    const cfg = resolveSeedConfig({ endpoints: "https://seed:8443" });
+    expect(cfg.routing).toBe("session");
   });
 
   it("defaults timeouts to ADR-0002 values (connect=5s, read=30s, total=60s)", () => {
@@ -99,9 +115,9 @@ describe("resolveSeedConfig", () => {
     expect(cfg.tls.insecure).toBe(true);
   });
 
-  it("defaults failover to retry-same on both connect-error and 5xx", () => {
+  it("defaults failover to next-peer on both connect-error and 5xx (Phase 1.5)", () => {
     const cfg = resolveSeedConfig({ endpoints: "https://seed:8443" });
-    expect(cfg.failover.onConnectError).toBe("retry-same");
-    expect(cfg.failover.onStatus5xx).toBe("retry-same");
+    expect(cfg.failover.onConnectError).toBe("next-peer");
+    expect(cfg.failover.onStatus5xx).toBe("next-peer");
   });
 });

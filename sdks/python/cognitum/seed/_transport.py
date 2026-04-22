@@ -116,24 +116,32 @@ def build_verify(host: str, tls: SeedTLS) -> bool | str | ssl.SSLContext:
 
 
 def _headers(auth: SeedAuth, user_agent: str) -> dict[str, str]:
+    """Headers that do NOT include per-peer auth.
+
+    ``X-Pairing-Token`` is injected per-request by the mesh request loop
+    using the :class:`TokenBook` (ADR-0016a §D5) so each peer sees its
+    own token. Phase 1 single-peer callers still honour
+    ``auth.pairing_token`` via the same book (see
+    :func:`normalise_options`).
+    """
     h: dict[str, str] = {
         "Content-Type": "application/json",
         "Accept": "application/json",
         "User-Agent": user_agent,
     }
-    if auth.pairing_token:
-        h["X-Pairing-Token"] = auth.pairing_token
     if auth.api_key:
         h["X-API-Key"] = auth.api_key
     return h
 
 
 def build_sync_client(options: SeedClientOptions) -> httpx.Client:
+    # Phase 1.5: no base_url pinning — the mesh loop assembles absolute
+    # URLs from the picked peer. httpx still reuses the same underlying
+    # connection pool across peers.
     ep = options.primary
     connect, read, total = options.timeouts
     verify = build_verify(ep.host, options.tls)
     return httpx.Client(
-        base_url=ep.url,
         timeout=httpx.Timeout(connect=connect, read=read, write=read, pool=connect),
         headers=_headers(options.auth, options.user_agent),
         limits=httpx.Limits(
@@ -153,7 +161,6 @@ def build_async_client(options: SeedClientOptions) -> httpx.AsyncClient:
     connect, read, total = options.timeouts
     verify = build_verify(ep.host, options.tls)
     return httpx.AsyncClient(
-        base_url=ep.url,
         timeout=httpx.Timeout(connect=connect, read=read, write=read, pool=connect),
         headers=_headers(options.auth, options.user_agent),
         limits=httpx.Limits(

@@ -618,6 +618,58 @@ and adding Python-specific items.
 - Forward-compat: `SeedStatus.extra["witness_chain_length"]` test asserts
   unknown fields round-trip safely.
 
+## Phase 1.5 delivery (2026-04-23)
+
+Executes ADR-0016a/b for the Python SDK. Mirrors the Rust reference in
+`sdks/rust/src/seed/{peers,token_book,session,health,client}.rs` and
+the work plan in `/home/ruvultra/projects/sdks/docs/adr/0017-phase-1-5-mesh-implementation-plan.md`.
+
+### What landed
+
+| File | Purpose |
+|------|---------|
+| `cognitum/seed/_peers.py` | `Peer`, `PeerSet`, `PeerState`, `PeerErrorClass` — closest-first picker with latency EMA, health bookkeeping (ADR-0016a §D7). |
+| `cognitum/seed/_token_book.py` | `TokenBook` Protocol, `InMemoryTokenBook`, `SecretString` (redacting `__repr__`, best-effort zero on drop), `pair_all()` helper (§D5). |
+| `cognitum/seed/_session.py` | `SeedSession` / `AsyncSeedSession` context managers pinning one peer via a `_PinnedTransport` adapter (§D4, §D9). |
+| `cognitum/seed/_health.py` | Opt-in `HealthProbe` (`threading.Thread` daemon) and `AsyncHealthProbe` (`asyncio.create_task`) — off by default, enabled via `health_interval=` (§D7). |
+| `cognitum/seed/_config.py` | `SeedClientOptions` gains `endpoints: 1..N`, `routing="session"` default, `health_interval`, `token_book`; `normalise_options` seeds the book from a single `auth.pairing_token` for every peer (§D5). |
+| `cognitum/seed/_client.py`, `_async_client.py` | Mesh-aware request loop: `NetworkError` / `TimeoutError` / 5xx / 503 → cycle via `PeerSet.next_after`; 429 → pin on same peer + ADR-0005 backoff; `AuthError` / `ValidationError` / `NotFoundError` / 501 → surface. ADR-0005 total budget is per-request, not per-peer. |
+| `cognitum/seed/__init__.py` | Exports `SeedSession`, `AsyncSeedSession`, `TokenBook`, `InMemoryTokenBook`, `SecretString`, `Peer*`, `pair_all`. |
+| `tests/seed/unit/test_mesh_peer_set.py` | 9 tests — picker order, state transitions, 503 lockdown, defensive snapshot. |
+| `tests/seed/unit/test_mesh_token_book.py` | 8 tests — redaction, trailing-slash normalisation, type checks, `Protocol` conformance. |
+| `tests/seed/integration/test_seed_mesh.py` | All 7 mesh tests from ADR-0017 §5 + 1 async-session bonus — pass with respx mocking 2-3 endpoints. |
+
+### Test results (2026-04-23)
+
+```
+$ /tmp/swarm-seed-validation/python/venv/bin/pytest sdks/python/tests/seed/ -q
+137 passed, 3 skipped in 13.81s
+```
+
+All seven ADR-0017 §5 mesh tests pass:
+
+1. `test_mesh_single_peer_behaves_like_single_mode` — pass
+2. `test_mesh_two_peers_round_robin_for_reads` — pass
+3. `test_mesh_cycles_on_5xx` — pass
+4. `test_mesh_pins_on_429` — pass
+5. `test_mesh_session_stickiness` — pass
+6. `test_mesh_token_book_per_peer` — pass (asserts outgoing `X-Pairing-Token` is peer-specific)
+7. `test_mesh_health_probe_degrades_unhealthy_peer` — pass
+
+### Known gaps for Phase 2
+
+- `_telemetry.py` tracing spans do not yet carry the picked `peer_url`;
+  the mesh request loop knows the peer but does not tag spans. Nice-to-have.
+- The active probe does not implement the §D7 `degraded_interval` /
+  `unhealthy_interval` back-off: it polls every peer every
+  `health_interval`. Matches Rust today.
+- `InMemoryTokenBook.__del__` zero-out is best-effort; strict zeroization
+  would require switching to a `ctypes`-backed byte buffer. Out of scope.
+- Routing strategy enum is preserved (`session`, `pinned`, `round-robin`,
+  `read-any-write-one`) but only `session` is wired — Rust is the same.
+
+---
+
 ## References
 
 - `/home/ruvultra/projects/sdks/docs/adr/0002-seed-wire-protocol.md`

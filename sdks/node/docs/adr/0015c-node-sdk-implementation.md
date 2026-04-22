@@ -7,6 +7,105 @@
 - **Companion:** ADR-0015a (package layout, public API, typed models),
   ADR-0015b (errors, transport, retry, auth)
 
+## Phase 1.5 delivery (2026-04-23)
+
+Mesh routing landed on 2026-04-23, executing ADR-0017 against the Node
+tree. Concrete deliverables relative to the Phase 1 snapshot below:
+
+- `src/seed/peers.ts` — `PeerSet` extended to 1..N with per-peer
+  `PeerState`, `latencyEmaMs`, `lastUsedAt`, `consecutiveFailures`.
+  `pick` / `nextAfter` / `markSuccess` / `markFailure` per ADR-0016a
+  §D2/§D3/§D7. The Phase 1 `singlePeer()` helper was replaced by the
+  class-based `PeerSet`; one-element inputs still degenerate to the
+  single-peer code path.
+- `src/seed/tokenBook.ts` — new `TokenBook` interface +
+  `InMemoryTokenBook` default (ADR-0016a §D5). `SecretString` wraps
+  token values with `toString` / `toJSON` / `util.inspect.custom`
+  hooks that return `<redacted>` so the raw token never leaks to logs
+  or stack traces. `pairAll(peers, clientName, pairFn, book?)` helper
+  iterates the mesh and populates the book.
+- `src/seed/session.ts` — `SeedClient.session()` returns a peer-pinned
+  `SeedSession` mirroring the resource accessors (§D9). The pin is
+  enforced at dispatch time via a `pinnedPeerKey` option on
+  `SeedClient.request`.
+- `src/seed/health.ts` — opt-in active probe via
+  `SeedClientOptions.healthInterval`. Uses `setInterval` with
+  `.unref()` so the probe never keeps the Node event loop alive;
+  in-flight probe requests are cancelled via `AbortSignal` when
+  `SeedClient.close()` is called.
+- `src/seed/client.ts` — `SeedClient.request` rewritten onto the new
+  `PeerSet`. Failover state machine cycles on `NetworkError` /
+  `TimeoutError` / `500` / `502` / `503` / `504`, pins on `429`,
+  surfaces `AuthError` / `ValidationError` / `NotFoundError` /
+  `501 NotImplementedError` immediately. ADR-0005 60 s total budget
+  is respected across ALL peer attempts combined (invariant I10 —
+  N peers × M retries is NOT allowed).
+- `src/seed/config.ts` — accepts 1..N endpoints; adds `tokenBook`,
+  `routing`, `failover`, `healthInterval` options. Default routing is
+  now `"session"` (closest-first with session-stickiness) per §D2.
+  `auth.pairingToken` accepts a string (single-identity fallback) or
+  an inline `{ [clientName]: token }` map (legacy, exposed as
+  `pairingTokenMap` on the resolved config). Explicit per-peer tokens
+  should go through `tokenBook`.
+- `src/seed/index.ts` — exports `SeedSession`, `PeerSet`,
+  `InMemoryTokenBook`, `SecretString`, `pairAll`, `startHealthProbe`,
+  and the new `Peer` / `PeerState` / `PeerErrorClass` / `TokenBook`
+  types.
+- `tests/seed/unit/mesh-peer-set.test.ts` (17 tests) — ordering,
+  `nextAfter`, unhealthy-skip, `markSuccess` / `markFailure` state
+  transitions.
+- `tests/seed/unit/mesh-token-book.test.ts` (14 tests) — get/set/
+  delete round-trip, trailing-slash normalisation, redaction
+  assertions on `SecretString`, `pairAll` mesh iteration.
+- `tests/seed/integration/mesh.test.ts` (7 tests) — all 7 ADR-0017
+  §5 fixtures (`test_mesh_single_peer_behaves_like_single_mode`,
+  `test_mesh_two_peers_round_robin_for_reads`,
+  `test_mesh_cycles_on_5xx`, `test_mesh_pins_on_429`,
+  `test_mesh_session_stickiness`, `test_mesh_token_book_per_peer`,
+  `test_mesh_health_probe_degrades_unhealthy_peer`) green against a
+  `vi.fn()`-based per-URL dispatcher. No new runtime dependency —
+  `msw` / `undici.MockAgent` were evaluated and rejected (neither is
+  in the package's `devDependencies` and the mock shape is thin
+  enough to hand-roll).
+
+Test totals (`npm test`, 2026-04-23): 116 passed, 1 pre-existing cloud
+`catalog.browse()` failure unrelated to mesh work — covered by
+`tests/client.test.ts:75-78` (`/listTemplates` URL assertion; the
+underlying catalog endpoint migrated). Seed sub-tree: 91 unit + 7
+mesh-integration + 8 live-seed = 106 green.
+
+Build: `npm run build` emits ESM + CJS cleanly. The `dts` sub-build
+still fails on the pre-existing `@types/node` DOM-lib gap (`fetch`,
+`setTimeout`, `AbortController` not declared) — tracked separately
+and NOT introduced by mesh work.
+
+### Security hardening — token redaction
+
+`SecretString` (from `src/seed/tokenBook.ts`) wraps every pairing
+token stored in the `TokenBook`. It overrides `toString`, `toJSON`,
+and Node's `util.inspect.custom` hook so `console.log`,
+`JSON.stringify`, and stack traces print `<redacted>` instead of the
+raw token. The client-wide `auth.pairingToken` fallback is seeded
+into the default `InMemoryTokenBook` through `SecretString` too, so
+no raw-string token survives outside the intentional `.reveal()`
+call-sites on the request hot path. Regression tests in
+`tests/seed/unit/mesh-token-book.test.ts` assert the sentinel token
+never appears in `toString` / `JSON.stringify` output.
+
+Not yet landed (explicitly out of Phase 1.5 scope, tracked for
+Phase 2):
+
+- mDNS discovery — ADR-0016a §D6 opt-in upgrade path.
+- Mesh-observability resource (`client.mesh().status/peers/swarm/
+  health`) — ADR-0016a §D8 Phase 1 surface addendum.
+- Per-call override args (`peer:` / `prefer:` / `consistency:`) —
+  requires a per-call options bag, tracked against ADR-0016b §"Per-
+  call knobs".
+- `client.rediscover()` explicit re-resolve helper.
+- `undici.MockAgent` or `msw` dependency for richer integration
+  fixtures (e.g. concurrent-cycling assertions); the hand-rolled
+  `meshFetch` is sufficient for the §5 acceptance suite.
+
 ## Context
 
 ADR-0015a pins layout and surface; ADR-0015b pins the request/response
