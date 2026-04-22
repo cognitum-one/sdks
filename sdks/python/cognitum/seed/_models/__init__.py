@@ -46,7 +46,7 @@ class WireModel:
 from cognitum.seed._models.custody import Epoch
 from cognitum.seed._models.identity import Identity
 from cognitum.seed._models.ota import OtaCheckNowResponse, OtaConfig
-from cognitum.seed._models.pair import PairCreateResponse, PairEntry, PairStatus
+from cognitum.seed._models.pair import PairCreateResponse, PairStatus
 from cognitum.seed._models.status import Status
 from cognitum.seed._models.store import (
     QueryMatch,
@@ -55,7 +55,7 @@ from cognitum.seed._models.store import (
     StoreStatus,
     VectorUpsert,
 )
-from cognitum.seed._models.witness import WitnessChain, WitnessEntry
+from cognitum.seed._models.witness import WitnessChain
 
 __all__ = [
     "Epoch",
@@ -63,7 +63,6 @@ __all__ = [
     "OtaCheckNowResponse",
     "OtaConfig",
     "PairCreateResponse",
-    "PairEntry",
     "PairStatus",
     "QueryMatch",
     "Status",
@@ -73,5 +72,4 @@ __all__ = [
     "VectorUpsert",
     "WireModel",
     "WitnessChain",
-    "WitnessEntry",
 ]

@@ -46,7 +46,6 @@ from cognitum.seed._models import (
     OtaCheckNowResponse,
     OtaConfig,
     PairCreateResponse,
-    PairEntry,
     PairStatus,
     QueryMatch,
     Status,
@@ -55,7 +54,6 @@ from cognitum.seed._models import (
     StoreStatus,
     VectorUpsert,
     WitnessChain,
-    WitnessEntry,
 )
 from cognitum.seed._retry import (
     RetryPolicy,
@@ -107,7 +105,6 @@ __all__ = [
     "OtaCheckNowResponse",
     "OtaConfig",
     "PairCreateResponse",
-    "PairEntry",
     "PairStatus",
     "QueryMatch",
     "Status",
@@ -116,7 +113,6 @@ __all__ = [
     "StoreStatus",
     "VectorUpsert",
     "WitnessChain",
-    "WitnessEntry",
     # Diagnostic
     "map_error",
 ]

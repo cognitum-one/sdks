@@ -55,7 +55,7 @@ class QueryMatch:
 
 @dataclass(slots=True, frozen=True)
 class StoreQueryResult:
-    matches: tuple[QueryMatch, ...] = ()
+    results: tuple[QueryMatch, ...] = ()
     query_ms: float = 0.0
     extra: Mapping[str, Any] = field(default_factory=dict)
 
@@ -63,7 +63,7 @@ class StoreQueryResult:
     def from_wire(cls, data: Mapping[str, Any]) -> "StoreQueryResult":
         # seed may use "results" OR "matches" depending on version.
         raw = data.get("results") or data.get("matches") or []
-        matches = tuple(
+        results = tuple(
             QueryMatch.from_wire(m) if isinstance(m, Mapping) else QueryMatch()
             for m in raw
         )
@@ -71,7 +71,7 @@ class StoreQueryResult:
             k: v for k, v in data.items() if k not in ("results", "matches", "query_ms")
         }
         query_ms = float(data.get("query_ms", 0.0) or 0.0)
-        return cls(matches=matches, query_ms=query_ms, extra=extra)
+        return cls(results=results, query_ms=query_ms, extra=extra)
 
 
 @dataclass(slots=True, frozen=True)

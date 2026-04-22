@@ -115,7 +115,8 @@ def test_pair_status_live(seed_client: SeedClient) -> None:
 
 def test_witness_chain_live(seed_client: SeedClient) -> None:
     ch = seed_client.witness.chain()
-    assert ch.chain_length >= 0
+    # Unmodeled live fields land in extras (forward-compat).
+    assert isinstance(ch.extra, dict)
     _polite_sleep()
 
 

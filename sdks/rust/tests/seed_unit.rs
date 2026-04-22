@@ -144,17 +144,21 @@ async fn witness_chain_reads_integrity_log() {
     Mock::given(method("GET"))
         .and(path("/api/v1/witness/chain"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "chain_length": 100,
-            "last_hash": "0xdead",
-            "genesis_hash": "0xbeef"
+            "depth": 100,
+            "epoch": 7,
+            "head_hash": "0xdead"
         })))
         .expect(1)
         .mount(&server)
         .await;
 
     let chain = client_for(&server).witness().chain().await.unwrap();
-    assert_eq!(chain.chain_length, 100);
-    assert_eq!(chain.last_hash, "0xdead");
+    // All live-seed fields are unmodeled and surface via the extras catch-all.
+    assert!(chain.extras.get("depth").is_some());
+    assert_eq!(
+        chain.extras.get("head_hash").and_then(|v| v.as_str()),
+        Some("0xdead")
+    );
 }
 
 #[tokio::test]
@@ -164,7 +168,7 @@ async fn custody_epoch_reads() {
         .and(path("/api/v1/custody/epoch"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "epoch": 12,
-            "root_hash": "0xcafe"
+            "witness_head": "0xcafe"
         })))
         .expect(1)
         .mount(&server)

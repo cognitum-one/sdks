@@ -105,23 +105,17 @@ def test_witness_chain() -> None:
         return_value=httpx.Response(
             200,
             json={
-                "entries": [
-                    {
-                        "index": 0,
-                        "parent_hash": "",
-                        "action_hash": "abc",
-                        "signature": "sig",
-                        "epoch": 0,
-                    }
-                ],
-                "chain_length": 1,
+                "depth": 1,
+                "epoch": 0,
+                "head_hash": "abc",
             },
         )
     )
     with _client() as c:
         ch = c.witness.chain()
-    assert ch.chain_length == 1
-    assert ch.entries[0].action_hash == "abc"
+    # Live seed shape — all fields are forward-compat extras.
+    assert ch.extra["depth"] == 1
+    assert ch.extra["head_hash"] == "abc"
 
 
 @respx.mock
@@ -167,8 +161,8 @@ def test_store_status_query_ingest() -> None:
         st = c.store.status()
         assert st.dimension == 384
         res = c.store.query(vector=[0.1, 0.2, 0.3], k=2)
-        assert len(res.matches) == 2
-        assert res.matches[0].metadata == {"k": "v"}
+        assert len(res.results) == 2
+        assert res.results[0].metadata == {"k": "v"}
         ing = c.store.ingest(
             vectors=[VectorUpsert(id="a", values=(0.1, 0.2, 0.3))]
         )
@@ -274,7 +268,7 @@ def test_post_query_retries_because_idempotent() -> None:
     with _client() as c:
         res = c.store.query(vector=[0.1], k=1)
     assert route.call_count == 2
-    assert len(res.matches) == 0
+    assert len(res.results) == 0
 
 
 @respx.mock

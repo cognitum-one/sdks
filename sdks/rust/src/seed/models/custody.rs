@@ -10,12 +10,6 @@ pub struct CustodyEpoch {
     /// Monotonic epoch counter.
     #[serde(default)]
     pub epoch: u64,
-    /// Epoch root hash (hex).
-    #[serde(default)]
-    pub root_hash: String,
-    /// ISO-8601 timestamp the epoch opened.
-    #[serde(default)]
-    pub opened_at: Option<String>,
     #[serde(flatten)]
     pub extras: Extras,
 }

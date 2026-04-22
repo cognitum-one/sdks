@@ -19,7 +19,6 @@ from cognitum.seed import (
     StoreStatus,
     VectorUpsert,
     WitnessChain,
-    WitnessEntry,
 )
 
 
@@ -43,7 +42,7 @@ def test_identity_from_wire() -> None:
     assert i.extra["aux"] == 1
 
 
-def test_pair_status_parses_clients() -> None:
+def test_pair_status_routes_unknown_to_extra() -> None:
     ps = PairStatus.from_wire(
         {
             "paired": True,
@@ -54,7 +53,8 @@ def test_pair_status_parses_clients() -> None:
         }
     )
     assert ps.paired is True
-    assert ps.clients[0].client_name == "a"
+    # `clients` is not modeled (live seed never populates it) — forward-compat extras catch-all.
+    assert ps.extra["clients"][0]["client_name"] == "a"
 
 
 def test_pair_create_response_from_wire() -> None:
@@ -71,8 +71,8 @@ def test_store_query_result_accepts_results_or_matches_key() -> None:
     b = StoreQueryResult.from_wire(
         {"matches": [{"id": 2, "distance": 0.2}], "query_ms": 2.0}
     )
-    assert a.matches[0].id == 1
-    assert b.matches[0].id == 2
+    assert a.results[0].id == 1
+    assert b.results[0].id == 2
 
 
 def test_store_status_extra() -> None:
@@ -89,20 +89,21 @@ def test_store_status_extra() -> None:
     assert st.extra["shards"] == 1
 
 
-def test_witness_chain_accepts_entries_or_chain_key() -> None:
-    a = WitnessChain.from_wire(
-        {"entries": [{"index": 0, "parent_hash": "", "action_hash": "h"}]}
+def test_witness_chain_routes_all_fields_to_extra() -> None:
+    # Live seed returns {"depth": N, "epoch": N, "head_hash": "..."} — none
+    # modeled as typed fields; all land in extras (forward-compat).
+    ch = WitnessChain.from_wire(
+        {"depth": 3, "epoch": 7, "head_hash": "abc"}
     )
-    b = WitnessChain.from_wire(
-        {"chain": [{"index": 0, "parent_hash": "", "action_hash": "h"}], "chain_length": 1}
-    )
-    assert a.chain_length == 1
-    assert b.chain_length == 1
+    assert ch.extra["depth"] == 3
+    assert ch.extra["head_hash"] == "abc"
 
 
 def test_epoch_model() -> None:
     e = Epoch.from_wire({"epoch": 5, "started_at": 99})
     assert e.epoch == 5
+    # `started_at` unmodeled — lives in extras.
+    assert e.extra["started_at"] == 99
 
 
 def test_ota_models() -> None:

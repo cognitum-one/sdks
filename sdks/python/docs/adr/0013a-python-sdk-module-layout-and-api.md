@@ -347,9 +347,9 @@ class StoreResource:
         data = self._http.request(
             "POST", "/api/v1/store/query", json=payload, idempotent=True,
         )
-        raw_matches = data.get("results", [])
+        raw_results = data.get("results", [])
         return StoreQueryResult(
-            matches=tuple(
+            results=tuple(
                 QueryMatch(
                     id=int(m["id"]),
                     distance=float(m["distance"]),
@@ -357,7 +357,7 @@ class StoreResource:
                     extra={k: v for k, v in m.items()
                            if k not in ("id", "distance", "metadata")},
                 )
-                for m in raw_matches
+                for m in raw_results
             ),
             query_ms=float(data.get("query_ms", 0.0)),
             extra={k: v for k, v in data.items()
@@ -497,7 +497,7 @@ class QueryMatch(WireModel):
 
 @dataclass(slots=True, frozen=True)
 class StoreQueryResult(WireModel):
-    matches: tuple[QueryMatch, ...]
+    results: tuple[QueryMatch, ...]
     query_ms: float
     extra: Mapping[str, Any] = field(default_factory=dict)
 

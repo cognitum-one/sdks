@@ -25,7 +25,7 @@ type RequestFn = <T>(
 export interface OtaResource {
   /** GET /api/v1/ota/config — WiFi-read allowlist. */
   config(): Promise<OtaConfig>;
-  /** POST /api/v1/ota/checkNow — idempotent probe; safe to retry. */
+  /** POST /api/v1/ota/check-now — idempotent probe; safe to retry. */
   checkNow(): Promise<OtaCheckResponse>;
 }
 
@@ -37,7 +37,7 @@ export function makeOtaResource(request: RequestFn): OtaResource {
       }),
 
     checkNow: () =>
-      request<OtaCheckResponse>("POST", "/api/v1/ota/checkNow", {
+      request<OtaCheckResponse>("POST", "/api/v1/ota/check-now", {
         idempotent: true, // the seed merely re-checks; no destructive effect
       }),
   };

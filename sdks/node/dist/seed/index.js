@@ -449,7 +449,7 @@ function makeOtaResource(request) {
     config: () => request("GET", "/api/v1/ota/config", {
       idempotent: true
     }),
-    checkNow: () => request("POST", "/api/v1/ota/checkNow", {
+    checkNow: () => request("POST", "/api/v1/ota/check-now", {
       idempotent: true
       // the seed merely re-checks; no destructive effect
     })

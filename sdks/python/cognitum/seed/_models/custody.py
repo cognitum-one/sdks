@@ -10,12 +10,11 @@ from typing import Any
 @dataclass(slots=True, frozen=True)
 class Epoch:
     epoch: int = 0
-    started_at: int = 0
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_wire(cls, data: Mapping[str, Any]) -> "Epoch":
-        known = {"epoch", "started_at"}
+        known = {"epoch"}
         kwargs: dict[str, Any] = {}
         extra: dict[str, Any] = {}
         for k, v in data.items():
