@@ -12,11 +12,12 @@ The three SDKs under `sdks/node|python|rust/` all target
 `devices` module reaches the *cloud* fleet manager (`/seedRegisterDevice`,
 `/seedCheckUpdate`, `/seedHeartbeat`), NOT the seed itself.
 
-The **Cognitum Seed** appliance exposes 63 endpoints under
-`https://<seed>:8443/api/v1/*` (see ADR-0002). None of the SDKs implement
-any of them today. A user who plugs a seed into their laptop can curl it but
-cannot use `@cognitum/sdk`, `cognitum` (Python), or `cognitum-rs` to talk
-to it directly.
+The **Cognitum Seed** appliance exposes 71 SDK-facing endpoints under
+`https://<seed>:8443/api/v1/*` on v0.20.0 (see ADR-0002 §Endpoint
+inventory). None of the SDKs implement any of them today. A user who
+plugs a seed into their laptop can curl it but cannot use
+`@cognitum/sdk`, `cognitum` (Python), or `cognitum-rs` to talk to it
+directly.
 
 This ADR decides how and where that gap is filled.
 
@@ -107,6 +108,47 @@ public-ish address (typically a Tailscale node on the operator's tailnet).
 Future work: `cloud.devices.seed(device_id)` returns a `SeedClient`
 pre-configured to the device's Tailscale address and the pairing token held
 by the cloud. Tracked under OQ-2 but explicitly out of scope for 0.1.
+
+### Rollout phasing (closes the "OQ-2 answered but nothing ships" gap)
+
+Implementing 71 endpoints × 3 SDKs in one PR is not realistic. Each SDK MUST
+ship the seed-direct module in three phases. Phase 1 is the minimum viable
+`SeedClient`; phases 2 and 3 may ship over subsequent MINOR releases.
+
+**Phase 1 — MVP seed client (blocks 1.0; see ADR-0006 §"1.0 criteria" item 1):**
+
+| Bounded context (DDD §2) | Endpoints |
+|--------------------------|-----------|
+| Custody — identity/status | `GET /api/v1/status`, `GET /api/v1/identity` |
+| Pairing | `GET /api/v1/pair/status`, `POST /api/v1/pair`, `DELETE /api/v1/pair/{client_name}` |
+| Optimizer — vector store | `GET /api/v1/store/status`, `POST /api/v1/store/ingest`, `POST /api/v1/store/query`, `POST /api/v1/store/delete` |
+| Custody — witness/signing | `GET /api/v1/witness/chain`, `POST /api/v1/custody/sign`, `POST /api/v1/custody/verify`, `GET /api/v1/custody/attestation` |
+
+Rationale: this covers the "ingest a vector, query it, prove custody" loop,
+which is the primary user journey for Seed-direct.
+
+**Phase 2 — observability + analysis (0.3.x):**
+
+| Context | Endpoints |
+|---------|-----------|
+| Optimizer — analysis | `/optimize/*`, `/boundary`, `/boundary/recompute` |
+| Temporal coherence | `/coherence/*` |
+| Delivery | `/delivery/image`, `/delta/history`, `/delta/stream` (SSE placeholder) |
+| Sensor — read-only | `/sensor/list`, `/sensor/latest/{name}`, `/sensor/drift/*`, `/sensor/embedding/*`, `/sensor/stream` (SSE placeholder) |
+| OTA (read) | `/upgrade/check`, `/ota/config` (GET), `/ota/log` |
+
+**Phase 3 — platform controls + writes (0.4.x+):**
+
+| Context | Endpoints |
+|---------|-----------|
+| Thermal | all 13 `/thermal/*` routes |
+| Sensor — writes | `/sensor/actuator/fire/{name}`, `/sensor/reflex/rules`, `/sensor/gpio/pins`, `/sensor/coprocessor/*` |
+| OTA (write) | `/upgrade/apply`, `/ota/config` (POST), `/ota/check-now` |
+| Demo / profiles | `/demo/*`, `/profiles` (MAY be permanently omitted as non-safety-critical per DDD §2.6) |
+
+SDKs MUST NOT block a cross-cutting ADR change on phase-2/3 endpoints; a
+PR that updates the retry policy or error taxonomy is expected to touch
+only the endpoints the SDK has shipped.
 
 ## Consequences
 

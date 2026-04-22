@@ -466,8 +466,8 @@ Carry-forward + Rust-specific (as mandated by the brief).
 
 ## References
 
-- `/home/ruvultra/projects/sdks/docs/adr/impl/0014a-rust-sdk-implementation-foundations.md`
-- `/home/ruvultra/projects/sdks/docs/adr/impl/0014b-rust-sdk-implementation-behaviors.md`
-- `/home/ruvultra/projects/sdks/docs/adr/README.md:46-56` — open questions
+- `/home/ruvultra/projects/sdks/sdks/rust/docs/adr/0014a-rust-sdk-implementation-foundations.md`
+- `/home/ruvultra/projects/sdks/sdks/rust/docs/adr/0014b-rust-sdk-implementation-behaviors.md`
+- `/home/ruvultra/projects/sdks/docs/adr/README.md` §"Open questions tracked across ADRs" — open questions
 - Current crate tree: `/home/ruvultra/projects/sdks/sdks/rust/`
 - Related ADRs: 0002, 0003, 0004, 0005, 0006, 0007, 0010, 0011.

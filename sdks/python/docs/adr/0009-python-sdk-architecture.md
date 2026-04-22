@@ -35,7 +35,12 @@ Existing source of truth:
   `httpx.Client(verify=seed_trust_ctx())` where `seed_trust_ctx()` accepts
   the pinned self-signed cert for `169.254.42.1`/`cognitum.local` and
   enforces CA verification elsewhere (ADR-0007).
-- HTTP/2: left off by default; the seed is HTTP/1.1 only.
+- HTTP/2: left off by default; the seed is HTTP/1.1 only
+  (`seed/src/cognitum-agent/src/http.rs:102-108`). Python requires the
+  extra `h2` install for HTTP/2, so opt-in is the right default here —
+  unlike Node's undici (H2 stable in-tree) where it's on for cloud.
+  Cross-SDK matrix: Node on (cloud) / off (seed); Python off by default
+  both ways; Rust `http2_prior_knowledge()` (cloud) / off (seed).
 
 ### Auth
 

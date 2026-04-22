@@ -36,6 +36,32 @@ is a bug.
 | Max request body | 64 KB for most endpoints, 16 MB for `/firmware/*` and `/upgrade/*` | `seed/src/cognitum-agent/src/http.rs:82-83` |
 | Compression | None on either direction | implicit in `http.rs` |
 
+### Transport posture
+
+Normalizes the intentional HTTP/2 divergence across SDKs. The seed itself
+is HTTP/1.1 only (`seed/src/cognitum-agent/src/http.rs:102-108`); the
+posture below governs SDK-side client construction for both seed and
+cloud transports.
+
+| Aspect | Canonical posture | SDK-specific note |
+|--------|------------------|-------------------|
+| HTTP/2 | Opt-in per-client. Default OFF to keep TLS handshake visible and interop with self-signed seed certs simple. | Node uses `undici.Agent({ allowH2: false })` by default; opt-in via `new Client({ http2: true })` (planned `src/seed/transport.ts`; current cloud client at `sdks/node/src/client.ts:67` uses bare `fetch` which is undici H1 in Node 20). Python uses `httpx.Client(http2=False)` by default (`sdks/python/cognitum/_http.py:64-72`); opt-in via `Client(http2=True)` (requires `h2` extra). Rust uses `reqwest::ClientBuilder::http2_prior_knowledge()` only when explicitly called; today `sdks/rust/src/client.rs:74-77` takes the reqwest default (HTTP/1.1 with h2 negotiated via ALPN if the server advertises it). |
+| HTTP/1.1 keep-alive | ON | All three SDKs keep connection pools — Node via `undici.Agent`, Python via `httpx.Client` (`sdks/python/cognitum/_http.py:64`), Rust via `reqwest::Client` (`sdks/rust/src/client.rs:74`). No per-request tear-down. |
+| Connection pooling | Per-client, not process-global | Per-client agent/limits — credential lifetime isolation (see cross-cutting ADR-0007). Today all three SDKs already construct one HTTP client per SDK instance: Node at `sdks/node/src/client.ts:16-32`, Python at `sdks/python/cognitum/_http.py:56-72`, Rust at `sdks/rust/src/client.rs:68-84`. |
+| Timeouts | Connect 5s / read 30s / total 60s (streams uncapped) | All three SDKs expose these as a `timeouts: {connect, read, total}` builder arg. Today only a single total timeout is honored (Node `DEFAULT_TIMEOUT = 30_000` at `sdks/node/src/client.ts:12`; Python `timeout: float = 30.0` at `sdks/python/cognitum/_http.py:60`; Rust `DEFAULT_TIMEOUT_SECS: u64 = 30` at `sdks/rust/src/client.rs:19`); split phases are tracked for the 0.2 bump. |
+| Retry on connect-fail | YES — counted as one attempt, respects the ADR-0005 budget | All three. Node retry loop at `sdks/node/src/client.ts:61-167`, Python at `sdks/python/cognitum/_http.py:82-121`, Rust retry in the shared request helper at `sdks/rust/src/client.rs:145-210`. |
+| Redirects | Disabled (the seed never 3xx-redirects; a redirect indicates a misconfigured proxy) | All three SDKs set `max_redirects=0`. Node/undici rejects 3xx by default when `redirect` is unset on `fetch`; Python `httpx.Client(follow_redirects=False)` is the default (currently relied on implicitly at `sdks/python/cognitum/_http.py:64`); Rust MUST add `.redirect(reqwest::redirect::Policy::none())` to the builder at `sdks/rust/src/client.rs:74-77` (tracked — reqwest defaults to following up to 10 redirects). |
+
+Rationale — HTTP/2 stays off by default because the seed's TLS
+handshake is easier to inspect with curl/Wireshark when only one ALPN
+protocol is on the wire, and because every SDK must interop with a
+self-signed cert whose ALPN list is the easiest thing to get wrong. On
+Rust the posture is `http2_prior_knowledge()`-only rather than "enable
+H2" because reqwest's default H2 upgrade path requires the server to
+advertise `h2` via ALPN; the seed's self-signed cert omits that, so the
+only deterministic way to speak H2 to a seed is to skip negotiation
+entirely — and we only do that when the caller explicitly asks.
+
 ### URI structure
 
 - Every Seed endpoint is under `/api/v1/`.
@@ -128,16 +154,40 @@ Error responses are always:
 
 `seed/docs/seed/api-reference.md:61-87`.
 
-### Endpoint inventory (69 total — v0.20.0 stable surface)
+### Endpoint inventory (71 SDK-facing endpoints — v0.20.0 stable surface)
 
 > **Synced to seed v0.20.0** (`seed/src/cognitum-agent/Cargo.toml:3`, tag
 > `v0.20.0`, commit `5cd1e65`). v0.20.0 adds `POST /api/v1/ota/check-now`
 > and enumerates the previously undocumented OTA/Firmware group.
+> The groups below sum to 71 (9+6+5+3+3+4+17+5+13+6). Earlier revisions
+> of this ADR cited 69 and miscounted Custody as 8.
+
+#### Endpoint-count methodology
+
+The 71 count is the **SDK-facing stable surface**: endpoints SDKs MUST
+expose typed helpers for. The seed dispatch table in
+`seed/src/cognitum-agent/src/api.rs` carries ~78 statically-routed
+entries plus dynamic patterns; the delta is intentional.
+
+- **Excluded** (present in the seed, not SDK-facing): dynamic `/apps/*`
+  paths, mesh admin paths (`/network/mesh/*` beyond `status`), wifi
+  setup (`/wifi/*`), peer probes (`/peers`, `/swarm`, `/cluster`),
+  per-client-name pair paths (`/pair/{name}` is counted once as a
+  templated endpoint under Pairing), and free-form UI routes (`/`,
+  `/cog-store`, `/guide`).
+- **Recount procedure**: on every seed release, sum the per-group
+  counts in this section. They MUST equal the headline (71 today)
+  until a new endpoint or group is added.
+- **New endpoint in an already-wrapped group**: increment that group's
+  count AND the headline.
+- **New group** (like OTA/Firmware in v0.20.0): decide case-by-case
+  whether SDKs MUST wrap it. If yes, add a group subsection and bump
+  the total; if no, record the exclusion in the list above.
 
 SDKs MUST expose typed helpers for the endpoints listed below. Grouped by
 bounded context (see `docs/adr/ddd/seed-domain.md`).
 
-#### Custody (8)
+#### Custody (9)
 - `GET /api/v1/status` (cross-cutting; also surfaces optimizer/delivery stats)
 - `GET /api/v1/identity`
 - `GET /api/v1/witness/chain`

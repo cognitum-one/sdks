@@ -193,6 +193,12 @@ fn is_retriable_error(err: &Error, method: &Method) -> bool {
 ```
 
 ### 6.3 Parsing `Retry-After` and the seed `retry_after_us` body
+
+Implements ADR-0005 §"429 handling (seed specific)". The resolution order
+is normative — header (seconds or HTTP-date) → `retry_after_us` body field
+→ regex on `error` string → None. Do not reorder without updating the
+cross-cutting ADR.
+
 <!-- verification 2026-04-22: ❌ client.rs:205-211 parses `retry-after` as u64
      seconds only — no HTTP-date, no ms. Error::RateLimit hardcodes
      retry_after_ms=1000 at client.rs:228, discarding the real header. -->
@@ -412,8 +418,8 @@ Not built-in. Callers implement against `keyring`, a file, or in-memory.
 
 ### 7.5 Trust-score protection
 
-Per ADR-0007 §Trust-score protection: SDK MUST NOT retry past 2 auth
-failures on the same credential.
+Per ADR-0007 §"Trust-score protection" (closes OQ-9 — now MUST for all
+three SDKs): SDK MUST NOT retry past 2 auth failures on the same credential.
 
 Implementation note: auth errors are non-retriable (see
 `is_retriable_status` in §6.2) so the loop returns them immediately.

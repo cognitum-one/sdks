@@ -36,6 +36,13 @@ auth mode the SDKs MUST support.
   differently from a static API key.
 - `X-API-Key` cannot be accidentally forwarded by an HTTP proxy that strips
   `Authorization` headers.
+- Flipping to `Authorization: Bearer` would imply RFC-6750 Bearer-Token
+  semantics (JWT / OAuth scope) which the cloud API does not implement —
+  a static API key masquerading as a Bearer token is a documentation and
+  security-audit hazard.
+- The seed uses a separate `X-Pairing-Token` header for its own auth, so
+  the "one `Authorization` header" argument doesn't apply: the two surfaces
+  already split cleanly.
 
 **Action**: Rust SDK MUST switch to `X-API-Key` (`sdks/rust/src/client.rs:161`).
 Keep Bearer support behind a configuration flag for a deprecation window
@@ -110,15 +117,23 @@ in this order:
 
 1. Explicit `apiKey` / `api_key` / `ClientConfig.api_key` constructor arg.
 2. `COGNITUM_API_KEY` environment variable.
-3. Error (`AuthError` — see ADR-0004) before the first network call.
+3. Error (`AuthError(reason=no_credentials)` — see ADR-0004) before the
+   first network call. MUST fail at client construction, never at first
+   request.
 
 For pairing tokens, the resolution order is:
 
 1. Explicit `pairing_token` / `pairingToken` constructor arg.
-2. `COGNITUM_SEED_PAIRING_TOKEN` environment variable.
+2. `COGNITUM_SEED_TOKEN` environment variable (canonical spelling — SDKs
+   MUST accept this). The legacy `COGNITUM_SEED_PAIRING_TOKEN` MAY be
+   honoured as a soft alias for one MINOR release with a deprecation
+   warning; remove in the following MINOR. Python ADR-0009 cites
+   `COGNITUM_SEED_PAIRING_TOKEN`, Rust/Node implementations use
+   `COGNITUM_SEED_TOKEN` — the latter is canonical; Python must migrate.
 3. Pair at client-open time if `auto_pair = true` AND a fresh window is open.
    Otherwise leave `pairing_token = None` and let the first write fail with
-   `AuthError` so the caller can initiate pairing explicitly.
+   `AuthError(reason=not_paired)` so the caller can initiate pairing
+   explicitly.
 
 SDKs MUST NOT persist tokens to disk unless the caller opts in via a
 `TokenStore` interface.

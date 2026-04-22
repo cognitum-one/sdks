@@ -268,7 +268,6 @@ Mapping from HTTP to class lives in `_http.py::_map_error`:
 | 429 | any | `RateLimitError` (retry_after from header or `retry_after_us`) | <!-- verified 2026-04-22 (python validator): respx 429 Retry-After:2 -> RateLimitError.retry_after_seconds=2.0. retry_after_us JSON body parsing NOT implemented. -->
 | 501 | any | `NotImplementedError(endpoint=request.path)` | <!-- failing 2026-04-22 (python validator): surfaces generic CognitumError(code='http_501') instead. -->
 | 503 | any | `ServiceUnavailableError` | <!-- ❌ failing 2026-04-22 (issue cognitum-one/sdks#3): ServiceUnavailableError class NOT defined; 503 surfaces generic CognitumError(code='http_503'). -->
-
 | other 5xx | any | `ApiError(status_code=...)` |
 
 ---
@@ -478,12 +477,8 @@ def parse_retry_after(
 ) -> int | None:
     """Returns server-provided hint in ms, or None.
 
-    ADR-0005 §429 handling resolution order:
-      1) Retry-After header (seconds or HTTP-date)
-      2) JSON body `retry_after_us` → ms
-      3) Regex over JSON body `error` for the seed string shape
-         "rate limited — retry after 1s"
-      4) None → fall through to exponential backoff
+    Implements ADR-0005 §"429 handling (seed specific)" verbatim.
+    Do not reorder the lookups here without updating the cross-cutting ADR.
     """
     header = headers.get("Retry-After")
     if header is not None:
@@ -669,6 +664,12 @@ def resolve_seed_token(explicit: str | None) -> str | None:
 ```
 
 ### 7.1 Redaction
+
+Python's mechanism is regex-based; the contract it satisfies (which fields
+MUST be redacted) lives in ADR-0007 §"Cross-SDK redaction contract". The
+five patterns below enforce that contract for this SDK. Adding a pattern
+here requires a parallel update to the Node `redactHeaders()` helper and
+the Rust `SecretString`-wrapped fields so all three SDKs stay in lock-step.
 
 ```python
 # cognitum/_telemetry.py

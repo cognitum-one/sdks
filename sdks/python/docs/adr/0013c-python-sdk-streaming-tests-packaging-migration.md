@@ -152,6 +152,13 @@ public-tier and does not need an auth-fail case.
 | `POST /profiles` | yes | — | yes | yes | yes |
 | `GET /store/sync` | yes | — | yes | yes | n/a (binary RVF) |
 | `POST /store/sync` | yes | — | yes | yes | yes (binary RVF) |
+| `POST /upgrade/apply` | yes | — | yes | yes | yes (binary 16 MB) |
+| `GET /upgrade/check` | yes | — | yes | yes | n/a (public) |
+| `GET /ota/config` | yes | — | yes | yes | n/a (WiFi-read) |
+| `POST /ota/config` | yes | — | yes | yes | yes |
+| `POST /ota/check-now` | yes | — | yes | yes | yes (409 if disabled) |
+| `GET /ota/log` | yes | yes | yes | yes | n/a (WiFi-read) |
+
 
 ### 9.3 Concrete test
 
@@ -550,8 +557,8 @@ _Base.__init__ = _compat_init  # type: ignore[assignment]
 
 ## 15. Open questions
 
-Carrying forward from `docs/adr/README.md:50-55` and adding Python-specific
-items.
+Carrying forward from `docs/adr/README.md` §"Open questions tracked across ADRs"
+and adding Python-specific items.
 
 | # | Question | Owner |
 |---|----------|-------|
@@ -618,7 +625,7 @@ items.
 - `/home/ruvultra/projects/sdks/docs/adr/0006-cross-cutting-versioning.md`
 - `/home/ruvultra/projects/sdks/docs/adr/0009-python-sdk-architecture.md`
 - `/home/ruvultra/projects/sdks/docs/adr/0011-sdk-scope-cloud-vs-seed.md`
-- `/home/ruvultra/projects/sdks/docs/adr/README.md:50-55` (open questions)
+- `/home/ruvultra/projects/sdks/docs/adr/README.md` §"Open questions tracked across ADRs"
 - `/home/ruvultra/projects/sdks/sdks/python/pyproject.toml:1-20` (baseline)
 - `/home/ruvultra/projects/sdks/sdks/python/tests/test_client.py:1-337` (baseline)
 - `/home/ruvultra/projects/sdks/seed/docs/seed/api-reference.md`

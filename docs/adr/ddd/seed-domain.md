@@ -18,7 +18,7 @@ are allowed only when wrapping a legacy term.
 | **Optimizer** | The role that reshapes stored knowledge — runs kNN rebuild, MinCut boundary analysis, coherence recomputation. | `seed/docs/seed/api-reference.md:207-236` |
 | **Delivery** | The role that packages and delivers optimized knowledge — delta streams, delivery images, firmware bundles. | `seed/docs/seed/api-reference.md:238-250` |
 | **Pairing** | One-time binding of a client to a seed inside a 30-second window. Unlocks writes. | `seed/docs/seed/api-reference.md:61-87` |
-| **Pairing token** | Opaque token returned from `POST /api/v1/pair`; carried in `X-Pairing-Token` header. | `seed/docs/seed/api-reference.md:333-338` |
+| **Pairing token** | Opaque token returned from `POST /api/v1/pair`; carried in `X-Pairing-Token` header. Avoid the synonym "bearer token" — the wire is NOT RFC-6750 and ADR-0003 forbids `Authorization: Bearer` for seed. | `seed/docs/seed/api-reference.md:333-338` |
 | **Lockdown** | One-way operational hardening: mTLS required, SFTP disabled, USB storage removed. | `seed/docs/seed/security-model.md:4-47` |
 | **Epoch** | Monotonic counter over custody events. Every mutation bumps it. | `seed/docs/seed/api-reference.md:38` |
 | **Vector** | Dense `f32` embedding of fixed `dimension` (default 8). Content-addressed by truncated SHA-256(dim + bytes). | `seed/docs/seed/rvf-format.md:39-47` |
@@ -105,6 +105,10 @@ root is the **Witness Chain**.
 - **Domain events**: `WitnessEntryAppended`, `EpochAdvanced`, `IdentityRotated`
   (firmware update), `AttestationPublished`.
 
+> **Used by:** ADR-0002 §"Endpoint inventory > Custody"; ADR-0011 §"Rollout
+> phasing > Phase 1 > Custody"; per-SDK `custody` / `witness` / `status`
+> resource modules (ADR-0015a §2, ADR-0013a §2.3, ADR-0014a §2.3).
+
 ### 2.2 Optimizer context
 
 Owns the vector store and the derived structure (kNN, boundary, coherence,
@@ -139,6 +143,11 @@ drift). Aggregate roots: **Vector Store** and **Coherence Profile**.
   `BoundaryRecomputed`, `CoherenceProfileUpdated`, `PhaseBoundaryDetected`,
   `DriftDetected`, `OrphanIdentified`.
 
+> **Used by:** ADR-0002 §"Endpoint inventory > Optimizer (store + analysis)"
+> and §"Temporal coherence"; ADR-0011 §"Rollout phasing > Phase 1 (store)
+> and Phase 2 (analysis + coherence)"; per-SDK `store` / `optimize` /
+> `boundary` / `coherence` modules.
+
 ### 2.3 Delivery context
 
 Owns distribution: delta streams of store changes, firmware OTA bundles,
@@ -156,6 +165,10 @@ Owns distribution: delta streams of store changes, firmware OTA bundles,
 - **Domain events**: `DeltaEmitted`, `FirmwarePublished`, `UpdateApplied`,
   `RollbackTriggered`.
 
+> **Used by:** ADR-0002 §"Endpoint inventory > Delivery" and §"OTA /
+> Firmware"; ADR-0011 §"Rollout phasing > Phase 2 (delivery + OTA read)"
+> and §"Phase 3 (OTA write)"; per-SDK `delivery` / `delta` / OTA modules.
+
 ### 2.4 Sensing context (supporting)
 
 - **Aggregate: Sensor Loop** — 10 Hz sampling, six synthetic channels,
@@ -169,6 +182,10 @@ Owns distribution: delta streams of store changes, firmware OTA bundles,
 - **Domain events**: `SensorSampled`, `EmbeddingProduced`, `DriftTriggered`,
   `ActuatorFired`, `ReflexRuleUpdated`.
 
+> **Used by:** ADR-0002 §"Endpoint inventory > Sensor"; ADR-0011 §"Rollout
+> phasing > Phase 2 (read) / Phase 3 (actuator + reflex writes)"; per-SDK
+> `sensor` modules.
+
 ### 2.5 Platform context (generic)
 
 - **Aggregate: Pairing Session** — window-bound (30 s), at most one open.
@@ -179,10 +196,19 @@ Owns distribution: delta streams of store changes, firmware OTA bundles,
   `ClientUnpaired`, `RateLimited`, `IpBlocked`, `ThermalZoneChanged`,
   `TurboBurstFired`, `LockdownActivated`.
 
+> **Used by:** ADR-0003 §"Seed auth" (pairing), ADR-0005 §"429 handling"
+> (rate-limit ledger), ADR-0007 §"Lockdown awareness" + §"Trust-score
+> protection" (platform), ADR-0002 §"Authentication tiers" (rate-limit
+> tiers). Phase 1 per-SDK `pair` modules; Phase 3 `thermal` modules.
+
 ### 2.6 Operator context
 
 - Guide HTML and demo routes (`/api/v1/demo/*`, `/api/v1/profiles`).
   Not safety-critical; SDKs MAY ignore.
+
+> **Used by:** ADR-0002 §"Endpoint inventory > Demo / profiles"; ADR-0011
+> §"Rollout phasing > Phase 3 (MAY be permanently omitted)". No SDK MUST
+> implement these.
 
 ## 3. Context map (relationships)
 

@@ -23,7 +23,7 @@ Start here — these apply to **all** SDKs and are referenced throughout:
 | 0009 | [`0009-python-sdk-architecture.md`](0009-python-sdk-architecture.md) | Architecture: httpx sync + async, `cognitum.seed` submodule, dataclasses, `py.typed` |
 | 0013a | [`0013a-python-sdk-module-layout-and-api.md`](0013a-python-sdk-module-layout-and-api.md) | Implementation: module layout, public API (`Cognitum` / `AsyncCognitum` / `SeedClient` / `AsyncSeedClient`), typed models |
 | 0013b | [`0013b-python-sdk-transport-retry-auth-errors.md`](0013b-python-sdk-transport-retry-auth-errors.md) | Implementation: exception hierarchy (12 variants + `AuthReason`), transport, retry, auth, `SeedPinnedVerifier` |
-| 0013c | [`0013c-python-sdk-streaming-tests-packaging-migration.md`](0013c-python-sdk-streaming-tests-packaging-migration.md) | Implementation: SSE, test matrix (63 endpoints × 5 cases), `pyproject.toml`, CI, benches, migration |
+| 0013c | [`0013c-python-sdk-streaming-tests-packaging-migration.md`](0013c-python-sdk-streaming-tests-packaging-migration.md) | Implementation: SSE, test matrix (~64 seed endpoints × 5 cases, OTA rows pending), `pyproject.toml`, CI, benches, migration |
 
 ## Key Python-specific decisions (from 0013x)
 

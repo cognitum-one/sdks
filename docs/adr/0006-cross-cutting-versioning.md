@@ -10,10 +10,10 @@ Three moving parts, three release cadences:
 
 | Artefact | Version today | Scheme | Source |
 |---------|---------------|--------|--------|
-| Node SDK | `0.1.3` | SemVer | `sdks/node/package.json:4` |
-| Python SDK | (see `pyproject.toml`) | SemVer | `sdks/python/pyproject.toml` |
+| Node SDK | `0.1.3` | SemVer | `sdks/node/package.json:3` |
+| Python SDK | `0.1.0` | SemVer | `sdks/python/pyproject.toml:8` |
 | Rust SDK | `0.1.0` | SemVer | `sdks/rust/Cargo.toml:3` |
-| Seed firmware | `v0.10.11.5` | Four-segment | `seed/README.md:24` |
+| Seed firmware | `v0.20.0` | SemVer | `seed/src/cognitum-agent/Cargo.toml:3` (authoritative; `seed/README.md:24` still advertises the older `v0.10.11.5` tag — known lag) |
 | Wire API | `v1` via `/api/v1/*` | Major segment only | `seed/docs/seed/api-reference.md:3-5` |
 | Cloud API | implicit `v1` (no prefix) | — | `sdks/node/src/client.ts:10-11` |
 
@@ -35,8 +35,43 @@ advance together across the three SDKs for any cross-cutting ADR change.
 Independent fixes bump independently.
 
 Pre-1.0 (all three SDKs today): the "breaking change" promise is relaxed.
-MINOR is allowed to break. First 1.0 release ships once the Seed-direct
-module is in place (see ADR-0011).
+MINOR is allowed to break. First 1.0 release ships once the criteria below
+are met.
+
+### 1.0 criteria (resolves OQ-8)
+
+An SDK MAY cut a 1.0 release when all of the following are true. Each item
+is a boolean gate; partial satisfaction is still pre-1.0:
+
+1. **Seed-direct module shipped** — `SeedClient` / `seed` submodule / `seed`
+   feature exists and covers the endpoints marked "Phase 1" in ADR-0011
+   §"Rollout phasing". Cloud-only release is necessarily pre-1.0.
+2. **Error taxonomy complete** — all non-reserved variants from ADR-0004
+   are produced at least once by a conformance test; `AuthReason`
+   enum is wired with the canonical names from ADR-0004.
+3. **Cross-SDK conformance green** — the three SDKs pass the shared test
+   vectors for: auth-header, 429 retry-after parsing (header + body),
+   401/403 → `AuthError(reason=...)` mapping, 404 → `NotFoundError`,
+   501 → `NotImplementedError`. Run in CI.
+4. **TLS pinning contract** — ADR-0007 §"Common TLS-pinning interface"
+   implemented, including the fail-fast rule for non-default hosts.
+5. **Redaction contract** — ADR-0007 §"Cross-SDK redaction contract" test
+   harness green; CI grep rules for `console.log(.*api_key)` /
+   `println!.*token` / `print(.*api_key)` enforced.
+6. **Trust-score protection** — ADR-0007 §"Trust-score protection"
+   implemented in all three SDKs.
+7. **Forward-compat round-trip** — unknown-field test: an extra JSON field
+   on every response type survives round-trip via the SDK's `extras` /
+   `Forward` / `#[serde(flatten)]` mechanism.
+8. **Compatibility matrix published** — `README.md` of each SDK documents
+   the seed firmware range tested against for that SDK version.
+9. **No open MINOR-breaking fixes against a prior release** — i.e. the last
+   0.x.y MINOR did NOT need a follow-up breaking fix within one month.
+10. **Deprecation windows closed** — no `@deprecated` / `#[deprecated]` /
+    `DeprecationWarning` symbols with a removal target earlier than 1.0.
+
+OQ-3 (SSE streams) and OQ-5 (request signing) are explicitly NOT 1.0 gates;
+both ship typed placeholders and are allowed to remain 501 / unused at 1.0.
 
 ### Wire API uses URL-prefix major versioning
 

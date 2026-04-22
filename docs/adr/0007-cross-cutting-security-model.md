@@ -32,6 +32,34 @@ security contract; the seed-side half lives in
   while active.
 - mTLS is supported via `ClientCert { cert_pem, key_pem }` (see ADR-0003).
 
+#### Common TLS-pinning interface (all SDKs)
+
+Each SDK MUST expose a constructor surface that accepts the following five
+inputs, named per language convention but semantically equivalent. The
+mechanism (rustls verifier, undici `Agent.connect`, httpx `verify=` /
+`SSLContext`) is per-SDK; the contract below is shared:
+
+| Input | Type | Required when | Effect |
+|-------|------|---------------|--------|
+| `host` | string | always | Used to decide default-host-pinning. |
+| `trust_root` | PEM bytes or path | non-default host | Builds a CA store for standard verification. |
+| `client_cert` | `{cert_pem, key_pem}` | lockdown / mTLS | Attaches TLS client auth. |
+| `pinned_sha256` (optional) | 32 bytes | caller pins a specific self-signed leaf | Enforced post-handshake via fingerprint comparison. |
+| `dangerously_insecure` | bool | local debug only | Disables verification; MUST log a warning per request. |
+
+**Fail-fast rule**: the SDK MUST refuse to build a client for a non-default
+host with no `trust_root` and no `dangerously_insecure=true`. Failure MUST
+surface as `ValidationError` / `ConfigError` at construction, NEVER at first
+request. This preserves the "open-world unverified TLS can't happen by
+accident" invariant.
+
+Node-specific shape: `undici.Agent({ connect: { ca, checkServerIdentity, cert, key } })`.
+Python-specific shape: `SeedPinnedVerifier(host, ca_bundle, pinned_sha256)`
+feeding `httpx.Client(verify=...)`.
+Rust-specific shape: custom `rustls::client::ServerCertVerifier`
+(`PinnedSeedVerifier`) + `reqwest::Client::builder().use_preconfigured_tls(...)`.
+See ADR-0015b §5, ADR-0013b §5.1, ADR-0014d §5.2–5.3 for the realisations.
+
 ### Cloud TLS
 
 The cloud plane uses a public CA, so no custom trust root is ever needed.
@@ -44,8 +72,27 @@ The SDK MUST NOT expose `dangerously_insecure` for `api.cognitum.one`.
 - SDKs MUST NOT log or print credential values.
 - On Python, use `str` (immutable) — avoid passing credentials through
   mutable `bytearray`. On Rust, the key is `String` but MUST be wrapped in
-  a newtype implementing `Debug` as `"<redacted>"`. On Node, typed getters
-  MUST NOT serialize credentials through `JSON.stringify`.
+  a newtype implementing `Debug` as `"<redacted>"` (e.g. `secrecy::SecretString`).
+  On Node, typed getters MUST NOT serialize credentials through `JSON.stringify`.
+
+#### Cross-SDK redaction contract
+
+Every SDK MUST scrub the following from any log path, any `Error::Display` /
+`Error.toString()`, any `Debug` / `repr()`:
+
+1. Headers: `X-API-Key`, `Authorization`, `X-Pairing-Token`, `X-Signature`,
+   `X-Signed`, `Cookie` — replace value with `<redacted>` (case-insensitive).
+2. URL query params named `token`, `api_key`, `apiKey` — replace value.
+3. Response-body keys: `clientSecret`, `client_secret` — replace value.
+4. Any user-named env var ending in `_TOKEN`, `_KEY`, `_SECRET` that the SDK
+   echoes during error surfacing.
+
+Mechanism is per-SDK (Python uses regex, Node uses a `redactHeaders()`
+helper + `Object.entries` walker, Rust uses `SecretString` + manual `Debug`
+impls). A CI grep rule in each SDK MUST fail the build if any of these
+fields escape unredacted via `console.log` / `print()` / `println!()` /
+`JSON.stringify`. See ADR-0015b §7 (Node), ADR-0013b §7.1 (Python),
+ADR-0014b §7 (Rust) for the realisations.
 
 ### Pairing flow safety
 
@@ -90,11 +137,15 @@ This ADR says:
 ### Trust-score protection
 
 The seed blocks an IP after 3 auth failures for 5 minutes
-(`seed/src/cognitum-agent/src/rate_limit.rs:140-178`). SDKs MUST:
+(`seed/src/cognitum-agent/src/rate_limit.rs:140-178`). All three SDKs MUST:
 
 - NOT retry past 2 auth failures on the same credential.
 - Raise `AuthError(TrustScoreBlocked)` on the third.
 - Log a hint: "trust-score block imminent; stop retrying".
+
+State lives on the client instance (per-credential counter); the SDK MUST NOT
+persist it across processes. Tracked OQ-9 — resolved 2026-04-22, closing; all
+three SDKs MUST implement before 1.0 (ADR-0006 §"1.0 criteria").
 
 ### What the SDK explicitly does NOT do
 

@@ -44,6 +44,27 @@ request body was accepted (connection refused, TLS failure, write error) or
 when the response is 429 or 503 with `Retry-After`. This matches Stripe's
 idempotency philosophy and is the only safe default without idempotency keys.
 
+### Caller-attested idempotency (opt-in)
+
+Some `POST` endpoints are semantically idempotent even though they're
+POSTs (e.g. `POST /api/v1/store/query` — a read with a body). SDKs MUST
+expose a per-request opt-in for the caller to attest this:
+
+| SDK | Surface |
+|-----|---------|
+| Node | `client.post(path, body, { idempotent: true })` |
+| Python | `http.request("POST", path, json=..., idempotent=True)` |
+| Rust | `RequestBuilder::idempotent(true)` (or resource method attests internally, e.g. `store.query`) |
+
+When `idempotent=true`, the retry loop treats the call like a `PUT` for
+retry eligibility. SDKs MUST NOT default `idempotent=true` on any endpoint
+that mutates state. Resource implementations MAY set `idempotent=true`
+internally for known-safe POSTs (e.g. `store.query`); they MUST NOT do so
+for `store.ingest`, `store.delete`, `pair`, or any other mutating call.
+
+Server-side `Idempotency-Key` headers are out of scope until the seed or
+cloud honours them (tracked OQ-10; resolved 2026-04-22 — deferred).
+
 ### Backoff formula
 
 ```
@@ -80,11 +101,18 @@ SDKs MUST track total elapsed time across retries and stop once
 
 The seed returns JSON bodies on 429 containing either
 `retry_after_us` (microseconds) or no hint; `Retry-After` header may or may
-not be set. Resolution order for `server_hint_ms`:
+not be set. Resolution order for `server_hint_ms` (this is the canonical
+contract; per-SDK ADRs MUST implement it verbatim — Node per ADR-0015b §6
+`parseSeedRetryAfter`, Python per ADR-0013b §6 `parse_retry_after`, Rust
+per ADR-0014b §6.3 `parse_retry_after_ms`):
 
-1. `Retry-After` header in seconds or HTTP-date.
-2. `retry_after_us / 1000` from JSON body.
-3. Fall through to the computed exponential backoff.
+1. `Retry-After` header in seconds (integer or float).
+2. `Retry-After` header as HTTP-date — delta from now.
+3. `retry_after_us / 1000` from JSON body.
+4. Regex match `/retry after\s+([0-9]+(?:\.[0-9]+)?)\s*s/i` on JSON body's
+   `error` field — captures the seed's english-language rate-limit message
+   shape `"rate limited — retry after 1s"`.
+5. Fall through to the computed exponential backoff.
 
 Additionally, after 3 consecutive 429s on the same credential, the SDK
 SHOULD surface a log-level warning: the seed is likely about to IP-block

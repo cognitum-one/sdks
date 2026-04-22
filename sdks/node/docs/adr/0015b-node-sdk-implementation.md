@@ -162,6 +162,14 @@ const cloudAgent = new Agent({
 });
 ```
 
+See ADR-0002 §Transport posture
+(`/home/ruvultra/projects/sdks/docs/adr/0002-seed-wire-protocol.md`) for
+the cross-SDK HTTP/2, keep-alive, pooling, timeout, retry, and redirect
+posture that `cloudAgent` above conforms to. The `allowH2: true` setting
+here is the Node-specific realisation of the "HTTP/2 opt-in per-client"
+row; seed transport sets `allowH2: false` per that same table.
+
+
 Seed agent — TLS pinning per ADR-0007. The seed presents a self-signed
 cert today
 (`/home/ruvultra/projects/sdks/seed/docs/seed/api-reference.md:544-547`).
@@ -334,8 +342,10 @@ function sleep(ms: number): Promise<void> {
 
 429 handling MUST also parse the seed JSON body
 `{"error":"rate limited — retry after Ns"}` and any `retry_after_us`
-field before falling through to the exponential curve. The seed-side
-parser:
+field before falling through to the exponential curve. The canonical
+resolution order lives in ADR-0005 §"429 handling (seed specific)"; the
+Node realisation (`parseSeedRetryAfter`) implements that contract
+verbatim — do not reorder the lookups here without updating ADR-0005.
 
 ```ts
 // src/seed/client.ts (excerpt, 429 path)
@@ -357,10 +367,11 @@ function parseSeedRetryAfter(body: unknown): number | undefined {
 }
 ```
 
-Trust-score protection (ADR-0007 §Trust-score): on the third auth
-failure against the same credential within one process, the SDK raises
-`AuthError("trust_score_blocked")` and refuses to retry that credential
-until the caller resets it. State lives on the client instance; no disk.
+Trust-score protection is cross-SDK MUST per ADR-0007 §"Trust-score
+protection" (resolves OQ-9): on the third auth failure against the same
+credential within one process, the SDK raises `AuthError("trust_score_blocked")`
+and refuses to retry that credential until the caller resets it. State
+lives on the client instance; no disk.
 
 ### 7. Auth
 
@@ -408,7 +419,11 @@ headers["X-API-Key"] = this.apiKey;
 if (this.pairingToken) headers["X-Pairing-Token"] = this.pairingToken;
 ```
 
-Redaction (ADR-0003 §Redaction, ADR-0007 §"Credentials in memory"):
+Redaction — Node MUST satisfy the cross-SDK contract in ADR-0007
+§"Cross-SDK redaction contract" (headers, query params, response bodies,
+env-var echoes). The Node mechanism is a `redactHeaders()` helper plus a
+recursive `redactValue()` walker; Python uses regex, Rust uses
+`SecretString`. The contract is identical across all three.
 
 ```ts
 // src/redact.ts

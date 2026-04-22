@@ -30,9 +30,12 @@ feature flags, MSRV, or benchmark target.
 
 The seed exposes two SSE endpoints
 (`/api/v1/delta/stream`, `/api/v1/sensor/stream`) that return 501 today
-per `/home/ruvultra/projects/sdks/docs/adr/0002-seed-wire-protocol.md:210-215` and
-OQ-3 in `/home/ruvultra/projects/sdks/docs/adr/README.md:52`. Callers need typed
-stream handles that don't break when the seed finally ships SSE.
+per `/home/ruvultra/projects/sdks/docs/adr/0002-seed-wire-protocol.md` §"Streaming"
+and OQ-3 in `/home/ruvultra/projects/sdks/docs/adr/README.md` §"Open questions".
+Callers need typed stream handles that don't break when the seed finally
+ships SSE.
+
+
 
 ## Decision
 
@@ -44,10 +47,63 @@ Implement SSE, tests, and packaging exactly as below.
 
 <!-- ❌ wire_mismatch 2026-04-22 (issue cognitum-one/seed#48, issue cognitum-one/sdks#3): /api/v1/delta/stream on seed v0.20.0 returns 200 application/json JSON snapshot — NOT 501 and NOT SSE. reports/rust.partial.json n=8 recorded Error::Api{code:200} (no NotImplemented variant exists in 0.1.0 error.rs). §8 contract remains `(assumed)` until seed and SDK reconcile (feature="stream" not yet implemented). -->
 
-Per ADR-0002 §Streaming: `/api/v1/delta/stream` and
-`/api/v1/sensor/stream` return 501 today; SDKs MUST ship typed stream
-handles that surface `Error::NotImplemented` when the seed does, without
-forcing the call site to change once SSE lands.
+Per ADR-0002 §Streaming
+(https://github.com/cognitum-one/sdks/blob/main/docs/adr/0002-seed-wire-protocol.md):
+`/api/v1/delta/stream` and `/api/v1/sensor/stream` are specified to
+return 501 today; SDKs MUST ship typed stream handles that surface
+`Error::NotImplemented` when the seed does, without forcing the call
+site to change once SSE lands.
+
+**Wire reality (seed v0.20.0):** swarm validation against the live seed
+found `/api/v1/delta/stream` returns `200 application/json` with a
+snapshot body instead of the documented 501 — see
+https://github.com/cognitum-one/seed/issues/48. The 501 contract per
+ADR-0002 still describes the intended behaviour, but the Rust SDK must
+remain correct against both the documented and the observed wire until
+the seed ships a real SSE stream.
+
+The crate therefore exposes **two** entry points under
+`feature = "stream"`:
+
+1. `open_sse` — strict "SSE-or-error" variant. On 501 returns
+   `Err(Error::NotImplemented { endpoint })` immediately (fail-fast,
+   no `.next()` required to discover the capability gap). On a 200 with
+   a non-`text/event-stream` content-type, returns
+   `Err(Error::Protocol { .. })` so callers that only want SSE never
+   silently receive a JSON snapshot.
+2. `open_or_snapshot` — enum-returning escape hatch. Lets a single call
+   site handle both eras of the seed firmware:
+
+   ```rust
+   #[non_exhaustive]
+   pub enum StreamOrSnapshot<T, S> {
+       /// Server responded with an SSE stream (normal case, seed ≥ v0.21.x).
+       Stream(S),
+       /// Server responded with a 200 JSON body — the endpoint hasn't yet
+       /// been promoted to a real stream (seed < v0.21.x for /delta/stream).
+       Snapshot(T),
+   }
+
+   pub async fn open_or_snapshot<T: DeserializeOwned>(&self, path: &str)
+       -> Result<StreamOrSnapshot<T, impl Stream<Item = Result<Event, Error>>>, Error>;
+   ```
+
+   `open_or_snapshot` inspects `content-type`: `text/event-stream` →
+   `Stream(_)`, `application/json` → `Snapshot(_)`, anything else →
+   `Err(Error::Protocol { .. })`. A 501 still short-circuits to
+   `Err(Error::NotImplemented { endpoint })` — the enum only models the
+   "server said 200, in one of two shapes" axis.
+
+**Recommendation:** prefer `open_or_snapshot` at the public
+`SeedClient::delta().stream()` / `.sensor().stream()` call sites. It is
+future-proof, lets clients handle either wire shape without a refactor,
+and keeps `open_sse` available for callers that truly require SSE.
+
+Once https://github.com/cognitum-one/seed/issues/48 is resolved and the
+seed ships a real SSE stream, the `Snapshot(_)` arm collapses to a
+deprecation warning (emitted via `tracing::warn!` with the observed seed
+version) and eventually to a hard `Error::Protocol` in a subsequent
+MAJOR bump.
 
 ### 8.1 Event type
 
@@ -447,6 +503,6 @@ CI must use `--features "seed stream blocking"` instead of
 
 - ADR-0002 §Streaming, ADR-0004, ADR-0011.
 - 0014a §1.3 (features), 0014d §4 (errors), 0014b §6 (retry).
-- SSE ground truth: `/home/ruvultra/projects/sdks/docs/adr/0002-seed-wire-protocol.md:210-215`
-  and OQ-3 at `/home/ruvultra/projects/sdks/docs/adr/README.md:52`.
+- SSE ground truth: `/home/ruvultra/projects/sdks/docs/adr/0002-seed-wire-protocol.md` §"Streaming"
+  and OQ-3 in `/home/ruvultra/projects/sdks/docs/adr/README.md` §"Open questions".
 - Continues in `0014c-rust-sdk-implementation-release.md`.
