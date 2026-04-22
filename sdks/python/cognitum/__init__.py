@@ -16,12 +16,22 @@ Usage::
 from cognitum.async_client import AsyncCognitum
 from cognitum.client import Cognitum
 from cognitum.errors import (
+    ApiError,
     AuthError,
+    AuthReason,
     CognitumError,
+    ConfigError,
+    ConflictError,
+    NetworkError,
     NotFoundError,
+    NotImplementedError,  # noqa: A004 — distinct from builtins
+    ParseError,
     RateLimitError,
+    ServiceUnavailableError,
+    TimeoutError,  # noqa: A004 — distinct from builtins
     ValidationError,
 )
+from cognitum.seed import AsyncSeedClient, SeedClient
 from cognitum.types import (
     BrainMemory,
     BrainSearchResult,
@@ -46,12 +56,23 @@ __all__ = [
     # Clients
     "Cognitum",
     "AsyncCognitum",
+    "SeedClient",
+    "AsyncSeedClient",
     # Errors
     "CognitumError",
     "AuthError",
+    "AuthReason",
     "RateLimitError",
     "ValidationError",
     "NotFoundError",
+    "NotImplementedError",
+    "ConflictError",
+    "ServiceUnavailableError",
+    "ApiError",
+    "NetworkError",
+    "TimeoutError",
+    "ParseError",
+    "ConfigError",
     # Types
     "CognitumConfig",
     "Product",

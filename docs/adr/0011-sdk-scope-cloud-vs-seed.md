@@ -127,6 +127,21 @@ ship the seed-direct module in three phases. Phase 1 is the minimum viable
 Rationale: this covers the "ingest a vector, query it, prove custody" loop,
 which is the primary user journey for Seed-direct.
 
+#### Phase 1 — single-seed vs mesh
+
+Phase 1 ships **single-seed mode only**. `SeedClient.new("https://host:8443")`
+is the only supported constructor; `N=1` routing is trivially the one peer.
+Mesh-of-seeds support (explicit peer list, session consistency, peer cycling
+failover, per-peer `TokenBook`) lands as **Phase 1.5 ("mesh opt-in")** gated
+on ADR-0016a/0016b. Phase 1.5 is additive — every Phase 1 call-site keeps
+working unchanged because ADR-0016a §D9 commits to a single `SeedClient` type
+whose constructor accepts both shapes.
+
+Phase 1.5 adds to Phase 1's endpoint list these mesh-observability reads
+(ADR-0016a §D8): `GET /api/v1/network/mesh/status`, `GET /api/v1/peers`
+(alias `/swarm/peers`), `GET /api/v1/swarm/status`,
+`GET /api/v1/cluster/health`.
+
 **Phase 2 — observability + analysis (0.3.x):**
 
 | Context | Endpoints |
@@ -187,4 +202,6 @@ only the endpoints the SDK has shipped.
 - Cloud client: `sdks/node/src/client.ts:10-11`,
   `sdks/python/cognitum/client.py:18`, `sdks/rust/src/client.rs:17-18`.
 - Seed docs: `seed/docs/seed/api-reference.md`, `seed/docs/seed/sdk-guide.md`.
-- Related: ADRs 0002, 0003, 0004, 0005, 0006, 0007, 0008, 0009, 0010.
+- Related: ADRs 0002, 0003, 0004, 0005, 0006, 0007, 0008, 0009, 0010,
+  0016a (seed-client configuration — single + mesh decisions),
+  0016b (signatures + lifecycle).

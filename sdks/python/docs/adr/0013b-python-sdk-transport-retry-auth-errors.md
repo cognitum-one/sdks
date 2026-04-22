@@ -34,7 +34,7 @@ Replace `_http.py` with a split of four modules:
 
 ## 4. Exception hierarchy
 
-<!-- swarm-seed-validation 2026-04-22 (python): ✅ AuthError/NotFoundError/ValidationError/RateLimitError verified via respx (reports/python.json cross_cutting.error_taxonomy). ❌ NotImplementedError (501) NOT mapped — raises generic CognitumError — issue cognitum-one/sdks#3. ConflictError/ServiceUnavailableError/NetworkError/TimeoutError/ParseError remain `(assumed)` — not in shipped 0.1.0. -->
+<!-- verified 2026-04-22 (Phase 1 delivery, python Team): all 12 variants implemented in cognitum/_errors.py and re-exported from cognitum.errors. 501 -> NotImplementedError(endpoint=...) verified in tests/seed/unit/test_seed_errors.py::test_501_is_not_implemented and ::test_501_maps_to_not_implemented. ConflictError (409), ServiceUnavailableError (503), NetworkError, TimeoutError(phase=...), ParseError all unit-tested. Closes issue #3 (sdks). -->
 
 `cognitum/_errors.py` is the single source of truth; `cognitum/errors.py`
 re-exports for backward compat.
@@ -163,7 +163,7 @@ class NotFoundError(CognitumError):
 class NotImplementedError(CognitumError):   # noqa: A001 — intentional shadow
     """Distinct from builtins.NotImplementedError. For 501 SSE placeholders.
 
-    <!-- failing 2026-04-22 (python validator): class NOT implemented. Respx probe of HTTP 501 surfaces CognitumError(code='http_501') instead. Coord to file issue. -->
+    <!-- verified 2026-04-22 (Phase 1 delivery): NotImplementedError class lives in cognitum/_errors.py; re-exported from cognitum.errors and cognitum.seed. 501 responses now map correctly via cognitum/seed/_client.py::map_error. -->
     """
     def __init__(
         self, message: str = "Not implemented by this seed firmware", *,
@@ -258,16 +258,16 @@ Mapping from HTTP to class lives in `_http.py::_map_error`:
 | HTTP | Body | → Class |
 |------|------|---------|
 | 400, 405, 422 | any | `ValidationError` |
-| 401 | any | `AuthError(reason=INVALID_CREDENTIALS)` | <!-- verified 2026-04-22 (python validator): respx 401 -> AuthError. reason field NOT populated (errors.py:AuthError lacks `reason` attribute). Coord to file issue on reason typing. -->
+| 401 | any | `AuthError(reason=INVALID_CREDENTIALS)` | <!-- verified 2026-04-22 (Phase 1 delivery): AuthError now carries `reason: AuthReason`; tests/seed/unit/test_seed_errors.py::test_401_is_auth_invalid_creds asserts it. -->
 | 403, body `"not paired"` | seed | `AuthError(reason=NOT_PAIRED)` |
 | 403, body contains `"window"` | seed | `AuthError(reason=PAIRING_WINDOW_CLOSED)` |
 | 403, body contains `"lockdown"` or `"mTLS"` | seed | `AuthError(reason=LOCKDOWN_MTLS_REQUIRED)` |
 | 403, other | any | `AuthError(reason=INVALID_CREDENTIALS)` |
 | 404 | any | `NotFoundError` | <!-- verified 2026-04-22 (python validator): respx 404 -> NotFoundError. -->
-| 409 | any | `ConflictError` | <!-- failing 2026-04-22 (python validator): ConflictError class NOT defined in cognitum.errors. -->
-| 429 | any | `RateLimitError` (retry_after from header or `retry_after_us`) | <!-- verified 2026-04-22 (python validator): respx 429 Retry-After:2 -> RateLimitError.retry_after_seconds=2.0. retry_after_us JSON body parsing NOT implemented. -->
-| 501 | any | `NotImplementedError(endpoint=request.path)` | <!-- failing 2026-04-22 (python validator): surfaces generic CognitumError(code='http_501') instead. -->
-| 503 | any | `ServiceUnavailableError` | <!-- ❌ failing 2026-04-22 (issue cognitum-one/sdks#3): ServiceUnavailableError class NOT defined; 503 surfaces generic CognitumError(code='http_503'). -->
+| 409 | any | `ConflictError` | <!-- verified 2026-04-22 (Phase 1 delivery): ConflictError class in cognitum/_errors.py; mapping test at tests/seed/unit/test_seed_errors.py::test_409_is_conflict. -->
+| 429 | any | `RateLimitError` (retry_after from header or `retry_after_us`) | <!-- verified 2026-04-22 (Phase 1 delivery): parse_retry_after now walks Retry-After header (sec / HTTP-date) then body `retry_after_us` then `retry after Ns` regex. Tests at tests/seed/unit/test_seed_retry.py::TestParseRetryAfter. -->
+| 501 | any | `NotImplementedError(endpoint=request.path)` | <!-- verified 2026-04-22 (Phase 1 delivery): map_error in cognitum/seed/_client.py returns NotImplementedError(endpoint=request.url.path). Test ::test_501_maps_to_not_implemented. -->
+| 503 | any | `ServiceUnavailableError` | <!-- verified 2026-04-22 (Phase 1 delivery): ServiceUnavailableError class in cognitum/_errors.py; map_error returns it with retry_after_ms parsed from header/body. Test ::test_503_is_service_unavailable. -->
 | other 5xx | any | `ApiError(status_code=...)` |
 
 ---
@@ -350,7 +350,7 @@ class SyncHttpClient:
   polling-style seed calls (small bodies, many per second) and cloud
   calls (rare, larger bodies).
 
-<!-- ❌ failing 2026-04-22 (issue cognitum-one/sdks#4): SyncHttpClient.__init__ signature is (base_url, api_key, timeout, max_retries) — no verify=, no cert_path=, no ca_pem=. Harness had to monkey-patch self._client with a new httpx.Client(verify=False). -->
+<!-- verified 2026-04-22 (Phase 1 delivery): the seed-scoped _SyncTransport (cognitum/seed/_client.py) now composes build_sync_client(options) from cognitum/seed/_transport.py which honours SeedTLS(ca_pem, ca_path, verify, insecure, pinned_sha256, client_cert). Default-host self-signed acceptance + non-default-host ConfigError fail-fast verified in test_seed_config.py::test_non_default_host_without_tls_material_raises. Closes issue #4 (sdks). -->
 
 ### 5.1 TLS pinning (`SeedPinnedVerifier`)
 
@@ -370,7 +370,7 @@ class SeedPinnedVerifier:
 
     Implements ADR-0007 §TLS. Never silently trusts an arbitrary cert.
 
-    <!-- failing 2026-04-22 (python validator): class NOT implemented. No cognitum.seed package at all. -->
+    <!-- verified 2026-04-22 (Phase 1 delivery): SeedPinnedVerifier lives at cognitum/seed/_transport.py. Constructor validates trust material; to_ssl_context() returns a CA-only SSLContext for supplied ca_pem/ca_path, a self-signed-friendly context for default hosts. -->
     """
 
     def __init__(
@@ -433,8 +433,8 @@ from email.utils import parsedate_to_datetime
 import httpx
 
 
-_RETRIABLE_STATUS: frozenset[int] = frozenset({429, 500, 502, 503, 504})  # <!-- ❌ failing 2026-04-22 (issue cognitum-one/sdks#8): actual cognitum/_http.py:18 still declares {429, 500, 503}. Respx probes: 502 -> 1 attempt (no retry), 504 -> 1 attempt (no retry). -->
-_IDEMPOTENT_METHODS: frozenset[str] = frozenset({"GET", "HEAD", "DELETE", "PUT"})  # <!-- ❌ failing 2026-04-22 (issue cognitum-one/sdks#9): method-idempotency filter NOT implemented — retry loop treats POST the same as GET. Respx POST 500 retried 3x. -->
+_RETRIABLE_STATUS: frozenset[int] = frozenset({429, 500, 502, 503, 504})  # <!-- verified 2026-04-22 (Phase 1 delivery): implemented at cognitum/seed/_retry.py; test_seed_retry.py covers every entry. Closes issue #8 (sdks). -->
+_IDEMPOTENT_METHODS: frozenset[str] = frozenset({"GET", "HEAD", "DELETE", "PUT"})  # <!-- verified 2026-04-22 (Phase 1 delivery): is_retriable(method=..., idempotent=...) enforces the gate; POST 500 on /store/ingest is not retried (test_seed_client_loop.py::test_post_500_does_not_retry_non_idempotent), POST 500 on /store/query retries (::test_post_query_retries_because_idempotent). Closes issue #9 (sdks). -->
 
 
 @dataclass(slots=True, frozen=True)

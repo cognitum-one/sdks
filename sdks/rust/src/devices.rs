@@ -51,10 +51,7 @@ pub struct HeartbeatResponse {
 
 impl<'a> DevicesResource<'a> {
     /// Register a new device with its Ed25519 public key.
-    pub async fn register(
-        &self,
-        public_key: &str,
-    ) -> Result<Device, Error> {
+    pub async fn register(&self, public_key: &str) -> Result<Device, Error> {
         let body = RegisterBody {
             public_key: public_key.to_owned(),
         };
@@ -75,10 +72,7 @@ impl<'a> DevicesResource<'a> {
     }
 
     /// Send a heartbeat for a device.
-    pub async fn heartbeat(
-        &self,
-        device_id: &str,
-    ) -> Result<HeartbeatResponse, Error> {
+    pub async fn heartbeat(&self, device_id: &str) -> Result<HeartbeatResponse, Error> {
         let body = HeartbeatBody {
             device_id: device_id.to_owned(),
         };

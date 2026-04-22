@@ -32,15 +32,17 @@ Existing gaps (all load-bearing for the bug fixes below):
 
 ### 4. Error classes
 
-> ❌ failing against seed v0.20.0 2026-04-22 — 0.1.3/src/errors.ts ships
-> only `CognitumError`, `AuthError`, `RateLimitError`, `ValidationError`,
-> `NotFoundError`. Missing per ADR-0004: `NotImplementedError`,
-> `ConflictError`, `ServiceUnavailableError`, `NetworkError`,
-> `TimeoutError`, `ParseError`, and the `reason`/`phase`/`tier`/`field`
-> taxonomy fields. Observed: 501 falls into the default branch as
-> `CognitumError("SERVER_ERROR", 501)` — no typed `NotImplementedError`.
-> Auth header is correct (`X-API-Key`, no `Authorization: Bearer`).
-> Coord to file issue.
+> ✅ fixed 2026-04-22 (Phase 1) — `src/errors.ts` now ships
+> `NotImplementedError` (with `.endpoint`), `ConflictError`,
+> `ServiceUnavailableError` (with `.retryAfterMs`), `NetworkError` (with
+> `cause`), `TimeoutError` (with `.phase: "connect"|"read"|"total"`),
+> `ParseError` (with `.expected`), and `ConfigError`. 501 now maps to a
+> typed `NotImplementedError(endpoint, message)` — see
+> `tests/seed/unit/errors.test.ts` "maps 501 → NotImplementedError".
+> Remaining deferred to Phase 1.5: `AuthError.reason` discriminator
+> (still a plain `string` message); `RateLimitError.tier` enum. Those
+> two require touching the cloud `HttpClient` surface, which is out of
+> scope for the seed Phase 1 landing.
 
 All variants from ADR-0004. Every class sets the prototype for
 cross-realm `instanceof`, uses `Error.captureStackTrace` where
@@ -134,12 +136,18 @@ the 0.1 → 0.2 version bump in ADR-0015c §15.
 
 ### 5. Transport
 
-> ❌ failing against seed v0.20.0 2026-04-22 — shipped 0.1.3 ships no
-> `SeedClient`, no `src/seed/transport.ts`, no TLS pinning, and no
-> `ca`/`trustRoot` config. All seed validation used the cloud
-> `HttpClient` with a `baseUrl` override + process-wide
-> `NODE_TLS_REJECT_UNAUTHORIZED=0`. With that env unset and no CA:
-> `CognitumError(NETWORK_ERROR, "fetch failed")`. Coord to file issue.
+> ✅ fixed 2026-04-22 (Phase 1) — `src/seed/client.ts` ships a dedicated
+> `SeedClient` with `src/seed/transport.ts` providing a TLS-aware
+> `fetch` wrapper. `tls.ca` accepts a PEM string/Buffer; `tls.insecure`
+> is accepted (dev-only, logs a one-time warning) and falls back to a
+> scoped `NODE_TLS_REJECT_UNAUTHORIZED` toggle when `undici` is not on
+> the dep list. `undici.Agent` path is in place behind a runtime
+> `require("undici")` so the full ADR-0015b §5 behaviour lights up the
+> moment `undici` is added to `dependencies` (tracked for Phase 1.5 —
+> changing `package.json` deps was deferred to avoid colliding with the
+> cross-repo architect's ADR-0016 landing). Non-pinned-host / missing
+> CA validation will land with Phase 1.5 mesh when the pinned-host set
+> is expanded beyond the default single endpoint.
 
 Two layers; same `undici` dispatcher class, different constructor
 arguments:
@@ -238,13 +246,19 @@ cfg.timeout)`, `clearTimeout` in the `finally` block.
 
 ### 6. Retry / rate-limit implementation
 
-> ❌ failing against seed v0.20.0 2026-04-22 — 0.1.3/src/client.ts:171-195
-> still has base=1s, cap=16s (not 30s per ADR-0005), no jitter, no
-> `maxElapsedMs`, and no `retry_after_us` / JSON-body parsing for 429s.
-> Observed elapsed with `retries=3` against unreachable host = ~7s
-> (1+2+4s exponential). 5 rapid GETs to `/api/v1/status` did not trigger
-> 429 (paired tier tolerates >5 req/s), so SDK 429 retry path remains
-> unexercised. Coord to file issue.
+> ✅ fixed 2026-04-22 (Phase 1, seed path only) — `src/seed/retry.ts`
+> implements ADR-0005 exactly: BASE_MS=500, CAP_MS=30_000,
+> DEFAULT_MAX_ELAPSED_MS=60_000, equal-jitter
+> (`Math.random() * BASE_MS`), and honours the seed-specific 429 body
+> via `parseSeedRetryAfter({retry_after_us, error})`. POST-on-timeout
+> is non-retryable unless the caller sets `idempotent: true`
+> (`store.query` does; `store.ingest` and `pair.create` do not).
+> Regression tests in `tests/seed/unit/retry.test.ts` cover all
+> classify() branches + `parseSeedRetryAfter` with a
+> `retry_after_us: 2_000_000` → `retryAfterMs === 2000` assertion. The
+> cloud `src/client.ts:171-195` still ships the 1s/16s/no-jitter loop;
+> migrating cloud onto `src/seed/retry.ts` is tracked for Phase 1.5 to
+> avoid breaking the existing `tests/client.test.ts` suite.
 
 Shared `src/retry.ts`. Fixes the 1 s base / 16 s cap / no-jitter bug in
 `/home/ruvultra/projects/sdks/sdks/node/src/client.ts:171-173`.
@@ -377,10 +391,16 @@ lives on the client instance; no disk.
 
 > ✅ verified 2026-04-22 (partial) against seed v0.20.0 — SDK 0.1.3
 > sends `X-API-Key` (not `Authorization: Bearer`), per client.ts:48.
-> ❌ `COGNITUM_API_KEY` env fallback NOT implemented: client.ts:24-27
-> throws `AuthError` if `config.apiKey` is missing. No
-> `COGNITUM_SEED_TOKEN`, no `X-Pairing-Token` header, no redaction helpers.
-> Coord to file issue.
+> ✅ fixed 2026-04-22 (Phase 1, seed path) — `src/seed/config.ts`
+> reads `COGNITUM_SEED_TOKEN` from env when no explicit token is
+> provided, and `src/seed/client.ts` emits `X-Pairing-Token` on every
+> seed request (unit-tested in
+> `tests/seed/unit/errors.test.ts` "forwards the X-Pairing-Token
+> header"). Still deferred to Phase 1.5: `COGNITUM_API_KEY` env fallback
+> on the cloud `HttpClient` (unchanged to keep the existing
+> `new Cognitum({apiKey})` contract intact), and the dedicated
+> `redactHeaders`/`redactValue` helpers — the seed client never logs
+> headers at all today, so there's no exposure in the Phase 1 path.
 
 Credential resolution order (ADR-0003 §Credential provisioning):
 

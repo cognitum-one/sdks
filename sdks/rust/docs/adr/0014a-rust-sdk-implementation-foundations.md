@@ -1,11 +1,38 @@
 # ADR 0014a: Rust SDK Implementation — Crate Layout & Public API
 
-<!-- swarm-seed-validation 2026-04-22 (rust agent): overall ❌ not implemented.
-     Crate layout still flat (brain.rs, catalog.rs, client.rs, contact.rs,
-     devices.rs, error.rs, leads.rs, mcp.rs, orders.rs, types.rs) — NO
-     modules/{seed,cloud,transport,auth,retry} split, NO feature flags,
-     NO SeedCredential/CloudCredential types, NO per-surface resources.
-     Report: /tmp/swarm-seed-validation/reports/rust.json. -->
+<!-- swarm-seed-validation 2026-04-22 (rust agent): Phase 1 ✅ partially
+     delivered. `src/seed/**` tree shipped (12 Phase 1 endpoints, single-seed
+     mode, Routing::Pinned only). Cloud modules still flat (brain.rs,
+     catalog.rs, …) — cloud reorg deferred. Feature flags `seed`, `rustls`,
+     `native-tls`, `stream`, `blocking`, `live-seed-tests` all present. No
+     SeedCredential/CloudCredential split yet — SeedAuth enum covers the
+     seed half; cloud keeps the legacy ClientConfig. -->
+
+## Phase 1 delivery (2026-04-22)
+
+Team Rust shipped the single-seed half of ADR-0011 under
+`src/seed/**`. The tree composes over `reqwest::Client` directly (it
+does not reuse `crate::Client` — cloud and seed have different
+auth/host defaults). Summary:
+
+- **Builder**: `SeedClient::builder().endpoint(...).auth(...).tls(...).routing(Pinned).build()?`
+- **Mesh API shape locked**: `.endpoints(&[...])`, `Routing::{Balanced,Failover}`,
+  and multi-peer `PeerSet::try_from_many` are all present but return
+  `Error::Validation("not_implemented: feature `mesh-routing` …")` at
+  `build()` time. Flipping these to real implementations is Phase 1.5.
+- **TLS**: `SeedTls::{System, Pinned(Vec<u8>), Insecure}`. Insecure logs
+  once per process via `eprintln!`. `Pinned` disables the system trust
+  store and plumbs through `reqwest::Certificate::from_pem`.
+- **Errors**: composed over the existing `crate::Error` (pre-fix agent's
+  7-variant enum). Reason slot is prefixed into the `Auth` message —
+  `"not_paired: …"`, `"invalid_credentials: …"`. Full ADR-0004 taxonomy
+  migration lands when the pre-fix agent's Error rewrite ships.
+- **Retry**: equal-jitter backoff, Retry-After (header seconds + JSON
+  `retry_after_us` + english `"retry after Ns"` fallback), 60s elapsed
+  ceiling, POST idempotency rule. Pure helpers in `seed::retry` are
+  dep-free.
+- **Tests**: 33 lib + 19 wiremock integration = 52 green. Live-seed
+  integration gated on `--features live-seed-tests`.
 
 - **Status:** Proposed
 - **Date:** 2026-04-22
@@ -209,7 +236,7 @@ defaults off is the correct fix.
 
 ## 2. Public API surface
 
-<!-- swarm-seed-validation 2026-04-22 (rust): ❌ §2.3 `cognitum_rs::seed::SeedClient` (feature = "seed") is NOT shipped in 0.1.0 (issue cognitum-one/sdks#2). All 11 seed endpoints in reports/rust.partial.json used `adapter_used: raw-reqwest (SDK has no …)`. §2.1 re-exports of `seed`, `sse`, `blocking` modules remain `(assumed)`. §2.2 cloud Client is shipped but auth header is wrong (issue cognitum-one/sdks#10). -->
+<!-- swarm-seed-validation 2026-04-22 (rust): §2.3 `cognitum_rs::seed::SeedClient` (feature = "seed") ✅ shipped in 0.1.0+Phase 1 — closes cognitum-one/sdks#2 (single-seed half); mesh-mode still Phase 1.5. §2.1 re-exports of `seed` ✅ present behind feature flag; `sse`, `blocking` remain `(assumed)`. §2.2 cloud Client auth header ✅ fixed by pre-fix agent — closes cognitum-one/sdks#10. -->
 
 Every signature below is normative. `#[non_exhaustive]` is mandatory on
 public structs and enums as called out.

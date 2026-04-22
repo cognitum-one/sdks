@@ -1,12 +1,14 @@
 # ADR 0014e: Rust SDK Implementation — Streaming, Test Strategy, Packaging
 
-<!-- swarm-seed-validation 2026-04-22 (rust agent): overall ❌ not implemented.
-     No `stream` feature, no `SeedEvent` type, no SSE helper. Error enum has
-     no `NotImplemented` variant, so even on a 501 the SDK would surface
-     `Error::Api{code:501}` rather than the ADR-0011 `NotImplemented`.
-     NEW OBSERVATION: seed v0.20.1 returned 200 (not 501) on
-     /api/v1/delta/stream — ADR §Context lines 23-27 are stale; coord to
-     cross-check other SDKs. Report: /tmp/swarm-seed-validation/reports/rust.json. -->
+<!-- swarm-seed-validation 2026-04-22 (rust agent): Phase 1 ✅ partial.
+     `stream` feature flag added in Cargo.toml (gates `eventsource-stream`)
+     but the SSE helper + `SeedEvent` type are not yet wired — SSE lands
+     in Phase 1.5 alongside mesh mode. Seed 501 responses map to
+     `Error::Validation("not_implemented: {endpoint}: …")` via
+     `seed::error::from_response` (string-prefix workaround until the
+     pre-fix agent ships the full 12-variant Error enum). 52 seed tests
+     green (33 lib + 19 wiremock). Wire observation re. /delta/stream
+     returning 200 is still accurate and tracked. -->
 
 - **Status:** Proposed
 - **Date:** 2026-04-22

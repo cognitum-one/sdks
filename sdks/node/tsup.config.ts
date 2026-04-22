@@ -11,6 +11,16 @@ export default defineConfig([
     outDir: "dist",
   },
   {
+    // Seed-direct subpath export — @cognitum/sdk/seed
+    entry: { "seed/index": "src/seed/index.ts" },
+    format: ["esm", "cjs"],
+    dts: true,
+    clean: false,
+    sourcemap: true,
+    target: "es2022",
+    outDir: "dist",
+  },
+  {
     entry: ["src/cli.ts"],
     format: ["esm"],
     outExtension: () => ({ js: ".mjs" }),

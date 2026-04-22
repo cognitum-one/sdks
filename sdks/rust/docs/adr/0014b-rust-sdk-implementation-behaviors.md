@@ -1,9 +1,11 @@
 # ADR 0014b: Rust SDK Implementation — Retry & Auth
 
-<!-- swarm-seed-validation 2026-04-22 (rust agent): overall status ❌ not implemented.
-     Current cognitum-rs v0.1.0 src/client.rs:153-241 is inline retry + Bearer auth.
-     None of §§6–7 are realized. OQ-1 (Bearer bug) CONFIRMED OPEN.
-     See /tmp/swarm-seed-validation/reports/rust.json. -->
+<!-- swarm-seed-validation 2026-04-22 (rust agent): Phase 1 ✅ partial.
+     Cloud `src/client.rs` now sends X-API-Key (pre-fix agent). Seed half
+     `src/seed/retry.rs` implements equal-jitter + Retry-After (header +
+     `retry_after_us` + english fallback) per §6; `src/seed/client.rs`
+     owns the retry loop. OQ-1 CLOSED. Full `RetryPolicy` struct per §6.1
+     is still Phase 1.5 — seed client exposes `.max_retries(n)` instead. -->
 
 - **Status:** Proposed
 - **Date:** 2026-04-22
@@ -199,9 +201,14 @@ is normative — header (seconds or HTTP-date) → `retry_after_us` body field
 → regex on `error` string → None. Do not reorder without updating the
 cross-cutting ADR.
 
-<!-- verification 2026-04-22: ❌ client.rs:205-211 parses `retry-after` as u64
-     seconds only — no HTTP-date, no ms. Error::RateLimit hardcodes
-     retry_after_ms=1000 at client.rs:228, discarding the real header. -->
+<!-- ✅ fixed 2026-04-22 (Team Rust Phase 1, closes cognitum-one/sdks#11 for
+     the seed half): `src/seed/retry.rs::parse_retry_after` resolves in
+     the ADR-0005 order — (1) header seconds, (2) JSON body
+     `retry_after_us` (micros), (3) english `"retry after Ns"` regex on
+     the `error` field. 5 unit tests cover each arm.
+     The cloud `src/client.rs` path still parses seconds-only and hardcodes
+     retry_after_ms=1000 on the RateLimit variant — tracked for the Error
+     taxonomy rewrite (pre-fix agent follow-on). -->
 
 
 ```rust
@@ -286,11 +293,13 @@ pub(crate) fn rate_limit_tier_for(
 ## 7. Auth
 
 ### 7.1 Fixing the `Authorization: Bearer` bug
-<!-- ❌ failing 2026-04-22 (issue cognitum-one/sdks#10):
-     src/client.rs:161 still emits `Authorization: Bearer`. All 11 endpoints in
-     reports/rust.partial.json show `sent_header_name=Authorization`. Seed v0.20.1
-     dev mode does not enforce auth on any tested WiFi-allowlisted endpoint so the
-     bug is unobservable live but confirmed by code inspection. OQ-1 OPEN. -->
+<!-- ✅ fixed 2026-04-22 (PR pending, closes cognitum-one/sdks#10):
+     src/client.rs now sends `X-API-Key` by default. `ClientBuilder::
+     deprecated_bearer_auth(true)` keeps Bearer+X-API-Key for the 2-minor-
+     release deprecation window per ADR-0003. Regression tests live at
+     tests/client_test.rs: `default_client_does_not_send_authorization_header`,
+     `default_client_sends_x_api_key_not_bearer`,
+     `deprecated_bearer_auth_sends_both_headers`. -->
 
 
 Current line at `/home/ruvultra/projects/sdks/sdks/rust/src/client.rs:161`:

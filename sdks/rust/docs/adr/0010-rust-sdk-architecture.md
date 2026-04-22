@@ -1,11 +1,11 @@
 # ADR 0010: Rust SDK Architecture
 
-<!-- swarm-seed-validation 2026-04-22 (rust agent): overall ❌ still on the
-     "before" architecture. Current cognitum-rs v0.1.0 targets api.cognitum.one
-     commerce only (DEFAULT_BASE_URL = https://api.cognitum.one at
-     src/client.rs:17-18); no seed module exists (issue cognitum-one/sdks#2).
-     All 12 seed smoke endpoints had to be exercised via raw reqwest. Report:
-     /tmp/swarm-seed-validation/reports/rust.partial.json. -->
+<!-- swarm-seed-validation 2026-04-22 (rust agent): Phase 1 ✅ — the seed
+     module now exists at `src/seed/**` behind the `seed` feature flag
+     (closes cognitum-one/sdks#2 for single-seed mode). Cloud `Client`
+     still at `https://api.cognitum.one`; seed composes over reqwest
+     directly instead of reusing `Client`. All 12 Phase 1 endpoints are
+     wired via `SeedClient` resources. Mesh-mode is Phase 1.5. -->
 
 - **Status:** Accepted (Cloud scope). Seed-direct module Proposed (ADR-0011).
 - **Date:** 2026-04-22
@@ -45,7 +45,7 @@ Existing source of truth:
 
 ### Auth
 
-<!-- ❌ failing 2026-04-22 (issue cognitum-one/sdks#10): client.rs:161 still sends `Authorization: Bearer` on every request. All 11 endpoints in reports/rust.partial.json show `sent_header_name=Authorization`. OQ-1 OPEN. -->
+<!-- ✅ fixed 2026-04-22 (pre-fix agent, closes cognitum-one/sdks#10): client.rs now sends `X-API-Key` by default; `ClientBuilder::deprecated_bearer_auth(true)` keeps Bearer+X-API-Key for the 2-minor-release deprecation window per ADR-0003. Seed half uses `X-Pairing-Token` via `SeedAuth::PairingToken`. -->
 
 **Breaking fix (per ADR-0003):** today Rust uses `Authorization: Bearer`
 (`client.rs:161`). Switch to `X-API-Key`:

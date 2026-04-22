@@ -31,6 +31,69 @@ first release carrying this ADR series is `cognitum==0.2.0`.
 
 ---
 
+## Phase 1 delivery (2026-04-22)
+
+Phase 1 landed the single-seed surface of `cognitum.seed`. Implementation
+lives at `sdks/python/cognitum/seed/`; tests at `sdks/python/tests/seed/`.
+
+### What shipped
+
+- **Clients**: `SeedClient` (sync) and `AsyncSeedClient` (async) with
+  `__enter__`/`__exit__`/`__aenter__`/`__aexit__`, resource namespaces
+  (`pair`, `store`, `witness`, `custody`, `ota`), and top-level `status()`
+  and `identity()` convenience methods.
+- **Config shape** (matches the locked ADR-0016 API): `endpoints: str |
+  list[str]` (list > 1 → `ConfigError` with "mesh mode in Phase 1.5"),
+  plus `SeedAuth`, `SeedTLS`, `SeedFailover`, `routing`, `timeouts`
+  tuple. `normalise_options` enforces Phase 1 invariants at construction.
+- **12 Phase 1 endpoints**:
+  `GET /status`, `GET /identity`,
+  `GET /pair/status`, `POST /pair`, `DELETE /pair/{name}`,
+  `GET /witness/chain`, `GET /custody/epoch`,
+  `GET /store/status`, `POST /store/query`, `POST /store/ingest`,
+  `GET /ota/config`, `POST /ota/check-now`.
+- **12-variant exception taxonomy** (ADR-0004) at
+  `cognitum/_errors.py`, re-exported from `cognitum.errors` for 0.1.x
+  backward compat.
+- **Retry** (ADR-0005): `_retry.is_retriable`, `parse_retry_after`,
+  `compute_delay_ms` / `compute_delay`; retriable set
+  `{429, 500, 502, 503, 504}`; POST idempotency gate (`idempotent=True`
+  kwarg) for `store.query`; total-elapsed ceiling 60 s.
+- **TLS** (ADR-0007): `SeedPinnedVerifier` + `SeedTLS(ca_pem=, ca_path=,
+  insecure=, pinned_sha256=, client_cert=)`. Default-host (169.254.42.1,
+  cognitum.local, localhost, link-local IPv6) accepts self-signed; any
+  other host with `verify=True` and no trust material raises
+  `ConfigError` at construction.
+- **Typed models**: `@dataclass(slots=True, frozen=True)` with an
+  `extra: Mapping[str, Any]` forward-compat hatch on every read model.
+
+### Test coverage
+
+`pytest sdks/python/tests/seed/unit/` — 102 tests pass in ~4 s. Covers
+config parsing + mesh rejection, retry math + idempotency rules,
+HTTP→exception mapping for every status in the taxonomy, wire-model
+`from_wire` round-trips, and an end-to-end respx loop test for all 12
+endpoints. Live integration tests at `tests/seed/integration/` pass
+8/9 endpoints against the seed on the USB tunnel (`localhost:18443`);
+the 9th covers the full pair-and-write flow and is opt-in via
+`COGNITUM_PAIR_NAME`.
+
+### Phase 1.5 gaps (intentionally deferred)
+
+- Multi-endpoint mesh routing (round-robin, read-any-write-one, failover
+  health-checks). API shape locked; impl deferred.
+- Streaming endpoints (`/delta/stream`, `/sensor/stream`) — still mapped
+  to `NotImplementedError` via the 501 path.
+- Sensor (17), Coherence (5), Thermal (13), Optimizer (6), Delivery (3),
+  Profiles/Demo (4), and the rest of Custody (5) — code shape exists for
+  status/identity/pair/store/witness/custody.epoch/ota; the remaining
+  resources follow the same shape in Phase 1.5.
+- TLS fingerprint pinning (`pinned_sha256`) is accepted on the config
+  dataclass but enforcement via httpx connection hooks lands in Phase
+  1.5.
+
+---
+
 ## 1. Module layout
 
 ```
@@ -164,7 +227,7 @@ Symmetric to `Cognitum` with `async def` methods and
 `__aenter__ / __aexit__`. Every resource class has an `Async…` twin. See
 `sdks/python/cognitum/async_client.py:1-84` for the baseline shape.
 
-<!-- ❌ failing 2026-04-22 (issue cognitum-one/sdks#2): cognitum.seed package does NOT exist. No SeedClient, no AsyncSeedClient, no seed/_pinning.py, no seed/models.py. Validator harness drove cognitum._http.SyncHttpClient directly against https://localhost:18443 (11 seed endpoints — 10/11 status==200 verified, /api/v1/delta/stream wire_mismatch → issue cognitum-one/seed#48). -->
+<!-- verified 2026-04-22 (Phase 1 delivery, python Team): cognitum.seed package lands with SeedClient, AsyncSeedClient, _transport.SeedPinnedVerifier, _models/* and resources/*. 10 Phase 1 endpoints implemented; 8 verified live via SSH tunnel (status, identity, pair.status, witness.chain, custody.epoch, store.status, ota.config, ota.check_now); pair.create/delete and store.query/ingest verified via respx unit tests (require pairing token for live). Closes issue #2 (sdks). -->
 
 ### 2.3 `cognitum.seed.SeedClient` (sync, seed-direct)
 
@@ -307,7 +370,7 @@ semantically safe; ADR-0005 §Idempotency rule otherwise forbids automatic
 POST retries. The SyncHttpClient retry loop honours this flag by
 pretending the request body was not sent between attempts.
 
-<!-- failing 2026-04-22 (python validator): idempotent= kwarg NOT present on SyncHttpClient.request / .post. Respx probe: POST with a 500 response was retried 3x (max_retries=2) by default — violates ADR-0005 §Idempotency. Coord to file issue. -->
+<!-- verified 2026-04-22 (Phase 1 delivery): `idempotent=` kwarg threaded through seed `_SyncTransport.request` / `_AsyncTransport.request` (cognitum/seed/_client.py, _async_client.py). `store.query` opts in (`idempotent=True`); `store.ingest` does not. Retry policy in cognitum/seed/_retry.py::is_retriable enforces the rule. Respx tests: POST 500 on `/store/ingest` → 1 call (no retry); POST 500 on `/store/query` → retries and succeeds on 2nd attempt. Closes issue #9 (sdks). -->
 
 ---
 

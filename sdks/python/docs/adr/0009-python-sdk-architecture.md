@@ -54,8 +54,8 @@ Existing source of truth:
   ```
 - Env var resolution: `COGNITUM_API_KEY` and `COGNITUM_SEED_PAIRING_TOKEN`.
 - Header: `X-API-Key` (already compliant, `_http.py:68`). <!-- verified 2026-04-22 (python validator): X-API-Key header sent on every seed call, intercepted via httpx event_hooks. -->
-- <!-- failing 2026-04-22 (python validator): SeedClient / AsyncSeedClient NOT implemented. No cognitum.seed module; harness had to drive cognitum._http directly against the seed. Coord to file issue. -->
-- <!-- failing 2026-04-22 (python validator): seed_trust_ctx() / pinned verifier NOT implemented. SyncHttpClient.__init__ has no verify=/cert_path=/ca_pem= kwarg; dev connections require monkey-patching the httpx.Client. -->
+- <!-- verified 2026-04-22 (Phase 1 delivery, python Team): cognitum.seed.SeedClient and AsyncSeedClient implemented. See sdks/python/cognitum/seed/_client.py and _async_client.py. Tracks issue #2 (sdks). -->
+- <!-- verified 2026-04-22 (Phase 1 delivery): SeedPinnedVerifier implemented (cognitum/seed/_transport.py); SeedTLS(ca_pem=, ca_path=, insecure=, pinned_sha256=, client_cert=) supported; fail-fast ConfigError on non-default host without trust material. Tracks issue #4 (sdks). -->
 
 
 ### Retry / rate-limit
@@ -64,7 +64,7 @@ Per ADR-0005:
 
 - `max_retries=3`, `timeout=30.0` (retain, `client.py:46-51`).
 - Extend `_RETRYABLE_STATUS_CODES` from `{429, 500, 503}` to
-  `{429, 500, 502, 503, 504}` (`_http.py:18`). <!-- failing 2026-04-22 (python validator): still {429, 500, 503}; respx probe shows 502 and 504 use only 1 attempt (no retry). Coord to file issue. -->
+  `{429, 500, 502, 503, 504}` (`_http.py:18`). <!-- verified 2026-04-22 (Phase 1 delivery): seed-path retriable set is {429, 500, 502, 503, 504} at sdks/python/cognitum/seed/_retry.py:_RETRIABLE_STATUS; unit tests in tests/seed/unit/test_seed_retry.py::TestIsRetriableStatus cover every code; retry loop in cognitum/seed/_client.py exercises 502+504 via respx. Closes issue #8 (sdks). -->
 - Change `_backoff_delay` base from `0.5 * 2**attempt` with cap 30 s to the
   equal-jitter formula in ADR-0005:
   ```py
@@ -96,7 +96,7 @@ Per ADR-0004:
   `NotFoundError`. <!-- verified 2026-04-22 (python validator): 401->AuthError, 403->AuthError, 404->NotFoundError, 422->ValidationError, 429->RateLimitError all confirmed via respx. -->
 - Add `NotImplementedError` (subclass of `CognitumError`, not of Python's
   built-in — to avoid clashes), `ConflictError`, `ServiceUnavailableError`,
-  `NetworkError`, `TimeoutError`, `ParseError`. <!-- failing 2026-04-22 (python validator): respx probe of 501 returns generic CognitumError(code='http_501'), not NotImplementedError. None of ConflictError/ServiceUnavailableError/NetworkError/TimeoutError/ParseError exist in cognitum.errors. Coord to file issue. -->
+  `NetworkError`, `TimeoutError`, `ParseError`. <!-- verified 2026-04-22 (Phase 1 delivery): all 12 variants implemented in sdks/python/cognitum/_errors.py; cognitum/errors.py re-exports for 0.1.x backward compat. seed/_client.py::map_error covers 400/401/403(×4 reasons)/404/405/409/422/429/500/501/502/503/504. Unit tests in tests/seed/unit/test_seed_errors.py. Closes issue #3 (sdks). -->
 - Add `AuthError.reason: Literal[...]` typed field.
 - `__cause__` is already set via `raise ... from exc` (`_http.py:93, 120`).
 - Attach `error.raw_body: bytes`, `error.correlation_id: str` to the base

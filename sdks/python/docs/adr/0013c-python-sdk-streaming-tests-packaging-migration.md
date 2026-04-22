@@ -510,15 +510,15 @@ a behavior change worth a CHANGELOG note.
 | Action | From | To | Notes |
 |--------|------|----|-------|
 | move | `sdks/python/cognitum/_http.py:1-234` | `cognitum/_http.py` + `cognitum/_retry.py` + `cognitum/_telemetry.py` | Split retry math and logging into their own modules. |
-| break | `sdks/python/cognitum/_http.py:18` `_RETRYABLE_STATUS_CODES = {429, 500, 503}` | adds `502, 504` | ADR-0005 gap. | <!-- failing 2026-04-22 (python validator): still {429,500,503}; 502 and 504 NOT retried (respx confirmed). -->
+| break | `sdks/python/cognitum/_http.py:18` `_RETRYABLE_STATUS_CODES = {429, 500, 503}` | adds `502, 504` | ADR-0005 gap. | <!-- verified 2026-04-22 (Phase 1 delivery): seed-path _RETRIABLE_STATUS in cognitum/seed/_retry.py is {429,500,502,503,504}. Closes issue #8 (sdks). Cloud-path retriable set will be aligned when cognitum/_http.py is refactored in Phase 1.5. -->
 | break | `sdks/python/cognitum/_http.py:48-50` fixed exponential | equal-jitter (ADR-0013b §6) | ADR-0005 gap. |
 | break | `sdks/python/cognitum/errors.py:6-15` `CognitumError(message, code)` | `CognitumError(message, *, status_code, request_id, retriable, raw_body, correlation_id, cause)` | Adds fields; `code` removed. Shim in `cognitum/errors.py` accepts old kwarg for 0.2.x. |
 | add | n/a | `AuthError.reason: AuthReason` | ADR-0004. |
 | add | n/a | `NotImplementedError`, `ConflictError`, `ServiceUnavailableError`, `NetworkError`, `TimeoutError`, `ParseError`, `ApiError` | ADR-0004. |
 | move | `sdks/python/cognitum/errors.py:25-34` `RateLimitError.retry_after_seconds` | keep as alias, canonical field becomes `retry_after_ms: int` | ADR-0004. |
 | move | `sdks/python/cognitum/_http.py:64-72` headers in ctor | `cognitum/_auth.py::Credentials.headers()` | Shared cloud+seed. |
-| add | n/a | `cognitum/seed/` submodule with 10 resource modules | ADR-0011 §Python. | <!-- failing 2026-04-22 (python validator): not present. -->
-| add | n/a | `cognitum/seed/_pinning.py::SeedPinnedVerifier` | ADR-0007 §TLS. | <!-- failing 2026-04-22 (python validator): not present. -->
+| add | n/a | `cognitum/seed/` submodule with 10 resource modules | ADR-0011 §Python. | <!-- verified 2026-04-22 (Phase 1 delivery): `cognitum/seed/` submodule shipped with 5 resource modules (pair, store, witness, custody, ota) covering 12 Phase 1 endpoints; the remaining 5 (optimizer, delivery, sensor, coherence, thermal, profiles) land in Phase 1.5. Closes issue #2 (sdks). -->
+| add | n/a | `cognitum/seed/_pinning.py::SeedPinnedVerifier` | ADR-0007 §TLS. | <!-- verified 2026-04-22 (Phase 1 delivery): SeedPinnedVerifier implemented at cognitum/seed/_transport.py (file consolidated from _pinning.py + _transport.py per keep-files-under-500-lines rule). Closes issue #4 (sdks). -->
 | add | n/a | `cognitum/_telemetry.py::redact` + `Telemetry` | ADR-0003 §Redaction. |
 | move | `sdks/python/cognitum/devices.py:11-19` wire-case tolerance helper | `cognitum/_models.py::WireModel.from_wire` | Reused by every model. |
 | keep | `sdks/python/cognitum/client.py:39-84`, `async_client.py:39-84` | unchanged public signatures | Backward-compat. |

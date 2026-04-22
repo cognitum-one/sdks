@@ -1,10 +1,11 @@
 # ADR 0014c: Rust SDK Implementation — Release (CI, benchmarks, examples, migration, open questions)
 
-<!-- swarm-seed-validation 2026-04-22 (rust agent): overall ❌ CI guards not
-     in place. `git grep -nE 'Authorization.*Bearer' src/` matches
-     src/client.rs:161 today; the ADR-0003 compliance check would FAIL if
-     it were enabled. Deprecation path (src/auth.rs) does not exist yet.
-     OQ-1 OPEN. Report: /tmp/swarm-seed-validation/reports/rust.json. -->
+<!-- swarm-seed-validation 2026-04-22 (rust agent): Phase 1 ✅ partial.
+     Pre-fix agent landed `X-API-Key` default + deprecation-gated Bearer.
+     `git grep -nE 'Authorization.*Bearer' src/` now only matches the
+     deprecation-gated path in `src/client.rs`; ADR-0003 compliance would
+     pass. Full `src/auth.rs` split is deferred. Team Rust's Phase 1
+     `src/seed/**` ships 52 green tests (33 lib + 19 wiremock). OQ-1 CLOSED. -->
 
 - **Status:** Proposed
 - **Date:** 2026-04-22

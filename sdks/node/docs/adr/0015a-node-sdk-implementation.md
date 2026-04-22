@@ -37,7 +37,58 @@ Gaps this ADR closes (in 0015a): seed-direct subpath export, tree-shaken
 layout, forward-compat response types, discriminated-union request types
 for store ingest/query, an optional Zod runtime-validation flag.
 
-<!-- swarm-seed-validation 2026-04-22: ❌ §2 seed subpath export (`@cognitum/sdk/seed`, SeedClient, status/identity/pair/custody/store/delta/ota) NOT shipped in 0.1.3 — issue cognitum-one/sdks#2. ✅ §2 cloud surface (Cognitum + catalog/orders/leads/contact/devices/mcp/brain) verified via `reports/node.json`. §3 typed models remain `(assumed)` — SDK returns raw dicts for all seed endpoints. Store query body shape `{vector:number[],k:number}` was verified live (reports/node.json endpoint #7). -->
+<!-- swarm-seed-validation 2026-04-22: ✅ fixed 2026-04-22 — §2 seed subpath export (`@cognitum/sdk/seed`, SeedClient, status/identity/pair/custody/store/ota) SHIPPED in Phase 1 (issue cognitum-one/sdks#2 closed). `./seed` subpath export added at `package.json:10-14`; tsup emits `dist/seed/index.{js,cjs,d.ts}`; SeedClient class at `src/seed/client.ts` wires 12 Phase 1 endpoints. Delta/stream endpoints deferred to Phase 1.5 (still tracked by seed#48). ✅ §2 cloud surface (Cognitum + catalog/orders/leads/contact/devices/mcp/brain) verified via `reports/node.json`. ✅ §3 typed models — seed responses now exposed through `interface ... extends Record<string, unknown>` for forward-compat; store.query body shape verified live as `{vector:number[], k:number}` (unit test in tests/seed/unit/errors.test.ts guards against regression to `{query, k}`). -->
+
+## Phase 1 delivery (2026-04-22)
+
+Ships the seed-direct subset of this ADR verbatim, minus streaming / MCP /
+mesh. Everything landed at `sdks/node/src/seed/**` and
+`sdks/node/tests/seed/**` on branch
+`chore/adr-reorg-v0.20.0-and-sdk-validation` — closes issue
+`cognitum-one/sdks#2`.
+
+What landed:
+
+| Layer | Files | Coverage |
+|-------|-------|----------|
+| Config + validation | `src/seed/config.ts`, `src/seed/peers.ts` | 16 unit tests (mesh/TokenBook/routing rejected with Phase-1.5 note) |
+| TLS-aware transport | `src/seed/transport.ts` | Runtime `undici`-or-`https.Agent` fallback; `tls.insecure` emits a one-time warning |
+| Retry loop (ADR-0005) | `src/seed/retry.ts` | 22 unit tests: classify all error types, `Retry-After` header + `retry_after_us` body parsing, equal-jitter, `maxElapsedMs` ceiling |
+| Error taxonomy (ADR-0004) | `src/errors.ts` (extended) | 18 unit tests mapping 400/401/403/404/409/422/429/501/503/5xx + abort/parse/network |
+| Resource bindings | `src/seed/resources/{status,identity,pair,witness,custody,store,ota}.ts` | All 12 Phase 1 endpoints wired |
+| SeedClient | `src/seed/client.ts` + `src/seed/index.ts` | Integration test exercises 7 endpoints against live seed via `localhost:18443` SSH tunnel |
+| Build | `tsup.config.ts`, `package.json` `exports[./seed]` | `dist/seed/index.{js,cjs,d.ts}` emitted; `npm run build` succeeds |
+
+Phase 1 endpoints — integration-verified against seed v0.20.0 on the
+Pi Zero 2 W (`ad7d7e7b-56e7-4e03-b078-939209858144`):
+
+- `GET /api/v1/status` → `client.status()`
+- `GET /api/v1/identity` → `client.identity()`
+- `GET /api/v1/pair/status` → `client.pair.status()`
+- `POST /api/v1/pair` → `client.pair.create({ clientName })`
+- `DELETE /api/v1/pair/{name}` → `client.pair.delete(name)`
+- `GET /api/v1/witness/chain` → `client.witness.chain()`
+- `GET /api/v1/custody/epoch` → `client.custody.epoch()`
+- `GET /api/v1/store/status` → `client.store.status()`
+- `POST /api/v1/store/query` → `client.store.query({ vector, k })` — **body shape `{vector, k}` verified, not `{query, k}`**
+- `POST /api/v1/store/ingest` → `client.store.ingest({ vectors })`
+- `GET /api/v1/ota/config` → `client.ota.config()`
+- `POST /api/v1/ota/checkNow` → `client.ota.checkNow()`
+
+Mesh-mode API shape is locked (see §"Expected mesh config shape" in the
+Phase 1 spec handoff); the Phase 1 client throws `ConfigError("mesh mode
+lands in Phase 1.5")` when given more than one endpoint or a non-`pinned`
+routing strategy. Tracking issue for Phase 1.5 mesh work: TBD.
+
+Known gaps (Phase 1.5):
+- SSE streaming (`/delta/stream`, `/sensor/stream`) — blocked by
+  seed#48 (returns 200 JSON snapshot today, not 501).
+- `createStdioTransport` MCP parity — ADR-0015c §9.
+- `AuthError.reason` discriminator + `RateLimitError.tier` — requires
+  cloud-path refactor beyond the seed subpath.
+- `undici.Agent`-first TLS pinning — waiting on a dependency bump.
+- Full `redactHeaders`/`redactValue` — seed client never logs headers
+  today, so no exposure to fix.
 
 ## Decision
 

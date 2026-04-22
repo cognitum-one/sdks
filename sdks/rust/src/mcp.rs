@@ -54,11 +54,7 @@ impl<'a> McpResource<'a> {
     }
 
     /// Invoke an MCP tool by name with the given arguments.
-    pub async fn call_tool(
-        &self,
-        name: &str,
-        args: Value,
-    ) -> Result<McpToolResult, Error> {
+    pub async fn call_tool(&self, name: &str, args: Value) -> Result<McpToolResult, Error> {
         let rpc = JsonRpcRequest {
             jsonrpc: "2.0",
             method: "tools/call".to_owned(),

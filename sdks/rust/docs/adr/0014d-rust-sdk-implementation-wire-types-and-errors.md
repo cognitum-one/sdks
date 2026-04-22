@@ -1,11 +1,15 @@
 # ADR 0014d: Rust SDK Implementation — Wire Types, Error Enum, Transport
 
-<!-- swarm-seed-validation 2026-04-22 (rust agent): overall ❌ not implemented.
-     Current src/error.rs has no AuthReason, no NotImplemented, no Conflict,
-     no Timeout variants; src/types.rs covers commerce only, not seed.
-     Live seed v0.20.1 responses validated; several wire-type sections in
-     §3.2 need correction — see notes below. Report:
-     /tmp/swarm-seed-validation/reports/rust.json. -->
+<!-- swarm-seed-validation 2026-04-22 (rust agent): Phase 1 ✅ partial.
+     Seed wire types are live at `src/seed/models/**` (Status, Identity,
+     PairStatus, PairCreate, PairCreateResponse, StoreStatus, StoreQuery,
+     StoreQueryResult, StoreIngest, WitnessChain, CustodyEpoch, OtaConfig,
+     OtaCheckNowAck). Each response carries `extras: Extras` for forward
+     compat; requests use `deny_unknown_fields`. Cloud `types.rs` still
+     covers commerce only. `src/error.rs` is still 7 variants (pre-fix
+     agent's turf) — seed half encodes ADR-0004 reason slots into the
+     existing `Auth(String)` / `Validation(String)` message payloads
+     (`not_paired: …`, `not_implemented: …`) until the full rewrite lands. -->
 
 - **Status:** Proposed
 - **Date:** 2026-04-22
@@ -217,12 +221,16 @@ Response types NEVER use `deny_unknown_fields`; they use
 ---
 
 ## 4. Error enum
-<!-- ❌ failing 2026-04-22 (issue cognitum-one/sdks#3): error.rs has 6 variants:
-     Auth(String), RateLimit{retry_after_ms}, Validation(String),
-     NotFound(String), Api{code,message}, Http, Json. NO AuthReason, NO
-     NotImplemented, NO RateLimitTier, NO Conflict, NO Timeout, NO Config.
-     401 maps to Auth(String); 403 falls through to Api{code:403}. OQ-2
-     CONFIRMED. Full rewrite of src/error.rs required. -->
+<!-- ⚠ Phase 1 workaround 2026-04-22 (issue cognitum-one/sdks#3 — partial):
+     `src/error.rs` is still the 6-variant enum owned by the pre-fix agent
+     (adding `AuthReason`/`NotImplemented`/`Timeout`/… is on their track
+     to avoid merge conflicts with the Bearer→X-API-Key fix). Seed half
+     preserves the ADR-0004 semantics by prefixing reason codes into the
+     existing String payload: `Auth("not_paired: …")`,
+     `Auth("invalid_credentials: …")`, `Validation("not_implemented: …")`,
+     `NotFound("{path} (seed): …")`. The helper `seed::error::from_response`
+     will collapse into a single `match` when the pre-fix agent ships the
+     12-variant enum. OQ-2 remains open for the final rewrite. -->
 
 
 Full `src/error.rs` rewrite. 12 variants per ADR-0004, `#[non_exhaustive]`
@@ -507,11 +515,15 @@ pub(crate) fn build_cloud_http(
 ```
 
 ### 5.2 Seed builder (feature = "seed")
-<!-- ❌ failing 2026-04-22 (issue cognitum-one/sdks#4): no "seed" feature, no seed
-     transport builder, no pinned verifier, no trust_root_pem. The single
-     Client in src/client.rs:74-77 rejects self-signed certs with no
-     escape hatch — validator had to use its own reqwest client with
-     danger_accept_invalid_certs(true). OQ-7. -->
+<!-- ✅ fixed 2026-04-22 (closes cognitum-one/sdks#4 for Phase 1):
+     Pre-fix agent landed the cloud `ClientBuilder` TLS escape hatch
+     (`.danger_accept_invalid_certs`, `.trust_root_pem`,
+     `.trust_root_pem_file`). Team Rust Phase 1 adds the seed-side TLS
+     matrix via `SeedTls::{System, Pinned(Vec<u8>), Insecure}`. Insecure
+     emits a one-shot warning; Pinned disables the system trust store
+     and loads the PEM via `reqwest::Certificate::from_pem`. Per-host
+     pinned rustls verifier (§5.2 `PinnedSeedVerifier`) is Phase 1.5 —
+     callers supply a `trust_root_pem` for non-default hosts today. -->
 
 
 The seed presents a self-signed cert on `169.254.42.1` / `cognitum.local`
