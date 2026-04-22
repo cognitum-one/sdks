@@ -46,30 +46,34 @@ var NotFoundError = class extends CognitumError {
 var DEFAULT_BASE_URL = "https://api.cognitum.one";
 var DEFAULT_TIMEOUT = 3e4;
 var DEFAULT_RETRIES = 3;
+var BASE_MS = 500;
+var CAP_MS = 3e4;
+var DEFAULT_MAX_ELAPSED_MS = 6e4;
+var RETRIABLE_STATUS = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
 var HttpClient = class {
   apiKey;
   baseUrl;
   timeout;
   retries;
   rateLimitRetry;
+  maxElapsedMs;
   constructor(config) {
-    if (!config.apiKey) {
-      throw new AuthError("API key is required");
-    }
-    this.apiKey = config.apiKey;
+    const resolved = resolveApiKey(config.apiKey);
+    this.apiKey = resolved;
     this.baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     this.timeout = config.timeout ?? DEFAULT_TIMEOUT;
     this.retries = config.retries ?? DEFAULT_RETRIES;
     this.rateLimitRetry = config.rateLimitRetry ?? true;
+    this.maxElapsedMs = config.maxElapsedMs ?? DEFAULT_MAX_ELAPSED_MS;
   }
   /**
    * Perform an HTTP request against the Cognitum API.
    *
    * Automatically injects the API key header, serialises JSON bodies,
-   * retries on transient errors with exponential back-off, and maps
-   * HTTP error responses to typed SDK errors.
+   * retries on transient errors with equal-jitter back-off per ADR-0005,
+   * and maps HTTP error responses to typed SDK errors.
    */
-  async request(method, path, body) {
+  async request(method, path, body, opts) {
     const url = `${this.baseUrl}${path}`;
     const headers = {
       "X-API-Key": this.apiKey,
@@ -80,6 +84,9 @@ var HttpClient = class {
       headers["Content-Type"] = "application/json";
       init.body = JSON.stringify(body);
     }
+    const methodUpper = method.toUpperCase();
+    const idempotent = opts?.idempotent ?? methodUpper !== "POST";
+    const started = Date.now();
     let lastError;
     for (let attempt = 0; attempt <= this.retries; attempt++) {
       const controller = new AbortController();
@@ -106,23 +113,31 @@ var HttpClient = class {
           case 422:
             throw new ValidationError(errorMessage);
           case 429: {
-            const retryAfterMs = parseRetryAfter(response);
+            const retryAfterMs = resolveRetryAfter(response, errorBody);
             const err = new RateLimitError(retryAfterMs, errorMessage);
-            if (!this.rateLimitRetry || attempt === this.retries) {
+            if (!this.rateLimitRetry || !canRetry(attempt, this.retries, started, this.maxElapsedMs)) {
               throw err;
             }
             lastError = err;
-            await sleep(retryAfterMs);
+            await sleep(
+              clampToBudget(retryAfterMs, started, this.maxElapsedMs)
+            );
             continue;
           }
           default:
-            if (response.status >= 500 && attempt < this.retries) {
+            if (RETRIABLE_STATUS.has(response.status) && idempotent && canRetry(attempt, this.retries, started, this.maxElapsedMs)) {
               lastError = new CognitumError(
                 errorMessage,
                 "SERVER_ERROR",
                 response.status
               );
-              await sleep(backoff(attempt));
+              await sleep(
+                clampToBudget(
+                  equalJitterBackoff(attempt),
+                  started,
+                  this.maxElapsedMs
+                )
+              );
               continue;
             }
             throw new CognitumError(
@@ -139,20 +154,32 @@ var HttpClient = class {
         if (error instanceof RateLimitError) {
           throw error;
         }
+        if (error instanceof CognitumError && error.code === "SERVER_ERROR") {
+          throw error;
+        }
         if (error instanceof DOMException && error.name === "AbortError") {
-          lastError = new CognitumError(
-            "Request timed out",
-            "TIMEOUT"
-          );
-          if (attempt < this.retries) {
-            await sleep(backoff(attempt));
+          lastError = new CognitumError("Request timed out", "TIMEOUT");
+          if (idempotent && canRetry(attempt, this.retries, started, this.maxElapsedMs)) {
+            await sleep(
+              clampToBudget(
+                equalJitterBackoff(attempt),
+                started,
+                this.maxElapsedMs
+              )
+            );
             continue;
           }
           throw lastError;
         }
-        if (attempt < this.retries) {
+        if (canRetry(attempt, this.retries, started, this.maxElapsedMs)) {
           lastError = error instanceof Error ? error : new Error(String(error));
-          await sleep(backoff(attempt));
+          await sleep(
+            clampToBudget(
+              equalJitterBackoff(attempt),
+              started,
+              this.maxElapsedMs
+            )
+          );
           continue;
         }
         if (error instanceof CognitumError) {
@@ -167,26 +194,81 @@ var HttpClient = class {
     throw lastError ?? new CognitumError("Request failed", "UNKNOWN");
   }
 };
-function backoff(attempt) {
-  return Math.min(1e3 * 2 ** attempt, 16e3);
+function resolveApiKey(explicit) {
+  if (explicit && explicit.length > 0) return explicit;
+  const fromEnv = typeof process !== "undefined" ? process.env?.COGNITUM_API_KEY : void 0;
+  if (fromEnv && fromEnv.length > 0) return fromEnv;
+  throw new AuthError(
+    "apiKey is required \u2014 pass config.apiKey or set COGNITUM_API_KEY"
+  );
+}
+function equalJitterBackoff(attempt) {
+  const expo = BASE_MS * 2 ** attempt;
+  const jitter = Math.random() * BASE_MS;
+  return Math.min(CAP_MS, expo + jitter);
+}
+function canRetry(attempt, retries, startedAt, maxElapsedMs) {
+  if (attempt >= retries) return false;
+  return Date.now() - startedAt < maxElapsedMs;
+}
+function clampToBudget(delayMs, startedAt, maxElapsedMs) {
+  const remaining = maxElapsedMs - (Date.now() - startedAt);
+  if (remaining <= 0) return 0;
+  return Math.max(0, Math.min(delayMs, remaining));
 }
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-function parseRetryAfter(response) {
-  const header = response.headers.get("Retry-After");
-  if (!header) return 1e3;
-  const seconds = Number(header);
-  if (!Number.isNaN(seconds)) {
-    return seconds * 1e3;
+function resolveRetryAfter(response, body) {
+  const fromBody = parseRetryAfterBody(body);
+  if (fromBody !== void 0) return fromBody;
+  const fromHeader = parseRetryAfterHeader(
+    response.headers.get("Retry-After")
+  );
+  if (fromHeader !== void 0) return fromHeader;
+  return 1e3;
+}
+function parseRetryAfterHeader(h) {
+  if (!h) return void 0;
+  const seconds = Number(h);
+  if (!Number.isNaN(seconds) && seconds >= 0) {
+    return Math.round(seconds * 1e3);
   }
-  const date = Date.parse(header);
+  const date = Date.parse(h);
   if (!Number.isNaN(date)) {
     return Math.max(date - Date.now(), 0);
   }
-  return 1e3;
+  return void 0;
+}
+function parseRetryAfterBody(body) {
+  if (!body) return void 0;
+  try {
+    const parsed = JSON.parse(body);
+    if (parsed && typeof parsed === "object") {
+      if (typeof parsed.retry_after_us === "number") {
+        return Math.round(parsed.retry_after_us / 1e3);
+      }
+      const hints = [parsed.error, parsed.message];
+      for (const h of hints) {
+        if (typeof h === "string") {
+          const n = extractRetryAfterSeconds(h);
+          if (n !== void 0) return n;
+        }
+      }
+    }
+  } catch {
+  }
+  return extractRetryAfterSeconds(body);
+}
+function extractRetryAfterSeconds(text) {
+  const m = /retry after (\d+(?:\.\d+)?)\s*s/i.exec(text);
+  if (!m) return void 0;
+  const seconds = Number(m[1]);
+  if (Number.isNaN(seconds) || seconds < 0) return void 0;
+  return Math.round(seconds * 1e3);
 }
 function tryParseErrorMessage(body) {
+  if (!body) return void 0;
   try {
     const parsed = JSON.parse(body);
     if (typeof parsed.message === "string") return parsed.message;

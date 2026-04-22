@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use reqwest::header::HeaderMap;
 use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -14,6 +15,7 @@ use crate::error::Error;
 use crate::leads::LeadsResource;
 use crate::mcp::McpResource;
 use crate::orders::OrdersResource;
+use crate::retry_hint::{equal_jitter_backoff, parse_retry_after};
 use crate::types::HealthResponse;
 
 const DEFAULT_BASE_URL: &str = "https://api.cognitum.one";
@@ -330,20 +332,27 @@ impl Client {
             let response = req.send().await?;
             let status = response.status();
 
-            // Retryable status codes
-            if Self::is_retryable(status) && attempts <= self.config.max_retries {
-                let backoff = self.backoff_duration(status, attempts, &response).await;
-                tokio::time::sleep(backoff).await;
-                continue;
-            }
-
+            // Fast path: success responses stream the body for parsing
+            // without any Retry-After work.
             if status.is_success() {
                 let text = response.text().await?;
                 let parsed: T = serde_json::from_str(&text)?;
                 return Ok(parsed);
             }
 
-            return Err(Self::map_error(status, response).await);
+            // Drain headers and body once so we can both (a) compute a
+            // Retry-After hint and (b) surface the body verbatim if we
+            // stop retrying.
+            let headers = response.headers().clone();
+            let body_text = response.text().await.unwrap_or_default();
+
+            if Self::is_retryable(status) && attempts <= self.config.max_retries {
+                let delay = self.backoff_duration(status, attempts, &headers, &body_text);
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+
+            return Err(Self::map_error(status, &headers, body_text));
         }
     }
 
@@ -356,36 +365,38 @@ impl Client {
         )
     }
 
-    async fn backoff_duration(
+    /// Per-attempt backoff (ADR-0005 §"Backoff formula").
+    ///
+    /// For 429 we first consult the parsed server hint. For 500/503 (or
+    /// 429 without a hint) we fall back to equal-jitter exponential
+    /// backoff: `min(cap, base * 2^attempt + uniform[0, base))`.
+    fn backoff_duration(
         &self,
         status: StatusCode,
         attempt: u32,
-        response: &reqwest::Response,
+        headers: &HeaderMap,
+        body_text: &str,
     ) -> Duration {
         if status == StatusCode::TOO_MANY_REQUESTS {
-            // Respect Retry-After header if present (in seconds).
-            if let Some(val) = response.headers().get("retry-after") {
-                if let Ok(s) = val.to_str() {
-                    if let Ok(secs) = s.parse::<u64>() {
-                        return Duration::from_secs(secs);
-                    }
-                }
+            if let Some(d) = parse_retry_after(headers, body_text) {
+                return d;
             }
         }
-        // Exponential backoff: 500ms, 1s, 2s, ...
-        Duration::from_millis(500 * 2u64.pow(attempt.saturating_sub(1)))
+        equal_jitter_backoff(attempt)
     }
 
-    async fn map_error(status: StatusCode, response: reqwest::Response) -> Error {
-        let body = response.text().await.unwrap_or_default();
-
+    fn map_error(status: StatusCode, headers: &HeaderMap, body: String) -> Error {
         match status {
             StatusCode::UNAUTHORIZED => Error::Auth(body),
             StatusCode::TOO_MANY_REQUESTS => {
-                // If we exhausted retries we still surface the rate limit.
-                Error::RateLimit {
-                    retry_after_ms: 1000,
-                }
+                // Populate the retry hint with whatever we parsed. If
+                // nothing was advertised, fall back to ADR-0005 equal
+                // jitter on attempt 1 so callers that sleep on
+                // `err.retry_after()` still get a sane, non-zero delay.
+                let retry_after_ms = parse_retry_after(headers, &body)
+                    .unwrap_or_else(|| equal_jitter_backoff(1))
+                    .as_millis() as u64;
+                Error::RateLimit { retry_after_ms }
             }
             StatusCode::UNPROCESSABLE_ENTITY | StatusCode::BAD_REQUEST => Error::Validation(body),
             StatusCode::NOT_FOUND => Error::NotFound(body),

@@ -284,10 +284,27 @@ cfg.timeout)`, `clearTimeout` in the `finally` block.
 > (`store.query` does; `store.ingest` and `pair.create` do not).
 > Regression tests in `tests/seed/unit/retry.test.ts` cover all
 > classify() branches + `parseSeedRetryAfter` with a
-> `retry_after_us: 2_000_000` → `retryAfterMs === 2000` assertion. The
-> cloud `src/client.ts:171-195` still ships the 1s/16s/no-jitter loop;
-> migrating cloud onto `src/seed/retry.ts` is tracked for Phase 1.5 to
-> avoid breaking the existing `tests/client.test.ts` suite.
+> `retry_after_us: 2_000_000` → `retryAfterMs === 2000` assertion.
+>
+> ✅ cloud path compliant 2026-04-23 (issue cognitum-one/sdks#5 closed
+> for Node) — the cloud `HttpClient` in `src/client.ts` now implements
+> ADR-0005 exactly: `BASE_MS=500`, `CAP_MS=30_000`,
+> `DEFAULT_MAX_ELAPSED_MS=60_000`, equal-jitter
+> (`BASE_MS * 2 ** attempt + Math.random() * BASE_MS`, clamped at
+> `CAP_MS`), and the retry loop breaks early when
+> `Date.now() - started >= maxElapsedMs`. Non-idempotent POSTs (default
+> for `method === "POST"`) do NOT retry on 5xx or read/total timeouts
+> — callers opt in per request with
+> `client.request("POST", path, body, { idempotent: true })`. New
+> `CognitumConfig.maxElapsedMs` option exposes the budget at construction
+> time. Regression tests in `tests/client-retry.test.ts` (20 tests)
+> cover: jitter non-zero + bounded to cap, attempt=0 samples in
+> `[500, 1000] ms`, `maxElapsedMs=50` breaks early with `retries=9`,
+> GET retries on 500 by default, POST does NOT retry on 500 without
+> `idempotent:true`, POST with `idempotent:true` retries on both 500
+> and AbortError timeouts, POST without the flag does NOT retry on
+> AbortError. The old 1 s / 16 s constant is gone from the cloud tree
+> (CI grep passes).
 >
 > ✅ perf pass 2026-04-22 (issue cognitum-one/sdks#23 Node portion
 > closed) — the JSON body is now serialised ONCE per `request()` call
@@ -405,6 +422,18 @@ resolution order lives in ADR-0005 §"429 handling (seed specific)"; the
 Node realisation (`parseSeedRetryAfter`) implements that contract
 verbatim — do not reorder the lookups here without updating ADR-0005.
 
+> ✅ cloud path compliant 2026-04-23 (issue cognitum-one/sdks#6 closed
+> for Node) — `src/client.ts` now reads the 429 body once (as text) and
+> threads it through `resolveRetryAfter(response, body)`, which checks
+> `retry_after_us` (µs → ms), then the `{error,message}` strings for
+> `"retry after Ns"`, then falls through to a plain-text regex scan,
+> and ONLY then to the `Retry-After` header. Body signals win over the
+> header when both are present (some proxies strip `Retry-After`).
+> Covered by `tests/client-retry.test.ts` §"#6 429 body parsing": 7
+> tests including `retry_after_us: 2_500_000` → 2500 ms,
+> `"rate limited — retry after 3s"` → 3000 ms, and header-overrides
+> semantics.
+
 ```ts
 // src/seed/client.ts (excerpt, 429 path)
 const retryAfterMs = parseRetryAfter(res.headers)
@@ -461,11 +490,22 @@ lives on the client instance; no disk.
 > provided, and `src/seed/client.ts` emits `X-Pairing-Token` on every
 > seed request (unit-tested in
 > `tests/seed/unit/errors.test.ts` "forwards the X-Pairing-Token
-> header"). Still deferred to Phase 1.5: `COGNITUM_API_KEY` env fallback
-> on the cloud `HttpClient` (unchanged to keep the existing
-> `new Cognitum({apiKey})` contract intact), and the dedicated
-> `redactHeaders`/`redactValue` helpers — the seed client never logs
-> headers at all today, so there's no exposure in the Phase 1 path.
+> header").
+>
+> ✅ cloud path compliant 2026-04-23 (issue cognitum-one/sdks#7 closed
+> for Node) — `HttpClient` now resolves the cloud API key through an
+> internal `resolveApiKey(explicit)` helper that checks
+> `config.apiKey` → `process.env.COGNITUM_API_KEY` → throws
+> `AuthError("apiKey is required — pass config.apiKey or set
+> COGNITUM_API_KEY")`. The resolved key is never logged. Explicit arg
+> wins over env. Covered by `tests/client-retry.test.ts` §"#7
+> COGNITUM_API_KEY env fallback": throws when neither is provided,
+> uses env silently when arg is omitted, and explicit arg overrides
+> env.
+>
+> Still deferred to Phase 1.5: the dedicated `redactHeaders` /
+> `redactValue` helpers — the seed client never logs headers at all
+> today, so there's no exposure in the Phase 1 path.
 >
 > ✅ hardened 2026-04-22 (issue cognitum-one/sdks#15 closed) —
 > `PairResource.create()` no longer returns the freshly-minted pairing

@@ -238,6 +238,61 @@ Rust SDK without adding new deps.
 
 #22 + #23 are closable for the Rust SDK.
 
+### Cloud retry parity (#11) — cloud path compliant 2026-04-23
+
+Closes the cloud half of `cognitum-one/sdks#11` (the seed half landed
+2026-04-22 alongside #16/#21). Before this change `src/client.rs` only
+parsed the `Retry-After` response header in seconds-integer form,
+ignored the seed body field `retry_after_us`, and surfaced every 429 as
+`Error::RateLimit { retry_after_ms: 1000 }` regardless of what the
+server actually advertised.
+
+**Files edited:**
+
+- `src/client.rs` — `request` now reads the response body exactly once
+  on the non-success branch and feeds both (a) backoff decision and
+  (b) `map_error`. New helper `parse_retry_after(headers, body)` mirrors
+  `src/seed/retry.rs::parse_retry_after` and adds an inline RFC 7231
+  IMF-fixdate parser on the header (no new crates — `chrono` and
+  `httpdate` are not in the reqwest tree). New `equal_jitter_backoff`
+  helper implements ADR-0005 §"Backoff formula" as a fallback when no
+  hint is present. Body wins over header per ADR-0005 seed convention.
+- `src/error.rs` — `Error::RateLimit.retry_after_ms` field documentation
+  expanded to cite the ADR-0005 resolution order. New `Error::retry_after()`
+  accessor returns `Option<Duration>` so callers don't hand-convert ms.
+
+**Tests added (7 in `tests/client_test.rs`):**
+
+- `rate_limit_parses_retry_after_header_seconds`
+- `rate_limit_parses_retry_after_http_date`
+- `rate_limit_parses_retry_after_us_body`
+- `rate_limit_parses_english_retry_after_body`
+- `rate_limit_body_wins_over_header`
+- `rate_limit_without_hint_falls_back_to_jitter`
+- `retry_loop_sleeps_for_body_hint` — end-to-end: 429 with
+  `retry_after_us: 2_500_000` then 200 on retry; asserts elapsed ≥ 2.4 s.
+
+**Checks:**
+
+- `cargo fmt --all --check` — clean.
+- `cargo clippy --all-targets -- -D warnings` — clean (default features).
+- `cargo clippy --all-targets --features seed -- -D warnings` — clean
+  (seed path still compiles, seed tests still green).
+- `cargo test --no-fail-fast` — 23 of 24 green in `tests/client_test.rs`
+  (all 7 new #11 tests pass); 4 of 5 green in `src/client.rs` lib tests.
+  The 2 pre-existing failures
+  (`invalid_pem_is_surfaced_as_validation_error`,
+  `builder_trust_root_pem_round_trips`) are unrelated to #11 — they
+  assert that reqwest's PEM parser rejects bogus bytes as
+  `Error::Validation`, but reqwest's current `rustls` stack accepts the
+  fake cert up to use-time. Unchanged by this fix.
+
+**Signature impact:** none — `Error::RateLimit { retry_after_ms: u64 }`
+keeps its field name so `src/seed/error.rs:87-89` (owned by the seed
+fence) continues to compile without edits.
+
+#11 is closable for the Rust SDK.
+
 Not yet landed (explicitly out of Phase 1.5 scope, tracked for Phase 2):
 
 - mDNS discovery (`Discovery::Mdns` — ADR-0016a §D6, Phase 1.5 opt-in
@@ -576,7 +631,7 @@ Every line-number citation is against the current tree.
 
 ### 14.3 Breaking (pre-1.0) changes
 
-<!-- swarm-seed-validation 2026-04-22: every row below confirmed `(assumed)` / `failing` in 0.1.0. Tracking issues: cognitum-one/sdks#10 (Bearer→X-API-Key), #3 (error.rs rewrite + NotImplemented), #11 (RateLimit default 1000ms). -->
+<!-- swarm-seed-validation 2026-04-22: every row below confirmed `(assumed)` / `failing` in 0.1.0. Tracking issues: cognitum-one/sdks#10 (Bearer→X-API-Key), #3 (error.rs rewrite + NotImplemented), ✅ #11 RateLimit default — cloud path compliant 2026-04-23 (src/client.rs parses Retry-After seconds + HTTP-date + body retry_after_us + english; Error::RateLimit.retry_after_ms populated from parsed value with ADR-0005 equal-jitter fallback). -->
 
 | Location | Change | Reason |
 |----------|--------|--------|

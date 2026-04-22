@@ -421,6 +421,8 @@ user on `169.254.42.1` is on a point-to-point USB link
 
 ## 6. Retry / rate-limit implementation
 
+<!-- ✅ cloud path compliant 2026-04-23 (Phase 2 delivery, python Team): cognitum/_http.py now ships the ADR-0005 set `{429,500,502,503,504}` and an `idempotent: bool | None` kwarg on `SyncHttpClient.request()` / `AsyncHttpClient.request()`. None auto-resolves to True for GET/HEAD/PUT/DELETE/OPTIONS and False for POST/PATCH, so POST on 500/502/503/504 only retries when the caller explicitly attests idempotency. Regression suite: tests/test_client_retry.py (7 tests — 502×3 / 504×3 / 500-GET×3 / 500-POST×1 / 500-POST-idempotent=True×3 / 502-POST×1 / GET-idempotent=False×1). Closes issues #8 and #9 (cognitum-one/sdks). -->
+
 `_retry.py` is pure; `_http.py` calls it from the loop.
 
 ```python

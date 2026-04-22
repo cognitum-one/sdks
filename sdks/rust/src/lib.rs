@@ -31,6 +31,7 @@ pub mod error;
 pub mod leads;
 pub mod mcp;
 pub mod orders;
+pub(crate) mod retry_hint;
 pub mod types;
 
 pub use client::{Client, ClientConfig};

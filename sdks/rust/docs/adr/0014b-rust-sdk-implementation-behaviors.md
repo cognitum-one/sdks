@@ -36,11 +36,19 @@ are the normative source; this file is the Rust-specific realisation.
 ## 6. Retry + rate-limit implementation
 
 ### 6.1 `RetryPolicy` struct
-<!-- ❌ failing 2026-04-22 (issue cognitum-one/sdks#11 tracks Error::RateLimit default;
-     cross-SDK retry-policy backlog tracked as part of behaviors): client.rs:153-215
-     has inline retry with no RetryPolicy type, no 30s cap, no jitter. max_retries
-     default=3. Retry-After parsed seconds-only inside the retry loop (client.rs:205-211);
-     Error::RateLimit{retry_after_ms} hardcoded 1000 at client.rs:228. -->
+<!-- ✅ cloud path compliant 2026-04-23 (closes cognitum-one/sdks#11):
+     src/client.rs now parses Retry-After (seconds + HTTP-date), JSON body
+     `retry_after_us` (micros), and english "retry after Ns" on the `error`
+     field. Body wins over header (seed convention). Error::RateLimit
+     { retry_after_ms } is populated with the actual parsed delay — the
+     hardcoded 1000 at client.rs:228 is gone. Fallback when no hint is
+     present is ADR-0005 equal-jitter backoff, not a literal 1s. Test suite
+     tests/client_test.rs gains 7 regression tests covering header seconds,
+     HTTP-date, retry_after_us body, english body, header+body precedence,
+     no-hint jitter fallback, and end-to-end retry sleep.
+     The full `RetryPolicy` struct + 30s cap + max_elapsed budget is still
+     inline in client.rs::request (no dedicated `src/retry.rs` yet —
+     deferred to the 0.2.0 restructure per §14). -->
 
 
 `src/retry.rs`:
@@ -201,14 +209,19 @@ is normative — header (seconds or HTTP-date) → `retry_after_us` body field
 → regex on `error` string → None. Do not reorder without updating the
 cross-cutting ADR.
 
-<!-- ✅ fixed 2026-04-22 (Team Rust Phase 1, closes cognitum-one/sdks#11 for
-     the seed half): `src/seed/retry.rs::parse_retry_after` resolves in
-     the ADR-0005 order — (1) header seconds, (2) JSON body
-     `retry_after_us` (micros), (3) english `"retry after Ns"` regex on
-     the `error` field. 5 unit tests cover each arm.
-     The cloud `src/client.rs` path still parses seconds-only and hardcodes
-     retry_after_ms=1000 on the RateLimit variant — tracked for the Error
-     taxonomy rewrite (pre-fix agent follow-on). -->
+<!-- ✅ fixed 2026-04-22 seed half + ✅ cloud path compliant 2026-04-23
+     (Team Rust, closes cognitum-one/sdks#11 fully). Seed:
+     `src/seed/retry.rs::parse_retry_after` resolves in the ADR-0005 order
+     — (1) header seconds, (2) JSON body `retry_after_us` (micros), (3)
+     english `"retry after Ns"` regex on the `error` field. 5 unit tests
+     cover each arm.
+     Cloud: `src/client.rs::parse_retry_after` mirrors the seed helper +
+     adds RFC 7231 IMF-fixdate parsing on the header (minimal inline
+     parser — no chrono/httpdate dep). Body precedence over header
+     matches seed. `Error::RateLimit { retry_after_ms }` now carries the
+     parsed value (or ADR-0005 equal-jitter on attempt 1 when no hint is
+     present) instead of the hardcoded 1000 ms. 7 new wiremock regression
+     tests in tests/client_test.rs. -->
 
 
 ```rust

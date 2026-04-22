@@ -412,3 +412,194 @@ async fn retries_default_config_header_is_absent() {
     let client = test_client(&server.uri());
     client.health().await.unwrap();
 }
+
+// ── Bug 11: Retry-After parsing (header seconds, HTTP-date, body hints) ──
+//
+// Regression suite for `cognitum-one/sdks#11`. Prior to the fix the cloud
+// path parsed `Retry-After` in seconds only, ignored the seed body field
+// `retry_after_us`, and hardcoded `Error::RateLimit { retry_after_ms: 1000 }`.
+
+fn retry_test_client(base_url: &str, max_retries: u32) -> Client {
+    Client::with_config(ClientConfig {
+        api_key: "test-key".to_owned(),
+        base_url: Some(base_url.to_owned()),
+        timeout_secs: 30,
+        max_retries,
+        ..Default::default()
+    })
+}
+
+/// One-shot 429 (no retries) — assert the parsed `retry_after_ms` lands on
+/// `Error::RateLimit`, not the old hardcoded 1000.
+async fn assert_rate_limit_hint(
+    server: &MockServer,
+    response: ResponseTemplate,
+    lower_ms: u64,
+    upper_ms: u64,
+) {
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(response)
+        .expect(1)
+        .mount(server)
+        .await;
+
+    let client = retry_test_client(&server.uri(), 0);
+    let err = client.health().await.unwrap_err();
+    match err {
+        cognitum_rs::Error::RateLimit { retry_after_ms } => {
+            assert!(
+                (lower_ms..=upper_ms).contains(&retry_after_ms),
+                "retry_after_ms={retry_after_ms} outside [{lower_ms}, {upper_ms}]"
+            );
+        }
+        other => panic!("expected RateLimit, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn rate_limit_parses_retry_after_header_seconds() {
+    let server = MockServer::start().await;
+    let resp = ResponseTemplate::new(429)
+        .insert_header("retry-after", "5")
+        .set_body_string("");
+    // Expect exactly 5000 ms from header (body empty so header wins).
+    assert_rate_limit_hint(&server, resp, 5_000, 5_000).await;
+}
+
+#[tokio::test]
+async fn rate_limit_parses_retry_after_http_date() {
+    // `Retry-After: <HTTP-date>` in roughly 2 seconds from now.
+    let target = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
+    let datetime = http_date(target);
+    let server = MockServer::start().await;
+    let resp = ResponseTemplate::new(429)
+        .insert_header("retry-after", datetime.as_str())
+        .set_body_string("");
+    // Clock drift + rounding: accept 1..=3 s.
+    assert_rate_limit_hint(&server, resp, 1_000, 3_000).await;
+}
+
+#[tokio::test]
+async fn rate_limit_parses_retry_after_us_body() {
+    let server = MockServer::start().await;
+    // 2_500_000 µs = 2_500 ms. No Retry-After header.
+    let resp = ResponseTemplate::new(429).set_body_json(json!({"retry_after_us": 2_500_000u64}));
+    assert_rate_limit_hint(&server, resp, 2_500, 2_500).await;
+}
+
+#[tokio::test]
+async fn rate_limit_parses_english_retry_after_body() {
+    let server = MockServer::start().await;
+    let resp =
+        ResponseTemplate::new(429).set_body_json(json!({"error": "rate limited — retry after 3s"}));
+    assert_rate_limit_hint(&server, resp, 3_000, 3_000).await;
+}
+
+#[tokio::test]
+async fn rate_limit_body_wins_over_header() {
+    // Header says 10s, body says 2s — body wins per ADR-0005.
+    let server = MockServer::start().await;
+    let resp = ResponseTemplate::new(429)
+        .insert_header("retry-after", "10")
+        .set_body_json(json!({"retry_after_us": 2_000_000u64}));
+    assert_rate_limit_hint(&server, resp, 2_000, 2_000).await;
+}
+
+#[tokio::test]
+async fn rate_limit_without_hint_falls_back_to_jitter() {
+    // Empty body, no header — must NOT be the old hardcoded 1000 ms, and
+    // must fall in the ADR-0005 equal-jitter band for attempt 1:
+    // [500 ms, 1000 ms).
+    let server = MockServer::start().await;
+    let resp = ResponseTemplate::new(429).set_body_string("");
+    assert_rate_limit_hint(&server, resp, 500, 999).await;
+}
+
+#[tokio::test]
+async fn retry_loop_sleeps_for_body_hint() {
+    // End-to-end: 429 with `retry_after_us: 2_500_000` then 200 on retry.
+    // Measure elapsed time between first and second attempt.
+    let server = MockServer::start().await;
+
+    // Use wiremock's response scheduling: two separate mocks, the first
+    // limited to 1 response, the second always-on.
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(
+            ResponseTemplate::new(429).set_body_json(json!({"retry_after_us": 2_500_000u64})),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
+        .mount(&server)
+        .await;
+
+    let client = retry_test_client(&server.uri(), 3);
+    let started = std::time::Instant::now();
+    let resp = client.health().await.unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(resp.status, "ok");
+    assert!(
+        elapsed >= std::time::Duration::from_millis(2_400),
+        "expected retry to sleep ≥ 2400 ms (got {elapsed:?}); old hardcoded 1s would finish in ≈ 1s"
+    );
+    // Loose upper bound to catch regressions that sleep forever.
+    assert!(
+        elapsed < std::time::Duration::from_millis(5_000),
+        "retry loop took too long: {elapsed:?}"
+    );
+}
+
+/// Minimal RFC 7231 IMF-fixdate formatter for the `Retry-After` HTTP-date
+/// test. `chrono` isn't a dep — keep this inline. Uses the Howard Hinnant
+/// civil-from-days algorithm.
+fn http_date(t: std::time::SystemTime) -> String {
+    let unix = t
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("post-epoch")
+        .as_secs() as i64;
+    let days = unix.div_euclid(86_400);
+    let tod = unix.rem_euclid(86_400);
+    let hour = (tod / 3600) as u32;
+    let min = ((tod % 3600) / 60) as u32;
+    let sec = (tod % 60) as u32;
+
+    // Civil-from-days.
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 {
+        (mp + 3) as u32
+    } else {
+        (mp - 9) as u32
+    };
+    let year = if m <= 2 { y + 1 } else { y };
+
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    // Unix day 0 = Thursday. `(days + 4) mod 7` gives Sunday=0.
+    const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    let wd = ((days + 4).rem_euclid(7)) as usize;
+
+    format!(
+        "{}, {:02} {} {:04} {:02}:{:02}:{:02} GMT",
+        WEEKDAYS[wd],
+        d,
+        MONTHS[(m - 1) as usize],
+        year,
+        hour,
+        min,
+        sec,
+    )
+}
