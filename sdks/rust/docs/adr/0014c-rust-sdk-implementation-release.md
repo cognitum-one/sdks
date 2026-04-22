@@ -38,13 +38,31 @@ tree. Concrete deliverables relative to the Phase 1 snapshot above:
   `test_mesh_health_probe_degrades_unhealthy_peer`) green against
   multi-peer `wiremock` fixtures.
 
-Test totals (`cargo test --features seed`): 19 pre-existing
-`seed_unit` + 7 new `seed_mesh` integration tests = 26 green seed
-integration tests; lib unit tests 53/54 (one pre-existing cloud-side
-`invalid_pem_is_surfaced_as_validation_error` failure in `src/client.rs`
-is tracked separately — outside the Phase 1.5 mesh scope). `cargo fmt
---all --check` clean; `cargo clippy --features seed --tests -- -D
-warnings` clean.
+### Security hardening — issue [#19](https://github.com/cognitum-one/sdks/issues/19) fixed 2026-04-23
+
+`SeedAuth::PairingToken` now wraps the token in the homegrown
+`SecretString` (from `src/seed/token_book.rs`) instead of a plain
+`String`. `SeedAuth` has a manual `Debug` impl that prints
+`SeedAuth::PairingToken(<redacted>)` — the raw token never appears in
+`{:?}` or `tracing::debug!` dumps. The downstream `SeedInner` /
+`SeedClient` / `SeedSession` derives remain in place because they
+delegate to `SeedAuth::Debug`, which is now safe. New helper
+`SeedAuth::pairing_token(impl Into<String>)` so callers never
+accidentally see the inner `SecretString` type. Two new regression
+tests in `tests/seed_unit.rs` assert the sentinel token string never
+appears in `format!("{:?}", auth)` or `format!("{:?}", client)`.
+
+No external crate added; we use the SDK's existing `SecretString`
+(which also zeroes on drop) rather than adding the `secrecy` crate, to
+keep the dep surface tight and consistent with `TokenBook`.
+
+Test totals (`cargo test --features seed`): 21 `seed_unit` (was 19 —
+2 redaction tests added) + 7 `seed_mesh` integration tests + 49 lib
+unit tests = 77 green seed-feature tests. One pre-existing cloud-side
+`client::tests::invalid_pem_is_surfaced_as_validation_error` failure
+in `src/client.rs` is tracked separately — outside the Phase 1.5 mesh
+scope. `cargo fmt --all --check` clean; `cargo clippy --features seed
+--tests -- -D warnings` clean.
 
 Not yet landed (explicitly out of Phase 1.5 scope, tracked for Phase 2):
 

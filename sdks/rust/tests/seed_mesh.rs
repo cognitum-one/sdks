@@ -334,7 +334,7 @@ async fn test_mesh_token_book_per_peer() {
     let a_session = SeedClient::builder()
         .endpoint(a.uri())
         .tls(SeedTls::System)
-        .auth(SeedAuth::PairingToken("tok-a".into()))
+        .auth(SeedAuth::pairing_token("tok-a"))
         .max_retries(0)
         .build()
         .unwrap();
@@ -349,7 +349,7 @@ async fn test_mesh_token_book_per_peer() {
     let b_session = SeedClient::builder()
         .endpoint(b.uri())
         .tls(SeedTls::System)
-        .auth(SeedAuth::PairingToken("tok-b".into()))
+        .auth(SeedAuth::pairing_token("tok-b"))
         .max_retries(0)
         .build()
         .unwrap();

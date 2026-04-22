@@ -323,7 +323,7 @@ async fn pairing_token_is_sent_on_writes() {
 
     let client = SeedClient::builder()
         .endpoint(server.uri())
-        .auth(SeedAuth::PairingToken("secret-tok".into()))
+        .auth(SeedAuth::pairing_token("secret-tok"))
         .tls(SeedTls::System)
         .max_retries(0)
         .build()
@@ -491,4 +491,48 @@ async fn post_idempotent_query_retries_on_500() {
         .await
         .unwrap();
     assert_eq!(result.results.len(), 0);
+}
+
+// -----------------------------------------------------------------------------
+// Issue #19 — token redaction in Debug / format!("{:?}") output.
+// -----------------------------------------------------------------------------
+
+#[test]
+fn seed_auth_debug_does_not_leak_pairing_token() {
+    // Raw sentinel value that must never appear in any debug output.
+    const SENTINEL: &str = "SHOULD_NEVER_APPEAR_IN_DEBUG_OUTPUT_9f3a";
+    let auth = SeedAuth::pairing_token(SENTINEL);
+
+    // 1. Debug on SeedAuth itself redacts.
+    let direct = format!("{auth:?}");
+    assert!(
+        !direct.contains(SENTINEL),
+        "SeedAuth Debug leaked token: {direct}"
+    );
+    assert!(
+        direct.contains("<redacted>"),
+        "missing redaction marker: {direct}"
+    );
+
+    // 2. Building a client and dumping its debug output must not leak either
+    //    (SeedInner derives Debug and holds `auth: SeedAuth`).
+    let client = SeedClient::builder()
+        .endpoint("https://example.invalid:8443")
+        .auth(auth)
+        .tls(SeedTls::System)
+        .build()
+        .expect("client builds");
+    let client_debug = format!("{client:?}");
+    assert!(
+        !client_debug.contains(SENTINEL),
+        "SeedClient Debug leaked token: {client_debug}"
+    );
+}
+
+#[test]
+fn seed_auth_none_debug_is_not_redacted() {
+    // Make sure we didn't accidentally redact every variant — the `None`
+    // case should still be visible for operator debugging.
+    let dbg = format!("{:?}", SeedAuth::None);
+    assert!(dbg.contains("SeedAuth::None"), "got: {dbg}");
 }

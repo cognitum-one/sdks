@@ -34,7 +34,7 @@ use super::resources::{
 };
 use super::retry;
 use super::session::SeedSession;
-use super::token_book::{SecretString, SharedTokenBook, TokenBook};
+use super::token_book::{SharedTokenBook, TokenBook};
 
 /// One-shot process-global flag for the insecure-TLS warning.
 static INSECURE_WARN: AtomicBool = AtomicBool::new(false);
@@ -582,7 +582,7 @@ impl SeedClientBuilder {
             let guard = peers.lock().expect("peers lock poisoned");
             for p in guard.peers() {
                 if token_book.get(&p.endpoint.key()).is_none() {
-                    token_book.set(&p.endpoint.key(), SecretString::new(tok.clone()));
+                    token_book.set(&p.endpoint.key(), tok.clone());
                 }
             }
         }
@@ -724,7 +724,7 @@ mod tests {
     fn builder_seeds_token_book_from_single_pairing_token() {
         let client = SeedClient::builder()
             .endpoints(&["https://a:8443", "https://b:8443"])
-            .auth(SeedAuth::PairingToken("shared".into()))
+            .auth(SeedAuth::pairing_token("shared"))
             .build()
             .expect("build");
         assert_eq!(

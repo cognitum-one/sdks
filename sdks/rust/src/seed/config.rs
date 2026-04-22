@@ -7,14 +7,25 @@
 //! Shape intentionally mirrors ADR-0016 so the builder signature does not
 //! need to change when Phase 1.5 lands.
 
+use std::fmt;
 use std::time::Duration;
+
+pub use super::token_book::SecretString;
 
 /// Authentication mode for a [`SeedClient`](super::SeedClient).
 ///
 /// Unpaired reads are always allowed against the WiFi-read allowlist per
 /// ADR-0003 §"WiFi-read allowlist"; this enum attaches a pairing token
 /// (or reserves space for mTLS) on top.
-#[derive(Debug, Clone, Default)]
+///
+/// Token material is wrapped in [`SecretString`] per
+/// [cognitum-one/sdks#19] so that `{:?}` / tracing dumps do not leak the
+/// raw token. Use [`SeedAuth::pairing_token`] to construct and
+/// `SecretString::as_str()` on the request path when the string value is
+/// required (e.g. sending an `X-Pairing-Token` header).
+///
+/// [cognitum-one/sdks#19]: https://github.com/cognitum-one/sdks/issues/19
+#[derive(Clone, Default)]
 #[non_exhaustive]
 pub enum SeedAuth {
     /// No pairing token — only unauthenticated reads are allowed. The first
@@ -22,8 +33,27 @@ pub enum SeedAuth {
     #[default]
     None,
     /// `X-Pairing-Token: <token>` per ADR-0003 §"Seed auth".
-    PairingToken(String),
+    PairingToken(SecretString),
     // Future: MTls { cert_pem: Vec<u8>, key_pem: Vec<u8> } — reserved.
+}
+
+impl fmt::Debug for SeedAuth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SeedAuth::None => f.write_str("SeedAuth::None"),
+            // Never print the token value — #19 security fix.
+            SeedAuth::PairingToken(_) => f.write_str("SeedAuth::PairingToken(<redacted>)"),
+        }
+    }
+}
+
+impl SeedAuth {
+    /// Build a pairing-token auth from any string-like value. The inner
+    /// token is wrapped in [`SecretString`] — the raw value will not
+    /// appear in `{:?}` dumps or `tracing::debug!` logs.
+    pub fn pairing_token(token: impl Into<String>) -> Self {
+        SeedAuth::PairingToken(SecretString::new(token))
+    }
 }
 
 /// TLS posture for a [`SeedClient`](super::SeedClient).
