@@ -41,13 +41,27 @@ _DEFAULT_SERVICE = "_cognitum._tcp.local."
 _DEFAULT_TIMEOUT_S = 2.0
 
 
+# fp= length bounds (hex chars). Seed firmware truncates to 16 hex
+# (8 bytes / 64 bits, see `seed/src/cognitum-agent/src/discovery.rs:162`);
+# full SHA-256 is 64 hex. Below 16 is an adversarial short prefix that
+# could brute-force a matching cert in seconds via the transport
+# layer's prefix match (cf. Node security audit C1).
+FP_MIN_HEX_LEN = 16
+FP_MAX_HEX_LEN = 64
+
+
 def _parse_fp_txt(raw: str | None) -> str | None:
     """Parse a TXT ``fp=sha256:<hex>`` value into lowercased hex.
 
-    Accepts the canonical seed form (``sha256:`` prefix, 64 hex chars,
-    colons optional) and returns ``None`` for anything else — malformed
-    values MUST NOT be treated as pins, since the downstream verifier
-    rejects insecure fallbacks once a pin is present.
+    Accepts the canonical seed form (``sha256:`` prefix optional, colons
+    optional) with ``[FP_MIN_HEX_LEN, FP_MAX_HEX_LEN]`` hex chars after
+    normalisation. Previously required exactly 64 chars, which silently
+    rejected every real seed pin because the firmware emits only 16
+    (see ``seed/src/cognitum-agent/src/discovery.rs:162``).
+
+    Returns ``None`` for anything out of bounds — malformed values MUST
+    NOT be treated as pins, since the downstream verifier rejects
+    insecure fallbacks once a pin is present.
     """
 
     if not raw:
@@ -58,7 +72,9 @@ def _parse_fp_txt(raw: str | None) -> str | None:
         low = low[len("sha256:") :]
     # Strip any colons (``aa:bb:cc:...``) and whitespace.
     low = low.replace(":", "").replace(" ", "")
-    if len(low) != 64:
+    if len(low) < FP_MIN_HEX_LEN or len(low) > FP_MAX_HEX_LEN:
+        return None
+    if len(low) % 2 != 0:
         return None
     try:
         int(low, 16)

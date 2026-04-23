@@ -377,6 +377,14 @@ class _PinnedToCertContext(ssl.SSLContext):
         return ssock
 
 
+# SHA-256 hex length bounds for pins. Must match the mDNS parser's
+# `FP_MIN_HEX_LEN` / `FP_MAX_HEX_LEN`. The seed firmware emits 16 hex
+# chars (8 bytes); full SHA-256 is 64 hex (32 bytes). Anything shorter
+# than 16 is an adversarial short prefix — 1/256 match via prefix-check.
+PIN_HEX_MIN = 16
+PIN_HEX_MAX = 64
+
+
 def build_pinned_ssl_context(
     *, expected_sha256: str, host: str, port: int, timeout: float = 5.0
 ) -> ssl.SSLContext:
@@ -392,24 +400,48 @@ def build_pinned_ssl_context(
     the wrap_socket check — the socket is closed before any request
     bytes cross the wire.
 
-    Raises :class:`TlsPinError` if the fingerprint fetch fails or the
-    digest does not match ``expected_sha256``.
+    ``expected_sha256`` must be ``[PIN_HEX_MIN, PIN_HEX_MAX]`` hex
+    chars (even count). The 16-char floor matches the seed firmware's
+    truncated TXT form; the comparison below prefix-matches the actual
+    cert's full SHA-256 against the expected prefix, so callers can
+    pass either a 16-char seed-advertised pin or a full 64-char
+    out-of-band digest.
+
+    Raises :class:`TlsPinError` if the expected pin is out of bounds,
+    the fingerprint fetch fails, or the digest prefix does not match.
     """
+    expected_lower = expected_sha256.lower()
+    # Bounds check BEFORE the network fetch so a misconfigured pin
+    # surfaces a clean error instead of a cert-fetch wrapped error.
+    if (
+        len(expected_lower) < PIN_HEX_MIN
+        or len(expected_lower) > PIN_HEX_MAX
+        or len(expected_lower) % 2 != 0
+    ):
+        raise TlsPinError(
+            f"TLS fingerprint pin for host {host!r} has invalid length "
+            f"{len(expected_lower)} (want {PIN_HEX_MIN}..={PIN_HEX_MAX}, "
+            f"even number of hex chars)",
+            peer_url=f"https://{host}:{port}",
+            expected=expected_lower,
+            actual=None,
+        )
     try:
         actual_hex, der = _fetch_peer_cert_sha256(host, port, timeout=timeout)
     except Exception as exc:  # noqa: BLE001 — surface as TlsPinError
         raise TlsPinError(
             f"TLS fingerprint pin fetch failed for host {host!r}: {exc}",
             peer_url=f"https://{host}:{port}",
-            expected=expected_sha256.lower(),
+            expected=expected_lower,
             actual=None,
             cause=exc,
         ) from exc
-    expected_lower = expected_sha256.lower()
-    if actual_hex != expected_lower:
+    # Prefix-match: `expected_lower` may be 16..64 hex. Compare only
+    # the first `len(expected_lower)` chars of the full digest.
+    if actual_hex[: len(expected_lower)] != expected_lower:
         raise TlsPinError(
             f"TLS fingerprint pin mismatch for host {host!r}: "
-            f"expected {expected_lower}, got {actual_hex}",
+            f"expected {expected_lower}, got {actual_hex[: len(expected_lower)]}",
             peer_url=f"https://{host}:{port}",
             expected=expected_lower,
             actual=actual_hex,

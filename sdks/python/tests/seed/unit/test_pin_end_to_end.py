@@ -227,6 +227,61 @@ def _seed_client_with_fingerprints(
     return client
 
 
+class TestPinnedRequestAcceptsSeed16CharPin:
+    """Regression guard for the silent-bypass fix — seed firmware emits
+    `fp={first 16 hex chars}`. The integration must accept that form
+    end-to-end (discovery → fingerprints dict → pinned client →
+    prefix-match → request). Previously rejected by the exact-64
+    length check in build_pinned_ssl_context."""
+
+    def test_status_succeeds_with_16_char_pin(self, real_cert) -> None:
+        cert_path, key_path, der = real_cert
+        # Take only the first 16 hex chars of the real cert's SHA-256
+        # — this is the seed firmware's TXT form.
+        full_hex = _sha256_hex(der)
+        prefix16 = full_hex[:16]
+        server = _StubSeedHttpsServer(cert_path, key_path)
+        server.start()
+        try:
+            time.sleep(0.05)
+            peer_url = f"https://127.0.0.1:{server.port}"
+            client = _seed_client_with_fingerprints(
+                peer_url, {peer_url: prefix16}
+            )
+            try:
+                status = client.status()
+                assert status.device_id == "stub-seed"
+            finally:
+                client.close()
+        finally:
+            server.stop()
+
+    def test_16_char_pin_mismatch_still_raises(
+        self, real_cert, attacker_cert
+    ) -> None:
+        # Adversarial case: the pin is a 16-char prefix of the LEGIT
+        # cert's SHA-256, but the server presents the ATTACKER cert.
+        # prefix-match must catch this.
+        _real_cert, _real_key, real_der = real_cert
+        evil_cert, evil_key, _evil_der = attacker_cert
+        prefix16 = _sha256_hex(real_der)[:16]
+        server = _StubSeedHttpsServer(evil_cert, evil_key)
+        server.start()
+        try:
+            time.sleep(0.05)
+            peer_url = f"https://127.0.0.1:{server.port}"
+            client = _seed_client_with_fingerprints(
+                peer_url, {peer_url: prefix16}
+            )
+            try:
+                with pytest.raises(TlsPinError):
+                    client.status()
+            finally:
+                client.close()
+        finally:
+            server.stop()
+
+
 class TestPinnedRequestRaisesTlsPinErrorOnSwap:
     """The integration's job: when the server presents a cert whose DER
     doesn't match the pinned SHA-256, SeedClient.status() must raise
