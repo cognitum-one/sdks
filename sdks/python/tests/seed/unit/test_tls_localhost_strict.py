@@ -37,11 +37,24 @@ class TestAllowlistScope:
 
     def test_physical_seed_hosts_still_allowed(self) -> None:
         # ADR-0007: physical-cable seed paths keep the self-signed
-        # exception (USB link, cognitum.local, link-local).
+        # exception (USB link / link-local only). `cognitum.local`
+        # was previously in this set but is mDNS-resolvable on ANY
+        # local network — an attacker publishing a PTR for
+        # `cognitum.local` from a laptop on the same wifi can present
+        # a forged self-signed cert and the SDK would silently accept
+        # it. See security audit C3.
         assert _is_default_host("169.254.42.1") is True
         assert _is_default_host("169.254.77.165") is True
-        assert _is_default_host("cognitum.local") is True
         assert _is_default_host("fe80::1") is True
+
+    def test_cognitum_local_no_longer_default_host(self) -> None:
+        # Security audit C3 — cognitum.local must require explicit
+        # opt-in (tls=SeedTLS(insecure=True) for dev, or ca_pem for
+        # prod). mDNS-resolvable hostnames cannot be in the
+        # auto-insecure set.
+        assert "cognitum.local" not in _DEFAULT_SEED_HOSTS
+        assert _is_default_host("cognitum.local") is False
+        assert _is_default_host("Cognitum.Local") is False
 
 
 class TestLocalhostStrictByDefault:
@@ -65,6 +78,35 @@ class TestLocalhostStrictByDefault:
             build_verify(
                 opts.primary.host, opts.tls, tls_explicit=opts.tls_explicit
             )
+
+
+class TestCognitumLocalRequiresExplicitOptIn:
+    """cognitum.local must behave like localhost — strict by default,
+    with no silent CERT_NONE fallback. See security audit C3."""
+
+    def test_cognitum_local_default_tls_is_strict(self) -> None:
+        opts = normalise_options("https://cognitum.local:8443")
+        assert opts.tls_explicit is False
+        with pytest.raises(ConfigError):
+            build_verify(
+                opts.primary.host,
+                opts.tls,
+                tls_explicit=opts.tls_explicit,
+            )
+
+    def test_cognitum_local_with_insecure_true_allowed(self) -> None:
+        opts = normalise_options(
+            "https://cognitum.local:8443",
+            tls=SeedTLS(insecure=True),
+        )
+        assert (
+            build_verify(
+                opts.primary.host,
+                opts.tls,
+                tls_explicit=opts.tls_explicit,
+            )
+            is False
+        )
 
 
 class TestLinkLocalSeedFallback:

@@ -23,11 +23,21 @@ from cognitum.seed._config import Endpoint, SeedAuth, SeedClientOptions, SeedTLS
 
 # ADR-0007 §TLS physical-cable seed paths. Self-signed acceptance here is
 # only the fallback when the caller supplied NO tls config at all.
-# Explicitly excludes `localhost` / `127.0.0.1` (issue #17 / P-B1): those
-# are general-purpose loopback addresses on shared dev boxes and must not
-# bypass verification by default — a dev talking to a local seed must opt
-# in via `tls=SeedTLS(insecure=True)`.
-_DEFAULT_SEED_HOSTS = frozenset({"169.254.42.1", "cognitum.local"})
+#
+# Scope is strictly link-local (physical-cable) addresses:
+#   - `169.254.42.1` — USB-gadget default IP
+#   - `169.254.*` — RFC 3927 link-local block (cable-scoped by routing)
+#   - `fe80:*` — IPv6 link-local (cable-scoped by protocol)
+#
+# Explicitly excludes:
+#   - `localhost` / `127.0.0.1` (issue #17 / P-B1) — loopback on shared
+#     dev boxes.
+#   - `cognitum.local` (security audit C3) — mDNS-resolvable on any
+#     local network; an attacker on the same wifi can publish a PTR
+#     pointing at their laptop and the SDK would silently accept a
+#     forged self-signed cert. mDNS names REQUIRE explicit opt-in
+#     (insecure=True for dev, ca_pem / fp= pinning for prod).
+_DEFAULT_SEED_HOSTS = frozenset({"169.254.42.1"})
 
 # Module-level latch so we only warn once per (host) about the default
 # self-signed fallback — avoids log-spam while still surfacing the
