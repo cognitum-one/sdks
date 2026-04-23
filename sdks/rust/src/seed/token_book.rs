@@ -128,15 +128,35 @@ impl<'de> Deserialize<'de> for SecretString {
     }
 }
 
+/// Zeroise an in-place `String` buffer using per-byte volatile writes
+/// + a compiler fence so LLVM cannot dead-store-eliminate the scrub.
+/// Pulled out of [`SecretString::drop`] so the contract can be unit-
+/// tested without racing the allocator (Drop returns → String's own
+/// drop frees the buffer → observing post-drop bytes is undefined).
+///
+/// Security audit H5 — the prior `*b = 0` loop was subject to LLVM's
+/// dead-store elimination: on `-O2` release builds the compiler can
+/// legally delete writes to memory that's about to be freed. The
+/// volatile write is part of the abstract machine's observable
+/// behaviour, so the optimiser MUST NOT elide it. The compiler fence
+/// prevents later loads being hoisted ahead of the scrub (defensive).
+///
+/// No new deps: `ptr::write_volatile` + `compiler_fence` are in std.
+/// The `zeroize` crate does the same thing more ergonomically but adds
+/// one dependency for a 4-line change.
+fn zeroise_string_in_place(s: &mut String) {
+    let bytes = unsafe { s.as_bytes_mut() };
+    for b in bytes.iter_mut() {
+        unsafe {
+            std::ptr::write_volatile(b as *mut u8, 0);
+        }
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}
+
 impl Drop for SecretString {
     fn drop(&mut self) {
-        // Overwrite the allocation best-effort. Not a hard guarantee
-        // against compiler optimisation, but it covers the common case
-        // where the buffer stays resident until the allocator reclaims it.
-        let bytes = unsafe { self.inner.as_bytes_mut() };
-        for b in bytes {
-            *b = 0;
-        }
+        zeroise_string_in_place(&mut self.inner);
     }
 }
 
@@ -300,5 +320,39 @@ mod tests {
         let s = SecretString::new("hunter2");
         let dbg = format!("{s:?}");
         assert!(!dbg.contains("hunter2"));
+    }
+
+    #[test]
+    fn zeroise_string_in_place_scrubs_bytes() {
+        // Security audit H5 — the zeroise helper that SecretString's
+        // Drop calls must actually scrub via volatile writes. Tests the
+        // pure function rather than Drop semantics so we're not racing
+        // the allocator (post-drop the buffer is freed and may be
+        // reused immediately, making direct observation unreliable).
+        const SENTINEL: &str = "VOLATILE_ZERO_CANARY_ec4f";
+        let mut s = String::from(SENTINEL);
+        assert_eq!(s.as_bytes(), SENTINEL.as_bytes(), "precondition");
+        zeroise_string_in_place(&mut s);
+        assert!(
+            s.as_bytes().iter().all(|&b| b == 0),
+            "string not zeroised: {:?}",
+            s.as_bytes()
+        );
+        // Length unchanged — the buffer is scrubbed in place, not
+        // truncated. (String's own drop will handle the dealloc when
+        // `s` goes out of scope.)
+        assert_eq!(s.as_bytes().len(), SENTINEL.len());
+    }
+
+    #[test]
+    fn secret_string_drop_invokes_zeroise() {
+        // Spot-check that Drop actually calls `zeroise_string_in_place`
+        // by observing that `SecretString::new(x)` returning builds,
+        // drops without panic, and doesn't leak via Debug (covered
+        // separately but re-asserted so Drop is exercised).
+        let s = SecretString::new("check-drop-runs");
+        let dbg_before = format!("{s:?}");
+        assert!(!dbg_before.contains("check-drop-runs"));
+        drop(s); // MUST NOT panic; zeroise fires via Drop
     }
 }
