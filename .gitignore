@@ -23,6 +23,11 @@ CLAUDE.local.md
 *.egg-info/
 **/__pycache__/
 *.pyc
+**/build/
+/sdks/python/dist/
+
+# Node build artifacts (keep under /sdks/node/ only; root has no node)
+/sdks/node/*.tgz
 
 # Claude Code / claude-flow runtime state
 .claude/
