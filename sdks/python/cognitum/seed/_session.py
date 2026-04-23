@@ -15,14 +15,17 @@ from __future__ import annotations
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
+from cognitum.seed._call_options import CallOptions
 from cognitum.seed._models import Identity, Status
 from cognitum.seed.resources import (
     AsyncCustodyResource,
+    AsyncMeshResource,
     AsyncOtaResource,
     AsyncPairResource,
     AsyncStoreResource,
     AsyncWitnessResource,
     CustodyResource,
+    MeshResource,
     OtaResource,
     PairResource,
     StoreResource,
@@ -57,6 +60,7 @@ class _PinnedTransport:
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
         idempotent: bool | None = None,
+        options: CallOptions | None = None,
     ) -> Any:
         return self._inner.request(
             method,
@@ -65,6 +69,7 @@ class _PinnedTransport:
             params=params,
             idempotent=idempotent,
             peer_key=self._peer_key,
+            options=options,
         )
 
 
@@ -77,6 +82,7 @@ class _AsyncPinnedTransport(_PinnedTransport):
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
         idempotent: bool | None = None,
+        options: CallOptions | None = None,
     ) -> Any:
         return await self._inner.request(
             method,
@@ -85,6 +91,7 @@ class _AsyncPinnedTransport(_PinnedTransport):
             params=params,
             idempotent=idempotent,
             peer_key=self._peer_key,
+            options=options,
         )
 
 
@@ -104,6 +111,7 @@ class SeedSession:
     custody: CustodyResource
     witness: WitnessResource
     ota: OtaResource
+    mesh: MeshResource
 
     def __init__(self, client: "SeedClient", peer_key: str) -> None:
         self._client = client
@@ -117,6 +125,7 @@ class SeedSession:
         self.custody = CustodyResource(adapter)
         self.witness = WitnessResource(adapter)
         self.ota = OtaResource(adapter)
+        self.mesh = MeshResource(adapter)
         self._adapter = adapter
 
     @property
@@ -157,6 +166,7 @@ class AsyncSeedSession:
     custody: AsyncCustodyResource
     witness: AsyncWitnessResource
     ota: AsyncOtaResource
+    mesh: AsyncMeshResource
 
     def __init__(self, client: "AsyncSeedClient", peer_key: str) -> None:
         self._client = client
@@ -167,6 +177,7 @@ class AsyncSeedSession:
         self.custody = AsyncCustodyResource(adapter)
         self.witness = AsyncWitnessResource(adapter)
         self.ota = AsyncOtaResource(adapter)
+        self.mesh = AsyncMeshResource(adapter)
         self._adapter = adapter
 
     @property

@@ -14,6 +14,12 @@ Public surface::
 from __future__ import annotations
 
 from cognitum.seed._async_client import AsyncSeedClient
+from cognitum.seed._call_options import (
+    CallOptions,
+    Consistency,
+    DISABLE_RETRY,
+    Prefer,
+)
 from cognitum.seed._client import SeedClient, map_error
 from cognitum.seed._config import (
     Endpoint,
@@ -47,11 +53,16 @@ from cognitum.seed._errors import (
     ServiceUnavailableError,
     TimeoutError,  # noqa: A004
     TrustScoreBlockedError,
+    UnsupportedError,
     ValidationError,
 )
 from cognitum.seed._models import (
+    ClusterHealth,
     Epoch,
     Identity,
+    MeshPeer,
+    MeshPeers,
+    MeshStatus,
     OtaCheckNowResponse,
     OtaConfig,
     PairCreateResponse,
@@ -61,6 +72,7 @@ from cognitum.seed._models import (
     StoreIngestRequest,
     StoreQueryResult,
     StoreStatus,
+    SwarmStatus,
     VectorUpsert,
     WitnessChain,
 )
@@ -96,6 +108,11 @@ __all__ = [
     "InMemoryTokenBook",
     "SecretString",
     "pair_all",
+    # Per-call knobs (Phase 2)
+    "CallOptions",
+    "Consistency",
+    "DISABLE_RETRY",
+    "Prefer",
     # TLS
     "SeedPinnedVerifier",
     # Retry helpers
@@ -119,10 +136,15 @@ __all__ = [
     "ServiceUnavailableError",
     "TimeoutError",
     "TrustScoreBlockedError",
+    "UnsupportedError",
     "ValidationError",
     # Models
+    "ClusterHealth",
     "Epoch",
     "Identity",
+    "MeshPeer",
+    "MeshPeers",
+    "MeshStatus",
     "OtaCheckNowResponse",
     "OtaConfig",
     "PairCreateResponse",
@@ -132,6 +154,7 @@ __all__ = [
     "StoreIngestRequest",
     "StoreQueryResult",
     "StoreStatus",
+    "SwarmStatus",
     "VectorUpsert",
     "WitnessChain",
     # Diagnostic

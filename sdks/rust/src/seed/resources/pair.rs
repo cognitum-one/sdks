@@ -2,6 +2,7 @@
 
 use crate::error::Error;
 use crate::seed::client::SeedClient;
+use crate::seed::config::CallOptions;
 use crate::seed::models::{PairCreate, PairCreateResponse, PairStatus};
 
 /// Pairing endpoints.
@@ -15,9 +16,25 @@ impl<'c> PairResource<'c> {
         self.client.request_get("/pair/status").await
     }
 
+    /// [`Self::status`] with per-call [`CallOptions`] overrides.
+    pub async fn status_with(&self, opts: CallOptions) -> Result<PairStatus, Error> {
+        self.client.request_get_opts("/pair/status", &opts).await
+    }
+
     /// `POST /api/v1/pair` — create a new pairing inside the 30s window.
     pub async fn create(&self, req: PairCreate) -> Result<PairCreateResponse, Error> {
         self.client.request_post("/pair", &req, false).await
+    }
+
+    /// [`Self::create`] with per-call [`CallOptions`] overrides.
+    pub async fn create_with(
+        &self,
+        req: PairCreate,
+        opts: CallOptions,
+    ) -> Result<PairCreateResponse, Error> {
+        self.client
+            .request_post_opts("/pair", &req, false, &opts)
+            .await
     }
 
     /// `DELETE /api/v1/pair/{client_name}` — unpair by name.

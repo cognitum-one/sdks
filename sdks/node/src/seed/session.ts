@@ -21,6 +21,7 @@ import {
   makeIdentityResource,
   type IdentityResource,
 } from "./resources/identity.js";
+import { makeMeshResource, type MeshResource } from "./resources/mesh.js";
 import { makeOtaResource, type OtaResource } from "./resources/ota.js";
 import { makePairResource, type PairResource } from "./resources/pair.js";
 import { makeStatusResource, type StatusResource } from "./resources/status.js";
@@ -52,6 +53,8 @@ export class SeedSession {
   readonly store: StoreResource;
   /** OTA resource on the pinned peer. */
   readonly ota: OtaResource;
+  /** Mesh observability — read endpoints routed through the pinned peer. */
+  readonly mesh: MeshResource;
 
   /** @internal — constructed by {@link SeedClient.session}. */
   constructor(client: SeedClient, pinnedPeer: string) {
@@ -59,18 +62,19 @@ export class SeedSession {
 
     // Bind every resource to a request function that forces the pinned
     // peer via the `pinnedPeerKey` option. The request pipeline honours
-    // the pin when healthy and cycles only if the peer hard-fails.
+    // the pin when healthy and cycles only if the peer hard-fails. The
+    // spread of `opts` forwards any per-call `CallOptions` unchanged so
+    // callers can still override `peer:` / `prefer:` / `consistency:`
+    // etc. on individual session calls.
     const req: <T>(
       method: string,
       path: string,
-      opts?: {
-        body?: unknown;
-        idempotent?: boolean;
-        query?: Record<string, string | number | boolean | undefined>;
-        timeoutMs?: number;
-      },
+      opts?: Record<string, unknown>,
     ) => Promise<T> = (method, path, opts) =>
-      client.request(method, path, { ...(opts ?? {}), pinnedPeerKey: pinnedPeer });
+      client.request(method, path, {
+        ...(opts ?? {}),
+        pinnedPeerKey: pinnedPeer,
+      });
 
     this.status = makeStatusResource(req);
     this.identity = makeIdentityResource(req);
@@ -79,5 +83,6 @@ export class SeedSession {
     this.custody = makeCustodyResource(req);
     this.store = makeStoreResource(req);
     this.ota = makeOtaResource(req);
+    this.mesh = makeMeshResource(req);
   }
 }

@@ -26,12 +26,12 @@ use serde::Serialize;
 
 use crate::error::Error;
 
-use super::config::{Routing, SeedAuth, SeedTls, Timeouts};
+use super::config::{CallOptions, Consistency, Prefer, Routing, SeedAuth, SeedTls, Timeouts};
 use super::error as seed_err;
 use super::health::HealthHandle;
 use super::peers::{Endpoint, Peer, PeerErrorClass, PeerSet};
 use super::resources::{
-    CustodyResource, OtaResource, PairResource, StoreResource, WitnessResource,
+    CustodyResource, MeshResource, OtaResource, PairResource, StoreResource, WitnessResource,
 };
 use super::retry;
 use super::session::SeedSession;
@@ -112,6 +112,27 @@ impl SeedClient {
         OtaResource { client: self }
     }
 
+    /// Mesh observability resource (Phase 2 — ADR-0016a §D8).
+    ///
+    /// Wraps `GET /api/v1/network/mesh/status`, `/peers`, `/swarm/status`,
+    /// and `/cluster/health` — all allowlisted reads on v0.20.0.
+    pub fn mesh(&self) -> MeshResource<'_> {
+        MeshResource { client: self }
+    }
+
+    /// Reset the per-peer routing state so the next call re-probes freshly
+    /// (Phase 2 — ADR-0016b). Marks every configured peer `Healthy`, zeros
+    /// `consecutive_failures`, clears `latency_ema_ms` and `last_used_at`.
+    ///
+    /// Idempotent. No network I/O — this is purely SDK-local bookkeeping.
+    /// Useful after a long sleep / network change when the EMA no longer
+    /// reflects reality.
+    pub fn rediscover(&self) {
+        if let Ok(mut guard) = self.inner.peers.lock() {
+            guard.rediscover();
+        }
+    }
+
     /// Open a [`SeedSession`] pinned to the currently closest-first peer.
     ///
     /// The session holds the pin for its lifetime; all its resource calls
@@ -182,9 +203,20 @@ impl SeedClient {
         self.request_get("/status").await
     }
 
+    /// `GET /api/v1/status` with per-call [`CallOptions`] overrides
+    /// (Phase 2 — ADR-0016b).
+    pub async fn status_with(&self, opts: CallOptions) -> Result<super::models::Status, Error> {
+        self.request_get_opts("/status", &opts).await
+    }
+
     /// `GET /api/v1/identity` — immutable identity document. Allowlisted read.
     pub async fn identity(&self) -> Result<super::models::Identity, Error> {
         self.request_get("/identity").await
+    }
+
+    /// `GET /api/v1/identity` with per-call [`CallOptions`] overrides.
+    pub async fn identity_with(&self, opts: CallOptions) -> Result<super::models::Identity, Error> {
+        self.request_get_opts("/identity", &opts).await
     }
 
     // -- internal HTTP helpers ---------------------------------------------
@@ -240,6 +272,95 @@ impl SeedClient {
     {
         self.request::<T, &B>(Method::POST, path, Some(body), idempotent, pinned)
             .await
+    }
+
+    /// `GET` with per-call [`CallOptions`] overrides (Phase 2). Resolves
+    /// `opts` into a concrete pinned peer / max_retries override then
+    /// dispatches via the existing request loop.
+    pub(crate) async fn request_get_opts<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        opts: &CallOptions,
+    ) -> Result<T, Error> {
+        let pin = self.resolve_call_options(opts)?;
+        self.request::<T, ()>(Method::GET, path, None, false, pin.as_deref())
+            .await
+    }
+
+    /// `POST` with per-call [`CallOptions`] overrides (Phase 2).
+    pub(crate) async fn request_post_opts<T, B>(
+        &self,
+        path: &str,
+        body: &B,
+        idempotent: bool,
+        opts: &CallOptions,
+    ) -> Result<T, Error>
+    where
+        T: DeserializeOwned,
+        B: Serialize + ?Sized,
+    {
+        let pin = self.resolve_call_options(opts)?;
+        self.request::<T, &B>(Method::POST, path, Some(body), idempotent, pin.as_deref())
+            .await
+    }
+
+    /// Turn a [`CallOptions`] into a concrete `Option<peer_key>` that the
+    /// existing request loop understands. Returns:
+    ///
+    /// * `Err` if the caller asked for `Consistency::Strong` (no quorum)
+    ///   or named an unknown peer URL.
+    /// * `Ok(Some(key))` for `CallOptions::peer` or when `prefer` picks
+    ///   a non-default peer.
+    /// * `Ok(None)` to fall through to the existing closest-first picker.
+    fn resolve_call_options(&self, opts: &CallOptions) -> Result<Option<String>, Error> {
+        // `Strong` is unsupported per ADR-0016b §"Per-call knobs".
+        if let Some(Consistency::Strong) = opts.consistency {
+            return Err(seed_err::unsupported(
+                "strong consistency unsupported; seed has no quorum",
+            ));
+        }
+
+        // `peer` wins over every other preference. Validate it against
+        // the PeerSet up front so callers see a clean config error rather
+        // than a confused 404 / network timeout.
+        if let Some(peer) = opts.peer.as_deref() {
+            let guard = self.inner.peers.lock().map_err(|_| Error::Api {
+                code: 0,
+                message: "seed: peers lock poisoned".into(),
+            })?;
+            let key = match guard.find_by_key(peer) {
+                Some(p) => p.endpoint.key(),
+                None => {
+                    // Also accept a trailing-slash / scheme-trivia mismatch
+                    // by parsing through `Endpoint::parse`. Keep the error
+                    // shape the caller asked for (`peer not in mesh: …`).
+                    return Err(seed_err::config(&format!("peer not in mesh: {peer}")));
+                }
+            };
+            return Ok(Some(key));
+        }
+
+        // `prefer` tweaks the peer picker for this call only. We do NOT
+        // mutate the PeerSet — we resolve the chosen peer's key once and
+        // let the request loop treat it as a pinned peer.
+        if let Some(prefer) = opts.prefer {
+            let guard = self.inner.peers.lock().map_err(|_| Error::Api {
+                code: 0,
+                message: "seed: peers lock poisoned".into(),
+            })?;
+            let key = match prefer {
+                Prefer::Closest | Prefer::Any => guard.pick().endpoint.key(),
+                Prefer::LocalFirst => guard.pick_local_first().endpoint.key(),
+                Prefer::Random => guard.pick_random().endpoint.key(),
+            };
+            return Ok(Some(key));
+        }
+
+        // `Consistency::Eventual` bypasses any session stickiness. The
+        // top-level `SeedClient` has no session pin to bypass (that lives
+        // on `SeedSession`), so this is a no-op here; `SeedSession` calls
+        // `request_get_opts` through its own helper that drops the pin.
+        Ok(None)
     }
 
     /// Pick a peer — prefer `pinned` if supplied, else use

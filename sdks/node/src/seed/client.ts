@@ -16,13 +16,16 @@
 import {
   AuthError,
   CognitumError,
+  ConfigError,
   NetworkError,
   ParseError,
   RateLimitError,
   ServiceUnavailableError,
   TimeoutError,
   TrustScoreBlockedError,
+  UnsupportedError,
 } from "../errors.js";
+import type { CallOptions } from "./callOptions.js";
 import {
   resolveSeedConfig,
   type ResolvedSeedConfig,
@@ -56,26 +59,22 @@ import {
 } from "./resources/custody.js";
 import { makeStoreResource, type StoreResource } from "./resources/store.js";
 import { makeOtaResource, type OtaResource } from "./resources/ota.js";
+import { makeMeshResource, type MeshResource } from "./resources/mesh.js";
 
 /** Options passed to {@link SeedClient.request} per call. */
-export interface SeedRequestOptions {
+export interface SeedRequestOptions extends CallOptions {
   /** JSON body to serialise; omit for GET/DELETE. */
   body?: unknown;
   /** Extra query parameters. */
   query?: Record<string, string | number | boolean | undefined>;
   /**
-   * Idempotency hint — GETs, HEADs, and read-only POSTs (e.g. k-NN
-   * search) set this to `true` so the retry loop will retry read
-   * timeouts. Non-idempotent POSTs (e.g. `pair`, `ingest`) set it
-   * to `false` (the default for POSTs).
-   */
-  idempotent?: boolean;
-  /** Timeout override for this request (ms). */
-  timeoutMs?: number;
-  /**
    * Pin this one request to `peerKey` (canonical URL, no trailing
    * slash). Used by {@link SeedSession}; the failover state machine
-   * still cycles when the pinned peer hard-fails.
+   * still cycles when the pinned peer hard-fails. Distinct from the
+   * {@link CallOptions.peer} per-call override — `pinnedPeerKey` is
+   * set by the session handle and silently no-ops when the peer isn't
+   * in the set, whereas `peer` is caller-facing and throws
+   * {@link ConfigError} when the peer is unknown.
    */
   pinnedPeerKey?: string;
 }
@@ -124,6 +123,12 @@ export class SeedClient {
   readonly store: StoreResource;
   /** OTA — config + check-now. */
   readonly ota: OtaResource;
+  /**
+   * Mesh observability — `status()`, `peers()`, `swarmStatus()`,
+   * `clusterHealth()` (ADR-0016a §D8). Read-only; all four are on the
+   * seed's WiFi-read allowlist so no pairing token is needed.
+   */
+  readonly mesh: MeshResource;
 
   /** Peer set — closest-first picker with per-peer health state. */
   private readonly peerSet: PeerSet;
@@ -174,6 +179,7 @@ export class SeedClient {
     this.custody = makeCustodyResource(req);
     this.store = makeStoreResource(req);
     this.ota = makeOtaResource(req);
+    this.mesh = makeMeshResource(req);
 
     // Opt-in active health probe (ADR-0016a §D7). Starts a `setInterval`
     // that `unref`'s itself so it never keeps the process alive.
@@ -218,6 +224,26 @@ export class SeedClient {
    */
   close(): void {
     this.healthProbe?.stop();
+  }
+
+  /**
+   * Rebuild the per-peer routing state from scratch (ADR-0016a §D7
+   * "rediscover"). Resets every peer's {@link Peer.state} to `"healthy"`,
+   * clears `latencyEmaMs`, zeroes `consecutiveFailures`, and re-sorts
+   * the table so the next `request()` is driven by constructor order.
+   *
+   * Use this after rotating pairing tokens or when the caller knows the
+   * previous failure bookkeeping is stale (e.g. the mesh transport
+   * recovered out-of-band from a brown-out). Idempotent — calling it
+   * multiple times in a row is a no-op beyond the first.
+   *
+   * Phase 2 placeholder: when mDNS discovery lands (ADR-0016a §D6),
+   * this method will also re-run discovery; for now it only resets the
+   * in-memory peer state.
+   */
+  rediscover(): void {
+    this.peerSet.resetAll();
+    this.authFailures.clear();
   }
 
   /**
@@ -266,11 +292,52 @@ export class SeedClient {
     path: string,
     opts: SeedRequestOptions = {},
   ): Promise<T> {
+    // -- per-call knobs (ADR-0016b §"Per-call knobs") --------------------
+    // Reject unsupported consistency modes up-front. "strong" throws per
+    // ADR-0016a §D4 (no quorum protocol on seed today). "eventual" has no
+    // dispatch-side effect beyond suppressing session-stickiness, which
+    // we handle by ignoring `pinnedPeerKey` below.
+    if (opts.consistency === "strong") {
+      throw new UnsupportedError(
+        "consistency=strong",
+        "strong consistency unsupported; seed has no quorum protocol today",
+      );
+    }
+
+    // Validate `opts.peer`: if the caller named a peer that isn't in the
+    // set, fail loudly — cycling to a different peer would silently change
+    // the semantics the caller asked for.
+    let explicitPeer: Peer | undefined;
+    if (opts.peer !== undefined) {
+      explicitPeer = this.peerSet.findByKey(opts.peer);
+      if (!explicitPeer) {
+        throw new ConfigError(`peer not in mesh: ${opts.peer}`);
+      }
+    }
+
     const methodUpper = method.toUpperCase();
     const idempotent =
       opts.idempotent ?? (methodUpper === "GET" || methodUpper === "HEAD");
     const totalBudgetMs =
       this.config.timeouts.total ?? DEFAULT_MAX_ELAPSED_MS;
+
+    // Per-call `retries: null` → no retries at all; `retries: number` →
+    // override the client-wide default; undefined → client default.
+    const retriesBudget =
+      opts.retries === null
+        ? 0
+        : typeof opts.retries === "number"
+          ? opts.retries
+          : this.config.retries;
+
+    // Pre-compute the per-call prefer ordering so the failover loop can
+    // walk it deterministically (used only when `opts.peer` is unset).
+    const preferOrder: Peer[] | undefined =
+      explicitPeer === undefined && opts.prefer !== undefined
+        ? this.peerSet.preferOrder(opts.prefer)
+        : undefined;
+    let preferCursor = 0;
+
     const startedAt = Date.now();
 
     // Serialise the JSON body ONCE per `request()` call (issue #23). The
@@ -286,10 +353,25 @@ export class SeedClient {
       ? JSON.stringify(opts.body)
       : undefined;
 
-    // Resolve the initial peer. When the caller pinned a specific peer
-    // (session mode) and it's present, use it; otherwise let `pick`
-    // choose the closest-first healthy peer.
-    let peer: Peer = this.initialPeer(opts.pinnedPeerKey);
+    // Resolve the initial peer.
+    //
+    // Precedence (highest first):
+    //   1. explicit per-call `peer:` override — already validated above.
+    //   2. per-call `prefer:` ordering — walk `preferOrder[0]` first.
+    //   3. session `pinnedPeerKey` — unless `consistency === "eventual"`,
+    //      which explicitly opts out of session-stickiness.
+    //   4. `pick()` — default closest-first.
+    let peer: Peer;
+    if (explicitPeer) {
+      peer = explicitPeer;
+    } else if (preferOrder && preferOrder.length > 0) {
+      peer = preferOrder[0];
+      preferCursor = 1;
+    } else if (opts.consistency === "eventual") {
+      peer = this.peerSet.pick();
+    } else {
+      peer = this.initialPeer(opts.pinnedPeerKey);
+    }
 
     const totalPeers = this.peerSet.len();
     let peersTried = 0;
@@ -365,9 +447,20 @@ export class SeedClient {
 
       switch (outcome.disposition) {
         case "cycle": {
+          // Explicit per-call `peer:` means the caller opted OUT of
+          // cycling — do not silently redirect to a different peer.
+          if (explicitPeer) {
+            throw outcome.error;
+          }
           peersTried += 1;
           if (peersTried < totalPeers) {
-            const next = this.peerSet.nextAfter(peer);
+            let next: Peer | undefined;
+            if (preferOrder) {
+              next = preferOrder[preferCursor];
+              preferCursor += 1;
+            } else {
+              next = this.peerSet.nextAfter(peer);
+            }
             if (next) {
               peer = next;
               continue;
@@ -383,13 +476,16 @@ export class SeedClient {
             if (Date.now() - startedAt + delayMs > totalBudgetMs) {
               throw outcome.error;
             }
-            if (retryAttempt + 1 > this.config.retries) {
+            if (retryAttempt + 1 > retriesBudget) {
               throw outcome.error;
             }
             await sleep(delayMs);
             retryAttempt += 1;
             peersTried = 0; // new budget round across the mesh
-            peer = this.initialPeer(opts.pinnedPeerKey);
+            preferCursor = preferOrder ? 1 : 0;
+            peer = preferOrder
+              ? preferOrder[0]
+              : this.initialPeer(opts.pinnedPeerKey);
             continue;
           }
           throw outcome.error;
@@ -399,7 +495,7 @@ export class SeedClient {
           if (!this.shouldBackoffRetry(outcome.error, methodUpper, idempotent)) {
             throw outcome.error;
           }
-          if (retryAttempt + 1 > this.config.retries) {
+          if (retryAttempt + 1 > retriesBudget) {
             throw outcome.error;
           }
           const delayMs = this.backoffDelay(retryAttempt, outcome.retryHintMs);
@@ -490,6 +586,18 @@ export class SeedClient {
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), attemptTimeoutMs);
+    // Chain the caller's abort signal, if supplied. Any fire on the
+    // caller signal aborts this attempt the same way a timeout would —
+    // the catch block classifies the outcome into a `NetworkError`.
+    const callerSignal = opts.signal;
+    const onCallerAbort = (): void => controller.abort();
+    if (callerSignal) {
+      if (callerSignal.aborted) {
+        controller.abort();
+      } else {
+        callerSignal.addEventListener("abort", onCallerAbort, { once: true });
+      }
+    }
     init.signal = controller.signal;
 
     const callStarted = Date.now();
@@ -498,6 +606,20 @@ export class SeedClient {
       response = await this.fetchFn(url, init);
     } catch (err) {
       clearTimeout(timer);
+      if (callerSignal) {
+        callerSignal.removeEventListener("abort", onCallerAbort);
+      }
+      // Caller-supplied abort wins over our own timeout — surface it as
+      // a NetworkError with cause-chained signal, not a TimeoutError.
+      if (callerSignal?.aborted) {
+        const e = new NetworkError("request aborted by caller signal", err);
+        return {
+          kind: "err",
+          disposition: "surface",
+          peerClass: "network",
+          error: e,
+        };
+      }
       if (isAbortError(err)) {
         const e = new TimeoutError(
           "read",
@@ -522,6 +644,9 @@ export class SeedClient {
       };
     }
     clearTimeout(timer);
+    if (callerSignal) {
+      callerSignal.removeEventListener("abort", onCallerAbort);
+    }
 
     if (response.ok) {
       const value =

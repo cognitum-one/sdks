@@ -45,6 +45,13 @@ class WireModel:
 
 from cognitum.seed._models.custody import Epoch
 from cognitum.seed._models.identity import Identity
+from cognitum.seed._models.mesh import (
+    ClusterHealth,
+    MeshPeer,
+    MeshPeers,
+    MeshStatus,
+    SwarmStatus,
+)
 from cognitum.seed._models.ota import OtaCheckNowResponse, OtaConfig
 from cognitum.seed._models.pair import PairCreateResponse, PairStatus
 from cognitum.seed._models.status import Status
@@ -58,8 +65,12 @@ from cognitum.seed._models.store import (
 from cognitum.seed._models.witness import WitnessChain
 
 __all__ = [
+    "ClusterHealth",
     "Epoch",
     "Identity",
+    "MeshPeer",
+    "MeshPeers",
+    "MeshStatus",
     "OtaCheckNowResponse",
     "OtaConfig",
     "PairCreateResponse",
@@ -69,6 +80,7 @@ __all__ = [
     "StoreIngestRequest",
     "StoreQueryResult",
     "StoreStatus",
+    "SwarmStatus",
     "VectorUpsert",
     "WireModel",
     "WitnessChain",

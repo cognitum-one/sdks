@@ -131,3 +131,121 @@ impl Default for Timeouts {
         }
     }
 }
+
+/// Per-call routing / timing overrides (Phase 2 — ADR-0016b §"Per-call
+/// knobs").
+///
+/// Every field is `Option<_>` so `CallOptions::default()` is a no-op:
+/// each `_with(opts)` flavour of a resource method behaves exactly like
+/// its parameterless twin unless the caller sets at least one knob.
+///
+/// Use-cases:
+///
+/// * `peer` — pin this one call to a specific peer URL (e.g. to confirm
+///   a write landed on the intended node, or to target a slow peer for
+///   diagnostics). If the URL is not in the configured [`PeerSet`] the
+///   call fails with [`seed_err::config`](super::error::config).
+/// * `prefer` — override the closest-first routing for this call only.
+/// * `consistency` — request a consistency posture. `Strong` is rejected
+///   (the seed has no quorum); `Eventual` opts out of session stickiness
+///   just for this call.
+/// * `timeout` / `retries` — narrow the per-call budget without touching
+///   the builder-level defaults.
+///
+/// `#[non_exhaustive]` so future fields (e.g. `prefer_role`) can be added
+/// without bumping the SemVer major.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct CallOptions {
+    /// Pin this call to the named peer URL (must be in the configured
+    /// [`PeerSet`](super::peers::PeerSet)). When `None`, routing falls
+    /// back to `prefer` / the session pin / [`PeerSet::pick`].
+    pub peer: Option<String>,
+    /// Override the preferred peer-picking strategy for this call only.
+    pub prefer: Option<Prefer>,
+    /// Consistency posture. `Strong` returns
+    /// [`seed_err::unsupported`](super::error::unsupported); the seed has
+    /// no quorum layer.
+    pub consistency: Option<Consistency>,
+    /// Per-call read timeout. Overrides the builder-level `Timeouts::read`
+    /// for this call only. The total / connect budgets are unaffected.
+    pub timeout: Option<Duration>,
+    /// Per-call retry count. `None` = use the builder default, `Some(0)` =
+    /// no retries, `Some(n)` = at most `n`.
+    pub retries: Option<u32>,
+}
+
+impl CallOptions {
+    /// Convenience constructor identical to `CallOptions::default()`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set [`Self::peer`] fluently.
+    pub fn peer(mut self, url: impl Into<String>) -> Self {
+        self.peer = Some(url.into());
+        self
+    }
+
+    /// Set [`Self::prefer`] fluently.
+    pub fn prefer(mut self, prefer: Prefer) -> Self {
+        self.prefer = Some(prefer);
+        self
+    }
+
+    /// Set [`Self::consistency`] fluently.
+    pub fn consistency(mut self, c: Consistency) -> Self {
+        self.consistency = Some(c);
+        self
+    }
+
+    /// Set [`Self::timeout`] fluently.
+    pub fn timeout(mut self, d: Duration) -> Self {
+        self.timeout = Some(d);
+        self
+    }
+
+    /// Set [`Self::retries`] fluently.
+    pub fn retries(mut self, n: u32) -> Self {
+        self.retries = Some(n);
+        self
+    }
+}
+
+/// Peer-picking strategy (ADR-0016b §"Per-call knobs").
+///
+/// This is a *per-call* override; the client-wide [`Routing`] default
+/// still applies when a call does not supply [`CallOptions::prefer`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Prefer {
+    /// Closest-first (default): lowest-latency Healthy peer. Matches the
+    /// Phase 1.5 `Routing::Session` behaviour.
+    Closest,
+    /// Prefer the lowest-list-index (first configured) peer regardless of
+    /// latency; useful for pinning to a canonical seed.
+    LocalFirst,
+    /// Pick a peer uniformly at random from the `Healthy`/`Degraded` set.
+    Random,
+    /// No preference — whatever the current PeerSet picker returns.
+    /// Alias for "let the default routing run".
+    Any,
+}
+
+/// Consistency posture requested for a single call (ADR-0016b
+/// §"Per-call knobs").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Consistency {
+    /// Session-sticky reads (SDK default). Returns latest-observed by
+    /// this SeedClient / SeedSession.
+    Session,
+    /// No stickiness. The SDK will route fresh on each call — useful
+    /// when reading from whichever peer is nearest-available.
+    Eventual,
+    /// Quorum-linearizable reads. **Unsupported** — the seed has no
+    /// quorum layer. The SDK returns
+    /// [`seed_err::unsupported`](super::error::unsupported) immediately
+    /// without hitting the network.
+    Strong,
+}

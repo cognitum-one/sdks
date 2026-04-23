@@ -181,6 +181,58 @@ export class PeerSet {
   }
 
   /**
+   * Reset every peer's per-session state so the next `pick()` is driven
+   * purely by `listIndex` again. Used by `SeedClient.rediscover()` to
+   * re-prime the table after a caller has rotated credentials / rebuilt
+   * the peer list. Does NOT remove peers; does NOT touch the TokenBook.
+   */
+  resetAll(): void {
+    for (const p of this.peers) {
+      p.state = "healthy";
+      p.latencyEmaMs = undefined;
+      p.consecutiveFailures = 0;
+      // Leave `lastUsedAt` intact — it's informational; clearing would
+      // confuse dashboards that correlate on "last touched" timestamps.
+    }
+  }
+
+  /**
+   * Return a one-call ordered view per {@link CallPrefer} — used by the
+   * per-call `prefer:` knob in the request pipeline. Does NOT mutate
+   * the underlying table.
+   *
+   * - `"closest"` / `"any"` — default closest-first ordering.
+   * - `"local-first"` — RFC-1918 / link-local hosts first, then the
+   *   closest-first ordering for the remainder.
+   * - `"random"` — Fisher-Yates shuffle with `Math.random`.
+   */
+  preferOrder(mode: "closest" | "local-first" | "random" | "any"): Peer[] {
+    const snap = this.peers.slice();
+    switch (mode) {
+      case "closest":
+      case "any": {
+        snap.sort((a, b) => compareSortKeys(sortKey(a), sortKey(b)));
+        return snap;
+      }
+      case "local-first": {
+        const local = snap.filter(isLocalHost);
+        const rest = snap.filter((p) => !isLocalHost(p));
+        local.sort((a, b) => compareSortKeys(sortKey(a), sortKey(b)));
+        rest.sort((a, b) => compareSortKeys(sortKey(a), sortKey(b)));
+        return [...local, ...rest];
+      }
+      case "random": {
+        // Fisher-Yates. Acceptable for per-call jitter; not cryptographic.
+        for (let i = snap.length - 1; i > 0; i -= 1) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [snap[i], snap[j]] = [snap[j], snap[i]];
+        }
+        return snap;
+      }
+    }
+  }
+
+  /**
    * Record a successful outcome: update EMA, clear failure counter,
    * promote state to `healthy`.
    */
@@ -239,6 +291,35 @@ export function normaliseBaseUrl(raw: string): string {
     );
   }
   return url.toString().replace(/\/+$/, "");
+}
+
+/**
+ * Heuristic "is local host?" used by the `"local-first"` preference.
+ * Matches link-local (`169.254/16`, `::1`, `fe80::/10`), loopback
+ * (`127.0.0.0/8`, `localhost`), and RFC-1918 private ranges
+ * (`10/8`, `172.16/12`, `192.168/16`). Non-exhaustive by design —
+ * the goal is a helpful default, not a network-perfect classifier.
+ */
+function isLocalHost(peer: Peer): boolean {
+  let host: string;
+  try {
+    host = new URL(peer.baseUrl).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (host === "localhost" || host === "::1" || host.startsWith("127.")) {
+    return true;
+  }
+  if (host.startsWith("169.254.")) return true; // link-local
+  if (host.startsWith("fe80:") || host.startsWith("[fe80")) return true;
+  if (host.startsWith("10.")) return true;
+  if (host.startsWith("192.168.")) return true;
+  // 172.16.0.0/12 → 172.16.* through 172.31.*
+  if (host.startsWith("172.")) {
+    const octet = Number.parseInt(host.split(".")[1] ?? "", 10);
+    if (Number.isFinite(octet) && octet >= 16 && octet <= 31) return true;
+  }
+  return false;
 }
 
 function labelFor(url: string): string {

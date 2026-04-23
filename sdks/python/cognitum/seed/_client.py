@@ -15,6 +15,7 @@ from cognitum._errors import (
     AuthError,
     AuthReason,
     CognitumError,
+    ConfigError,
     ConflictError,
     NetworkError,
     NotFoundError,
@@ -26,6 +27,7 @@ from cognitum._errors import (
     TrustScoreBlockedError,
     ValidationError,
 )
+from cognitum.seed._call_options import CallOptions, resolve_call_options
 from cognitum.seed._config import (
     SeedAuth,
     SeedClientOptions,
@@ -46,6 +48,7 @@ from cognitum.seed._token_book import InMemoryTokenBook, SecretString, TokenBook
 from cognitum.seed._transport import build_sync_client, safe_json
 from cognitum.seed.resources import (
     CustodyResource,
+    MeshResource,
     OtaResource,
     PairResource,
     StoreResource,
@@ -244,15 +247,32 @@ class _SyncTransport:
         params: dict[str, Any] | None = None,
         idempotent: bool | None = None,
         peer_key: str | None = None,
+        options: CallOptions | None = None,
     ) -> Any:
         if self._closed:
             raise RuntimeError("SeedClient is closed")
         method_u = method.upper()
         correlation_id = str(uuid.uuid4())
-        deadline = time.monotonic() + self._policy.max_elapsed_ms / 1000.0
+
+        # Per-call knobs merged via shared resolver (see _call_options).
+        resolved = resolve_call_options(
+            options,
+            pinned_peer_key=peer_key,
+            default_max_retries=self._policy.max_retries,
+            peers=self._peers,
+            peers_lock=self._peers_lock,
+        )
+        effective_peer_key = resolved.effective_peer_key
+        per_call_max_retries = resolved.max_retries
+        per_call_timeout_override = resolved.timeout_override
+
+        if resolved.total_deadline_s is not None:
+            deadline = time.monotonic() + resolved.total_deadline_s
+        else:
+            deadline = time.monotonic() + self._policy.max_elapsed_ms / 1000.0
         idem = bool(idempotent) if idempotent is not None else method_u in ("GET", "HEAD")
 
-        peer = self._pick_peer(peer_key)
+        peer = self._pick_peer(effective_peer_key)
         total_peers = len(self._peers)
         peers_tried = 0
         attempt = 0
@@ -269,8 +289,12 @@ class _SyncTransport:
             server_hint: int | None = None
 
             try:
+                extra_kw: dict[str, Any] = {}
+                if per_call_timeout_override is not None:
+                    extra_kw["timeout"] = per_call_timeout_override
                 response = self._client.request(
                     method_u, url, json=json, params=params, headers=headers,
+                    **extra_kw,
                 )
             except httpx.TimeoutException as exc:
                 phase = _timeout_phase(exc)
@@ -381,7 +405,7 @@ class _SyncTransport:
 
             # ADR-0005 retry path (all peers exhausted for cyclables, or
             # we're pinned on 429). Budget is total across peers.
-            if attempt >= self._policy.max_retries:
+            if attempt >= per_call_max_retries:
                 if last_exc is not None:
                     raise last_exc
                 raise ApiError("seed: max retries exhausted", status_code=0)
@@ -432,6 +456,7 @@ class SeedClient:
     custody: CustodyResource
     witness: WitnessResource
     ota: OtaResource
+    mesh: MeshResource
 
     def __init__(
         self,
@@ -467,6 +492,7 @@ class SeedClient:
         self.custody = CustodyResource(self._transport)
         self.witness = WitnessResource(self._transport)
         self.ota = OtaResource(self._transport)
+        self.mesh = MeshResource(self._transport)
         # Opt-in active probe (ADR-0016a §D7).
         self._health: HealthProbe | None = None
         if self._options.health_interval is not None:
@@ -484,18 +510,43 @@ class SeedClient:
     def options(self) -> SeedClientOptions:
         return self._options
 
-    def status(self) -> Status:
-        data = self._transport.request("GET", "/api/v1/status")
+    def status(self, *, options: CallOptions | None = None) -> Status:
+        data = self._transport.request(
+            "GET", "/api/v1/status", options=options,
+        )
         return Status.from_wire(data or {})
 
-    def identity(self) -> Identity:
-        data = self._transport.request("GET", "/api/v1/identity")
+    def identity(self, *, options: CallOptions | None = None) -> Identity:
+        data = self._transport.request(
+            "GET", "/api/v1/identity", options=options,
+        )
         return Identity.from_wire(data or {})
 
     def peers_snapshot(self) -> list[Peer]:
         """Defensive copy of the SDK-local peer table."""
         with self._transport._peers_lock:
             return self._transport._peers.snapshot()
+
+    def peers(self) -> list[Peer]:
+        """SDK-local snapshot of configured peers (ADR-0016a §D7).
+
+        Distinct from :attr:`mesh.peers`, which returns the *seed's* own
+        view of ITS overlay peers. This method answers "which endpoints
+        did I configure this client with and how is each one doing?".
+        """
+        return self.peers_snapshot()
+
+    def rediscover(self) -> None:
+        """Reset SDK-local peer state (ADR-0016b §"rediscover").
+
+        Re-initialises the :class:`PeerSet` from the configured endpoint
+        list, clearing latency EMAs, state flags, and per-peer trust
+        counters. Idempotent. Makes no network calls — future Phase 2
+        work may add an mDNS / DNS resolver step here.
+        """
+        with self._transport._peers_lock:
+            self._transport._peers = PeerSet.new(list(self._options.endpoints))
+        self._transport._trust_reset_all()
 
     def session(self) -> "SeedSession":
         """Open a peer-pinned :class:`SeedSession` (ADR-0016a §D4/D9).

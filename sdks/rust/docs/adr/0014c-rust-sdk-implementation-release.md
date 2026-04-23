@@ -298,11 +298,109 @@ Not yet landed (explicitly out of Phase 1.5 scope, tracked for Phase 2):
 - mDNS discovery (`Discovery::Mdns` — ADR-0016a §D6, Phase 1.5 opt-in
   upgrade path).
 - Mesh-observability resource (`client.mesh().status/peers/swarm/health`
-  — ADR-0016a §D8 Phase 1 surface addendum).
+  — ADR-0016a §D8 Phase 1 surface addendum). **Landed 2026-04-23.**
 - Per-call override args (`peer:` / `prefer:` / `consistency:`) —
   requires a per-call options bag and is tracked against ADR-0016b
-  §"Per-call knobs".
-- `client.rediscover()` explicit re-resolve helper.
+  §"Per-call knobs". **Landed 2026-04-23.**
+- `client.rediscover()` explicit re-resolve helper. **Landed 2026-04-23.**
+
+### Phase 2 delivery (2026-04-23)
+
+Closes the ADR-0016a §D8 + ADR-0016b §"Per-call knobs" conformance gap
+that Phase 1.5 explicitly deferred.
+
+**Files added:**
+
+- `src/seed/models/mesh.rs` — `MeshStatus`, `MeshPeers`, `SwarmStatus`,
+  `ClusterHealth` structs. Every struct carries `#[serde(flatten)] extras:
+  Extras` so v0.21+ fields deserialize without a SemVer bump. Shapes
+  verified against the live seed `ad7d7e7b-56e7-4e03-b078-939209858144`
+  on firmware v0.20.0 (2026-04-22 probe):
+  - `/api/v1/network/mesh/status` → 200 with `{ap_active, auto_mesh,
+    connected_to_seed, device_id, has_mesh_password, peer_count, peers[]}`
+  - `/api/v1/peers` → 200 with `{count, discovery_active, peers[]}`
+  - `/api/v1/swarm/status` → 200 with `{device_id, discovery_active,
+    epoch, peer_count, total_vectors, uptime_secs}`
+  - `/api/v1/cluster/health` → 200 with `{auto_sync_interval_secs,
+    cluster_enabled, discovery_active, last_sync_attempt, peer_count,
+    peers[]}`
+
+  All four are allowlisted reads on v0.20.0 — **no 404/501 observed**.
+  `peers[]` is modeled as `Vec<serde_json::Value>` because v0.20.0 emits
+  `[]` and the per-peer sub-schema is still churning upstream.
+- `src/seed/resources/mesh.rs` — `MeshResource<'_>` with `status`,
+  `peers`, `swarm_status`, `cluster_health` methods plus their
+  `_with(opts: CallOptions)` twins. Registered in `resources/mod.rs`.
+  Exposed via `SeedClient::mesh()`.
+
+**Files edited:**
+
+- `src/seed/config.rs` — new `CallOptions` struct (non-exhaustive, every
+  field `Option<_>` so `default()` is a true no-op), `Prefer` enum
+  (`Closest`/`LocalFirst`/`Random`/`Any`), `Consistency` enum
+  (`Session`/`Eventual`/`Strong`). Fluent builder methods on
+  `CallOptions` (`.peer()`, `.prefer()`, `.consistency()`, `.timeout()`,
+  `.retries()`).
+- `src/seed/error.rs` — new helpers `seed_err::unsupported(reason)` and
+  `seed_err::config(reason)`. Both return `Error::Validation(...)` with
+  sentinel prefixes (`unsupported:` / `config:`) so callers can
+  pattern-match without a crate-private API.
+- `src/seed/peers.rs` — `PeerSet::pick_local_first()`,
+  `PeerSet::pick_random()` (nanosecond-hash, no `rand` dep), and
+  `PeerSet::rediscover()` (reset every peer to `Healthy` with cleared
+  EMA and counters).
+- `src/seed/client.rs` — `SeedClient::mesh()` / `SeedClient::rediscover()`
+  accessors. `SeedClient::status_with(opts)` / `identity_with(opts)`.
+  Private `request_get_opts` / `request_post_opts` helpers that route
+  through a new `resolve_call_options()` which enforces the
+  `Consistency::Strong` reject, validates `opts.peer` against the
+  `PeerSet`, and translates `opts.prefer` into the right per-call pin.
+  **No behavioural change when `CallOptions::default()` is passed** — the
+  helpers fall through to the existing request loop untouched.
+- `src/seed/resources/{pair,store,witness,custody,ota}.rs` — every
+  existing method grew a `_with(opts)` twin so per-call overrides are
+  uniformly available across all resources. The `_with` flavours delegate
+  to `request_get_opts` / `request_post_opts`.
+- `src/seed/mod.rs` — new re-exports: `CallOptions`, `Consistency`,
+  `Prefer`, `MeshStatus`, `MeshPeers`, `SwarmStatus`, `ClusterHealth`.
+
+**Tests added (+15 in 3 new files):**
+
+- `tests/seed_mesh_resource.rs` (5 tests) — one per endpoint plus an
+  `extras`-capture forward-compat check. Live JSON is pasted verbatim
+  into the wiremock bodies.
+- `tests/seed_call_options.rs` (8 tests) — peer pin (healthy + unknown
+  URL rejected with `config: peer not in mesh: …`), all four `Prefer`
+  variants, `Consistency::Strong` rejected with `unsupported:` and **zero
+  HTTP calls made**, `Consistency::Eventual` still routes,
+  `CallOptions::default()` matches plain call byte-for-byte.
+- `tests/seed_rediscover.rs` (2 tests) — drive peer A `Unhealthy` via a
+  500 cycle then assert `rediscover()` clears the EMA + state on every
+  peer; second test asserts idempotency on a fresh client.
+
+Split out of `tests/seed_mesh.rs` (439 → 439 lines, unchanged) because
+adding the 8 call-options tests inline would push that file past the
+500-line project cap.
+
+**Checks:**
+
+- `cargo fmt --all --check` — clean.
+- `cargo clippy --features seed --tests -- -D warnings` — clean.
+- `cargo test --features seed` per-test: seed_mesh_resource 5/5,
+  seed_call_options 8/8, seed_rediscover 2/2; pre-existing suites
+  unchanged (seed_mesh 7/7, seed_unit 24/24, seed_trust_score 5/5).
+  Net delta: **+15 tests**. The 2 pre-existing cloud PEM failures
+  (`invalid_pem_is_surfaced_as_validation_error`,
+  `builder_trust_root_pem_round_trips`) are still out of scope per the
+  #11 note above.
+
+**Signature impact:** none; every `_with(...)` method is additive and
+`CallOptions` is `#[non_exhaustive]`. The existing parameterless method
+twins remain and route through the unmodified fast path.
+
+Endpoints that 404 / 501 on v0.20.0: **none of the four** — every
+ADR-0016a §D8 endpoint returns 200 with a live JSON body on the current
+firmware.
 
 - **Status:** Proposed
 - **Date:** 2026-04-22

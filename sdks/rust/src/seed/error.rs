@@ -103,6 +103,22 @@ pub fn not_implemented(feature: &str) -> BaseError {
     ))
 }
 
+/// Build an "unsupported feature" error for Phase 2 per-call knobs that
+/// the seed cannot honour (ADR-0016b §"Per-call knobs").
+///
+/// Today this fires for [`Consistency::Strong`](super::config::Consistency)
+/// — the seed has no quorum. Callers that want to detect this shape can
+/// match on `Error::Validation(msg)` and check `msg.starts_with("unsupported:")`.
+pub fn unsupported(reason: &str) -> BaseError {
+    BaseError::Validation(format!("unsupported: {reason}"))
+}
+
+/// Build a "bad caller config" error — used when a Phase 2 `CallOptions`
+/// references a peer URL that is not in the configured [`PeerSet`].
+pub fn config(reason: &str) -> BaseError {
+    BaseError::Validation(format!("config: {reason}"))
+}
+
 /// Build the "trust-score blocked" error (ADR-0007 §Trust-score protection,
 /// `cognitum-one/sdks#16`).
 ///
@@ -215,5 +231,27 @@ mod tests {
     fn is_trust_score_blocked_rejects_plain_auth() {
         let err = BaseError::Auth("invalid_credentials: bad".into());
         assert!(!is_trust_score_blocked(&err));
+    }
+
+    #[test]
+    fn unsupported_prefixes_validation() {
+        match unsupported("strong consistency unsupported; seed has no quorum") {
+            BaseError::Validation(m) => {
+                assert!(m.starts_with("unsupported:"));
+                assert!(m.contains("quorum"));
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_prefixes_validation() {
+        match config("peer not in mesh: https://x:8443") {
+            BaseError::Validation(m) => {
+                assert!(m.starts_with("config:"));
+                assert!(m.contains("peer not in mesh"));
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
     }
 }

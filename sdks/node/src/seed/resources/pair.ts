@@ -1,5 +1,6 @@
 /** Pairing resource — POST/DELETE/GET on /api/v1/pair. */
 
+import type { CallOptions } from "../callOptions.js";
 import { SecretString } from "../tokenBook.js";
 
 export interface PairStatus extends Record<string, unknown> {
@@ -55,7 +56,7 @@ export interface PairCreateResponse {
 type RequestFn = <T>(
   method: string,
   path: string,
-  opts?: {
+  opts?: CallOptions & {
     body?: unknown;
     idempotent?: boolean;
   },
@@ -63,19 +64,22 @@ type RequestFn = <T>(
 
 export interface PairResource {
   /** GET /api/v1/pair/status — WiFi-read allowlist. */
-  status(): Promise<PairStatus>;
+  status(opts?: CallOptions): Promise<PairStatus>;
   /** POST /api/v1/pair — open pairing window must be active. */
-  create(params: PairCreateParams): Promise<PairCreateResponse>;
+  create(params: PairCreateParams, opts?: CallOptions): Promise<PairCreateResponse>;
   /** DELETE /api/v1/pair/{name} — revoke a named client. */
-  delete(clientName: string): Promise<void>;
+  delete(clientName: string, opts?: CallOptions): Promise<void>;
 }
 
 export function makePairResource(request: RequestFn): PairResource {
   return {
-    status: () =>
-      request<PairStatus>("GET", "/api/v1/pair/status", { idempotent: true }),
+    status: (opts) =>
+      request<PairStatus>("GET", "/api/v1/pair/status", {
+        idempotent: true,
+        ...(opts ?? {}),
+      }),
 
-    create: async (params) => {
+    create: async (params, opts) => {
       if (!params || typeof params.clientName !== "string" || !params.clientName.trim()) {
         throw new TypeError("pair.create: `clientName` is required");
       }
@@ -83,6 +87,7 @@ export function makePairResource(request: RequestFn): PairResource {
       const wire = await request<PairCreateWireResponse>("POST", "/api/v1/pair", {
         body: { client_name: params.clientName },
         idempotent: false,
+        ...(opts ?? {}),
       });
       // Wrap the token in SecretString immediately so that even if the
       // caller logs the entire response, Node's `util.inspect` /
@@ -98,12 +103,13 @@ export function makePairResource(request: RequestFn): PairResource {
       return response;
     },
 
-    delete: async (clientName) => {
+    delete: async (clientName, opts) => {
       if (typeof clientName !== "string" || !clientName.trim()) {
         throw new TypeError("pair.delete: `clientName` is required");
       }
       await request<void>("DELETE", `/api/v1/pair/${encodeURIComponent(clientName)}`, {
         idempotent: true,
+        ...(opts ?? {}),
       });
     },
   };

@@ -397,6 +397,30 @@ class ConfigError(ValidationError):
         self.code = "config_error"
 
 
+class UnsupportedError(CognitumError):
+    """Requested feature is not implementable against this backend (ADR-0016b).
+
+    Distinct from :class:`NotImplementedError` (a 501 from the seed) — this
+    is raised by the SDK itself when the caller asks for a capability the
+    seed protocol does not offer, e.g. ``consistency="strong"``.
+    """
+
+    def __init__(
+        self,
+        message: str = "Feature unsupported by this backend",
+        *,
+        feature: str | None = None,
+        correlation_id: str | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            code="unsupported",
+            retriable=False,
+            correlation_id=correlation_id,
+        )
+        self.feature = feature
+
+
 __all__ = [
     "ApiError",
     "AuthError",
@@ -413,5 +437,6 @@ __all__ = [
     "TimeoutError",
     "TimeoutPhase",
     "TrustScoreBlockedError",
+    "UnsupportedError",
     "ValidationError",
 ]

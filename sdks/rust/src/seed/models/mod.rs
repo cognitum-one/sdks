@@ -12,6 +12,7 @@
 
 pub mod custody;
 pub mod identity;
+pub mod mesh;
 pub mod ota;
 pub mod pair;
 pub mod status;
@@ -41,6 +42,7 @@ impl Extras {
 
 pub use custody::CustodyEpoch;
 pub use identity::Identity;
+pub use mesh::{ClusterHealth, MeshPeers, MeshStatus, SwarmStatus};
 pub use ota::{OtaCheckNowAck, OtaConfig};
 pub use pair::{PairCreate, PairCreateResponse, PairStatus};
 pub use status::Status;

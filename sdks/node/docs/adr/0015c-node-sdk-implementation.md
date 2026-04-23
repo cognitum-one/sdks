@@ -7,6 +7,123 @@
 - **Companion:** ADR-0015a (package layout, public API, typed models),
   ADR-0015b (errors, transport, retry, auth)
 
+## Phase 2 delivery (2026-04-23)
+
+Mesh-observability + per-call override knobs landed on 2026-04-23, closing
+the ADR-0016a §D8 / ADR-0016b §"Per-call knobs" conformance gap against
+the Rust Phase 1.5 reference. Concrete deliverables relative to the Phase
+1.5 snapshot below:
+
+- `src/seed/models/mesh.ts` — new wire-shape models for the four mesh
+  observability endpoints (ADR-0016a §D8): `MeshStatus`, `MeshPeers`,
+  `SwarmStatus`, `ClusterHealth`, plus a shared `MeshPeerEntry`. All
+  extend `Record<string, unknown>` so unknown seed-side fields stay
+  forward-compatible per ADR-0006. Sample JSON captured against live
+  seed v0.20.0 (2026-04-22) is committed inline as doctype in the file
+  header.
+- `src/seed/resources/mesh.ts` — new `MeshResource` with
+  `status() / peers() / swarmStatus() / clusterHealth()`. All four are
+  GETs, all four are on the seed's WiFi-read allowlist (no pairing
+  token required —
+  `seed/src/cognitum-agent/src/api.rs:392-400`), all four accept an
+  optional trailing `CallOptions`. Factory `makeMeshResource(request)`
+  mirrors the other resource factories so `SeedClient` and
+  `SeedSession` bind identically.
+- `src/seed/callOptions.ts` — new `CallOptions` type with fields
+  `peer? / prefer? / consistency? / timeoutMs? / retries? / signal? /
+  idempotent?` per ADR-0016b §"Per-call knobs". Threaded as the
+  trailing argument of every resource method (`status(opts?)`,
+  `identity(opts?)`, `pair.*(..., opts?)`, `witness.chain(opts?)`,
+  `custody.epoch(opts?)`, `store.*(..., opts?)`, `ota.*(opts?)`,
+  `mesh.*(opts?)`).
+- `src/seed/client.ts` — `SeedClient.request` honours the per-call
+  knobs. `opts.peer:` is validated via `PeerSet.findByKey` before
+  dispatch (throws `ConfigError("peer not in mesh: <url>")` on miss)
+  and disables mesh-cycling for that one call (caller asked for a
+  specific peer). `opts.prefer:` drives a one-call ordered walk via
+  the new `PeerSet.preferOrder(mode)` helper. `opts.consistency:
+  "strong"` throws `UnsupportedError("consistency=strong")` per
+  ADR-0016a §D4 before any network I/O. `opts.consistency: "eventual"`
+  suppresses session-stickiness for this one call. `opts.retries:
+  null` disables retry entirely; `opts.retries: N` overrides the
+  client default. `opts.signal:` is chained into the per-attempt
+  `AbortController` — a caller abort surfaces as `NetworkError`, NOT
+  `TimeoutError`, and never cycles.
+- `src/seed/client.ts` — new `SeedClient.mesh` resource accessor
+  (ADR-0016a §D8) plus `SeedClient.rediscover()` — Phase 2 placeholder
+  that resets every peer's `state / latencyEmaMs / consecutiveFailures`
+  via the new `PeerSet.resetAll()`. mDNS discovery lands in a future
+  phase; the method signature is fixed now so call sites compile
+  across the transition.
+- `src/seed/peers.ts` — two additive helpers: `PeerSet.resetAll()`
+  (used by `rediscover()`) and `PeerSet.preferOrder(mode)` with modes
+  `"closest" / "local-first" / "random" / "any"`. `"local-first"`
+  prefers RFC-1918 / link-local / loopback hosts, which is the
+  common desktop-laptop + LAN-seed topology.
+- `src/errors.ts` — new `UnsupportedError` (code `UNSUPPORTED`). Not
+  retryable; no peer cycling; no backoff. Carries a `feature: string`
+  field so consumer telemetry can group by capability.
+- `src/seed/session.ts` — `SeedSession.mesh` mirrors `SeedClient.mesh`
+  and routes through the pinned peer. The session's inner request
+  hook forwards any `CallOptions` the caller supplies (a session call
+  can still override `peer:` / `prefer:` / `consistency:` / etc.
+  individually).
+- `src/seed/index.ts` — exports `CallOptions`, `CallPrefer`,
+  `CallConsistency`, `MeshResource`, `MeshStatus`, `MeshPeers`,
+  `MeshPeerEntry`, `SwarmStatus`, `ClusterHealth`, and
+  `UnsupportedError`.
+- `tests/seed/unit/mesh-resource.test.ts` (5 tests) — the four
+  endpoints plus a per-call-options-forwarding assertion. Uses a
+  `vi.fn()`-based request stub (no fetch mock needed — the resource
+  factories are pure).
+- `tests/seed/unit/call-options.test.ts` (11 tests) — peer override,
+  unknown-peer `ConfigError`, the four `prefer` modes (closest /
+  local-first / random / any), `consistency: strong` →
+  `UnsupportedError` (no dispatch), `consistency: eventual` bypasses
+  session stickiness, `timeoutMs` override honoured, `retries: null`
+  disables retry, `signal` cancels in-flight with `NetworkError`.
+  Uses the same hand-rolled per-URL mock fetch as
+  `tests/seed/integration/mesh.test.ts`.
+- `tests/seed/unit/rediscover.test.ts` (2 tests) — state reset
+  across multiple peers, idempotence of a second call.
+
+Test totals (`npm test`, 2026-04-23): 184 passed (was 166 after
+Phase 1.5), exactly +18 new tests. The single pre-existing
+`tests/client.test.ts` cloud-`catalog.browse()` failure is
+unchanged — unrelated to seed work, tracked separately.
+
+Build: `npm run build` — ESM + CJS emit succeeds. The `dts` sub-build
+still fails on the pre-existing `@types/node` DOM-lib gap (`fetch`,
+`RequestInit`, `AbortController`, etc. — not introduced by Phase 2
+work). Tracked separately; identical to the Phase 1.5 note below.
+
+### Seed endpoints verified live (2026-04-22, seed v0.20.0 via mac-mini jump)
+
+| Endpoint | Sample body |
+|----------|-------------|
+| `GET /api/v1/network/mesh/status` | `{"ap_active":true,"auto_mesh":false,"connected_to_seed":false,"device_id":"ad7d7e7b-56e7-4e03-b078-939209858144","has_mesh_password":false,"peer_count":0,"peers":[]}` |
+| `GET /api/v1/peers` | `{"count":0,"discovery_active":true,"peers":[]}` |
+| `GET /api/v1/swarm/status` | `{"device_id":"ad7d7e7b-56e7-4e03-b078-939209858144","discovery_active":true,"epoch":20564,"peer_count":0,"total_vectors":8460,"uptime_secs":23000}` |
+| `GET /api/v1/cluster/health` | `{"auto_sync_interval_secs":60,"cluster_enabled":true,"discovery_active":true,"last_sync_attempt":1776906537,"peer_count":0,"peers":[]}` |
+
+Every field is modelled as optional on the `Record<string, unknown>`
+wire type so newer firmwares that add fields stay forward-compatible
+without a code change.
+
+### Not yet landed (explicit deferrals, tracked for Phase 3)
+
+- mDNS discovery — ADR-0016a §D6. `rediscover()` is a local-state
+  reset today; when mDNS lands, it will additionally re-run the
+  `_cognitum._tcp.local` lookup before the state reset. Signature is
+  stable.
+- Coherence / thermal read endpoints (§D8 "nice-to-have in 1.5").
+  Seed-side surface is stable; adding them to the SDK is a mechanical
+  follow-up that the current `mesh.*` shape already accommodates.
+- Live-seed integration test for `client.mesh.*` — today's live-seed
+  suite (`tests/seed/integration/live-seed.test.ts`) covers the Phase
+  1 endpoints; extending it to mesh is a one-line addition but gated
+  on the USB gadget being reliably present in CI.
+
 ## Phase 1.5 delivery (2026-04-23)
 
 Mesh routing landed on 2026-04-23, executing ADR-0017 against the Node

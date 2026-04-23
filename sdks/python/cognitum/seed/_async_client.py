@@ -15,11 +15,13 @@ from cognitum._errors import (
     ApiError,
     AuthError,
     CognitumError,
+    ConfigError,
     NetworkError,
     ParseError,
     TimeoutError as SeedTimeoutError,
     TrustScoreBlockedError,
 )
+from cognitum.seed._call_options import CallOptions, resolve_call_options
 from cognitum.seed._client import map_error
 from cognitum.seed._config import (
     SeedAuth,
@@ -41,6 +43,7 @@ from cognitum.seed._token_book import InMemoryTokenBook, SecretString, TokenBook
 from cognitum.seed._transport import build_async_client, safe_json
 from cognitum.seed.resources import (
     AsyncCustodyResource,
+    AsyncMeshResource,
     AsyncOtaResource,
     AsyncPairResource,
     AsyncStoreResource,
@@ -145,19 +148,35 @@ class _AsyncTransport:
         params: dict[str, Any] | None = None,
         idempotent: bool | None = None,
         peer_key: str | None = None,
+        options: CallOptions | None = None,
     ) -> Any:
         if self._closed:
             raise RuntimeError("AsyncSeedClient is closed")
         method_u = method.upper()
         correlation_id = str(uuid.uuid4())
-        deadline = time.monotonic() + self._policy.max_elapsed_ms / 1000.0
+
+        resolved = resolve_call_options(
+            options,
+            pinned_peer_key=peer_key,
+            default_max_retries=self._policy.max_retries,
+            peers=self._peers,
+            peers_lock=self._peers_lock,
+        )
+        effective_peer_key = resolved.effective_peer_key
+        per_call_max_retries = resolved.max_retries
+        per_call_timeout_override = resolved.timeout_override
+
+        if resolved.total_deadline_s is not None:
+            deadline = time.monotonic() + resolved.total_deadline_s
+        else:
+            deadline = time.monotonic() + self._policy.max_elapsed_ms / 1000.0
         idem = (
             bool(idempotent)
             if idempotent is not None
             else method_u in ("GET", "HEAD")
         )
 
-        peer = self._pick_peer(peer_key)
+        peer = self._pick_peer(effective_peer_key)
         total_peers = len(self._peers)
         peers_tried = 0
         attempt = 0
@@ -174,8 +193,12 @@ class _AsyncTransport:
             server_hint: int | None = None
 
             try:
+                extra_kw: dict[str, Any] = {}
+                if per_call_timeout_override is not None:
+                    extra_kw["timeout"] = per_call_timeout_override
                 response = await self._client.request(
                     method_u, url, json=json, params=params, headers=headers,
+                    **extra_kw,
                 )
             except httpx.TimeoutException as exc:
                 phase = _timeout_phase(exc)
@@ -273,7 +296,7 @@ class _AsyncTransport:
                 ):
                     raise last_exc
 
-            if attempt >= self._policy.max_retries:
+            if attempt >= per_call_max_retries:
                 if last_exc is not None:
                     raise last_exc
                 raise ApiError("seed: max retries exhausted", status_code=0)
@@ -323,6 +346,7 @@ class AsyncSeedClient:
     custody: AsyncCustodyResource
     witness: AsyncWitnessResource
     ota: AsyncOtaResource
+    mesh: AsyncMeshResource
 
     def __init__(
         self,
@@ -358,6 +382,7 @@ class AsyncSeedClient:
         self.custody = AsyncCustodyResource(self._transport)
         self.witness = AsyncWitnessResource(self._transport)
         self.ota = AsyncOtaResource(self._transport)
+        self.mesh = AsyncMeshResource(self._transport)
         # AsyncHealthProbe must be started from within a running loop —
         # defer until first use via __aenter__ or explicit start().
         self._health: AsyncHealthProbe | None = None
@@ -367,17 +392,41 @@ class AsyncSeedClient:
     def options(self) -> SeedClientOptions:
         return self._options
 
-    async def status(self) -> Status:
-        data = await self._transport.request("GET", "/api/v1/status")
+    async def status(
+        self, *, options: CallOptions | None = None
+    ) -> Status:
+        data = await self._transport.request(
+            "GET", "/api/v1/status", options=options,
+        )
         return Status.from_wire(data or {})
 
-    async def identity(self) -> Identity:
-        data = await self._transport.request("GET", "/api/v1/identity")
+    async def identity(
+        self, *, options: CallOptions | None = None
+    ) -> Identity:
+        data = await self._transport.request(
+            "GET", "/api/v1/identity", options=options,
+        )
         return Identity.from_wire(data or {})
 
     def peers_snapshot(self) -> list[Peer]:
         with self._transport._peers_lock:
             return self._transport._peers.snapshot()
+
+    def peers(self) -> list[Peer]:
+        """SDK-local snapshot of configured peers (ADR-0016a §D7).
+
+        Distinct from :attr:`mesh.peers` (the seed's view of ITS peers).
+        """
+        return self.peers_snapshot()
+
+    def rediscover(self) -> None:
+        """Reset SDK-local peer state (ADR-0016b).
+
+        Idempotent; no network calls. Mirrors :meth:`SeedClient.rediscover`.
+        """
+        with self._transport._peers_lock:
+            self._transport._peers = PeerSet.new(list(self._options.endpoints))
+        self._transport._trust_reset_all()
 
     def session(self) -> "AsyncSeedSession":
         """Open a peer-pinned :class:`AsyncSeedSession`."""

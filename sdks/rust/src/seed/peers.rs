@@ -236,6 +236,46 @@ impl PeerSet {
         self.peers.iter().find(|p| p.endpoint.key() == wanted_key)
     }
 
+    /// Prefer the peer with the lowest `list_index` that is not
+    /// `Unhealthy`; fall back to `pick` if all peers are unhealthy
+    /// (Phase 2 — `Prefer::LocalFirst`).
+    pub fn pick_local_first(&self) -> &Peer {
+        self.peers
+            .iter()
+            .filter(|p| p.state != PeerState::Unhealthy)
+            .min_by_key(|p| p.list_index)
+            .unwrap_or_else(|| self.pick())
+    }
+
+    /// Pseudo-random pick across `Healthy`/`Degraded` peers (Phase 2 —
+    /// `Prefer::Random`). Uses a cheap nanosecond-hash so we don't drag
+    /// `rand` into the crate. Falls back to `pick` when every peer is
+    /// `Unhealthy`.
+    pub fn pick_random(&self) -> &Peer {
+        let candidates: Vec<&Peer> = self
+            .peers
+            .iter()
+            .filter(|p| p.state != PeerState::Unhealthy)
+            .collect();
+        if candidates.is_empty() {
+            return self.pick();
+        }
+        let seed = Instant::now().elapsed().subsec_nanos() as usize;
+        let idx = seed % candidates.len();
+        candidates[idx]
+    }
+
+    /// Reset all peers to `Healthy` with cleared latency + failure state
+    /// (Phase 2 — `SeedClient::rediscover`). Idempotent.
+    pub fn rediscover(&mut self) {
+        for p in &mut self.peers {
+            p.state = PeerState::Healthy;
+            p.consecutive_failures = 0;
+            p.latency_ema_ms = None;
+            p.last_used_at = None;
+        }
+    }
+
     /// Next peer to try after `failed` has returned a cycling-eligible
     /// error. Skips `failed` by `list_index`; scans remaining peers in
     /// the same closest-first order, preferring healthier / faster /

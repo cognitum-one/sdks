@@ -1,5 +1,7 @@
 /** GET /api/v1/custody/epoch — Phase 1 resource. */
 
+import type { CallOptions } from "../callOptions.js";
+
 export interface CustodyEpoch extends Record<string, unknown> {
   epoch: number;
 }
@@ -7,19 +9,20 @@ export interface CustodyEpoch extends Record<string, unknown> {
 type RequestFn = <T>(
   method: string,
   path: string,
-  opts?: { idempotent?: boolean },
+  opts?: CallOptions & { idempotent?: boolean },
 ) => Promise<T>;
 
 export interface CustodyResource {
   /** GET /api/v1/custody/epoch — WiFi-read allowlist. */
-  epoch(): Promise<CustodyEpoch>;
+  epoch(opts?: CallOptions): Promise<CustodyEpoch>;
 }
 
 export function makeCustodyResource(request: RequestFn): CustodyResource {
   return {
-    epoch: () =>
+    epoch: (opts) =>
       request<CustodyEpoch>("GET", "/api/v1/custody/epoch", {
         idempotent: true,
+        ...(opts ?? {}),
       }),
   };
 }

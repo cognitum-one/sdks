@@ -58,6 +58,19 @@ export type {
   StoreIngestResponse,
 } from "./resources/store.js";
 export type { OtaResource, OtaConfig, OtaCheckResponse } from "./resources/ota.js";
+export type { MeshResource } from "./resources/mesh.js";
+export type {
+  MeshStatus,
+  MeshPeers,
+  MeshPeerEntry,
+  SwarmStatus,
+  ClusterHealth,
+} from "./models/mesh.js";
+export type {
+  CallOptions,
+  CallPrefer,
+  CallConsistency,
+} from "./callOptions.js";
 
 // Cross-SDK error taxonomy — seed callers catch on these.
 export {
@@ -74,4 +87,5 @@ export {
   ParseError,
   ConfigError,
   TrustScoreBlockedError,
+  UnsupportedError,
 } from "../errors.js";

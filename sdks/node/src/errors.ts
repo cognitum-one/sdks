@@ -131,6 +131,28 @@ export class ConfigError extends CognitumError {
 }
 
 /**
+ * Thrown when a caller requests a feature the seed does not (yet) implement.
+ *
+ * Today this surfaces when a per-call {@link CallOptions.consistency}
+ * of `"strong"` is requested — ADR-0016a §D4 reserves the name for a
+ * future Raft/Paxos write-quorum mode that seed firmware does not have.
+ * The error is NOT retryable; no peer cycling, no backoff.
+ */
+export class UnsupportedError extends CognitumError {
+  /** Feature identifier (e.g. `"consistency=strong"`). */
+  readonly feature: string;
+
+  constructor(feature: string, message?: string) {
+    super(
+      message ?? `unsupported: ${feature}`,
+      "UNSUPPORTED",
+    );
+    this.name = "UnsupportedError";
+    this.feature = feature;
+  }
+}
+
+/**
  * Thrown when the SDK aborts a request to protect the seed's trust-score
  * state (ADR-0007 §Trust-score protection, resolves OQ-9).
  *

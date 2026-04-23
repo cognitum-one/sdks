@@ -1,5 +1,7 @@
 /** OTA config + check-now — Phase 1 resources. */
 
+import type { CallOptions } from "../callOptions.js";
+
 export interface OtaConfig extends Record<string, unknown> {
   channel?: string;
   auto_update?: boolean;
@@ -16,7 +18,7 @@ export interface OtaCheckResponse extends Record<string, unknown> {
 type RequestFn = <T>(
   method: string,
   path: string,
-  opts?: {
+  opts?: CallOptions & {
     body?: unknown;
     idempotent?: boolean;
   },
@@ -24,21 +26,23 @@ type RequestFn = <T>(
 
 export interface OtaResource {
   /** GET /api/v1/ota/config — WiFi-read allowlist. */
-  config(): Promise<OtaConfig>;
+  config(opts?: CallOptions): Promise<OtaConfig>;
   /** POST /api/v1/ota/check-now — idempotent probe; safe to retry. */
-  checkNow(): Promise<OtaCheckResponse>;
+  checkNow(opts?: CallOptions): Promise<OtaCheckResponse>;
 }
 
 export function makeOtaResource(request: RequestFn): OtaResource {
   return {
-    config: () =>
+    config: (opts) =>
       request<OtaConfig>("GET", "/api/v1/ota/config", {
         idempotent: true,
+        ...(opts ?? {}),
       }),
 
-    checkNow: () =>
+    checkNow: (opts) =>
       request<OtaCheckResponse>("POST", "/api/v1/ota/check-now", {
         idempotent: true, // the seed merely re-checks; no destructive effect
+        ...(opts ?? {}),
       }),
   };
 }

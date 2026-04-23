@@ -95,6 +95,18 @@ var ConfigError = class extends CognitumError {
     this.name = "ConfigError";
   }
 };
+var UnsupportedError = class extends CognitumError {
+  /** Feature identifier (e.g. `"consistency=strong"`). */
+  feature;
+  constructor(feature, message) {
+    super(
+      message ?? `unsupported: ${feature}`,
+      "UNSUPPORTED"
+    );
+    this.name = "UnsupportedError";
+    this.feature = feature;
+  }
+};
 var TrustScoreBlockedError = class extends CognitumError {
   /** Canonical URL key of the peer whose trust-score budget was exhausted. */
   peerKey;
@@ -510,6 +522,53 @@ var PeerSet = class {
     return this.peers.find((p) => p.key === wanted);
   }
   /**
+   * Reset every peer's per-session state so the next `pick()` is driven
+   * purely by `listIndex` again. Used by `SeedClient.rediscover()` to
+   * re-prime the table after a caller has rotated credentials / rebuilt
+   * the peer list. Does NOT remove peers; does NOT touch the TokenBook.
+   */
+  resetAll() {
+    for (const p of this.peers) {
+      p.state = "healthy";
+      p.latencyEmaMs = void 0;
+      p.consecutiveFailures = 0;
+    }
+  }
+  /**
+   * Return a one-call ordered view per {@link CallPrefer} — used by the
+   * per-call `prefer:` knob in the request pipeline. Does NOT mutate
+   * the underlying table.
+   *
+   * - `"closest"` / `"any"` — default closest-first ordering.
+   * - `"local-first"` — RFC-1918 / link-local hosts first, then the
+   *   closest-first ordering for the remainder.
+   * - `"random"` — Fisher-Yates shuffle with `Math.random`.
+   */
+  preferOrder(mode) {
+    const snap = this.peers.slice();
+    switch (mode) {
+      case "closest":
+      case "any": {
+        snap.sort((a, b) => compareSortKeys(sortKey(a), sortKey(b)));
+        return snap;
+      }
+      case "local-first": {
+        const local = snap.filter(isLocalHost);
+        const rest = snap.filter((p) => !isLocalHost(p));
+        local.sort((a, b) => compareSortKeys(sortKey(a), sortKey(b)));
+        rest.sort((a, b) => compareSortKeys(sortKey(a), sortKey(b)));
+        return [...local, ...rest];
+      }
+      case "random": {
+        for (let i = snap.length - 1; i > 0; i -= 1) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [snap[i], snap[j]] = [snap[j], snap[i]];
+        }
+        return snap;
+      }
+    }
+  }
+  /**
    * Record a successful outcome: update EMA, clear failure counter,
    * promote state to `healthy`.
    */
@@ -560,6 +619,26 @@ function normaliseBaseUrl2(raw) {
     );
   }
   return url.toString().replace(/\/+$/, "");
+}
+function isLocalHost(peer) {
+  let host;
+  try {
+    host = new URL(peer.baseUrl).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (host === "localhost" || host === "::1" || host.startsWith("127.")) {
+    return true;
+  }
+  if (host.startsWith("169.254.")) return true;
+  if (host.startsWith("fe80:") || host.startsWith("[fe80")) return true;
+  if (host.startsWith("10.")) return true;
+  if (host.startsWith("192.168.")) return true;
+  if (host.startsWith("172.")) {
+    const octet = Number.parseInt(host.split(".")[1] ?? "", 10);
+    if (Number.isFinite(octet) && octet >= 16 && octet <= 31) return true;
+  }
+  return false;
 }
 function labelFor(url) {
   try {
@@ -625,30 +704,56 @@ function buildDispatcher(tls) {
 // src/seed/resources/custody.ts
 function makeCustodyResource(request) {
   return {
-    epoch: () => request("GET", "/api/v1/custody/epoch", {
-      idempotent: true
+    epoch: (opts) => request("GET", "/api/v1/custody/epoch", {
+      idempotent: true,
+      ...opts ?? {}
     })
   };
 }
 
 // src/seed/resources/identity.ts
 function makeIdentityResource(request) {
-  const fn = (() => request("GET", "/api/v1/identity", {
-    idempotent: true
+  const fn = ((opts) => request("GET", "/api/v1/identity", {
+    idempotent: true,
+    ...opts ?? {}
   }));
   fn.get = fn;
   return fn;
 }
 
+// src/seed/resources/mesh.ts
+function makeMeshResource(request) {
+  return {
+    status: (opts) => request("GET", "/api/v1/network/mesh/status", {
+      idempotent: true,
+      ...opts ?? {}
+    }),
+    peers: (opts) => request("GET", "/api/v1/peers", {
+      idempotent: true,
+      ...opts ?? {}
+    }),
+    swarmStatus: (opts) => request("GET", "/api/v1/swarm/status", {
+      idempotent: true,
+      ...opts ?? {}
+    }),
+    clusterHealth: (opts) => request("GET", "/api/v1/cluster/health", {
+      idempotent: true,
+      ...opts ?? {}
+    })
+  };
+}
+
 // src/seed/resources/ota.ts
 function makeOtaResource(request) {
   return {
-    config: () => request("GET", "/api/v1/ota/config", {
-      idempotent: true
+    config: (opts) => request("GET", "/api/v1/ota/config", {
+      idempotent: true,
+      ...opts ?? {}
     }),
-    checkNow: () => request("POST", "/api/v1/ota/check-now", {
-      idempotent: true
+    checkNow: (opts) => request("POST", "/api/v1/ota/check-now", {
+      idempotent: true,
       // the seed merely re-checks; no destructive effect
+      ...opts ?? {}
     })
   };
 }
@@ -746,14 +851,18 @@ async function pairAll(peers, clientName, pair, book) {
 // src/seed/resources/pair.ts
 function makePairResource(request) {
   return {
-    status: () => request("GET", "/api/v1/pair/status", { idempotent: true }),
-    create: async (params) => {
+    status: (opts) => request("GET", "/api/v1/pair/status", {
+      idempotent: true,
+      ...opts ?? {}
+    }),
+    create: async (params, opts) => {
       if (!params || typeof params.clientName !== "string" || !params.clientName.trim()) {
         throw new TypeError("pair.create: `clientName` is required");
       }
       const wire = await request("POST", "/api/v1/pair", {
         body: { client_name: params.clientName },
-        idempotent: false
+        idempotent: false,
+        ...opts ?? {}
       });
       const rawToken = typeof wire?.pairing_token === "string" ? wire.pairing_token : "";
       const response = {
@@ -765,12 +874,13 @@ function makePairResource(request) {
       }
       return response;
     },
-    delete: async (clientName) => {
+    delete: async (clientName, opts) => {
       if (typeof clientName !== "string" || !clientName.trim()) {
         throw new TypeError("pair.delete: `clientName` is required");
       }
       await request("DELETE", `/api/v1/pair/${encodeURIComponent(clientName)}`, {
-        idempotent: true
+        idempotent: true,
+        ...opts ?? {}
       });
     }
   };
@@ -778,8 +888,9 @@ function makePairResource(request) {
 
 // src/seed/resources/status.ts
 function makeStatusResource(request) {
-  const fn = (() => request("GET", "/api/v1/status", {
-    idempotent: true
+  const fn = ((opts) => request("GET", "/api/v1/status", {
+    idempotent: true,
+    ...opts ?? {}
   }));
   fn.get = fn;
   return fn;
@@ -788,10 +899,11 @@ function makeStatusResource(request) {
 // src/seed/resources/store.ts
 function makeStoreResource(request) {
   return {
-    status: () => request("GET", "/api/v1/store/status", {
-      idempotent: true
+    status: (opts) => request("GET", "/api/v1/store/status", {
+      idempotent: true,
+      ...opts ?? {}
     }),
-    query: (params) => {
+    query: (params, opts) => {
       if (!params || !Array.isArray(params.vector) || typeof params.k !== "number") {
         throw new TypeError("store.query: { vector: number[], k: number } required");
       }
@@ -801,17 +913,19 @@ function makeStoreResource(request) {
           k: params.k,
           ...params.metric ? { metric: params.metric } : {}
         },
-        idempotent: true
+        idempotent: true,
         // read-only query; safe to retry on timeout
+        ...opts ?? {}
       });
     },
-    ingest: (params) => {
+    ingest: (params, opts) => {
       if (!params || !Array.isArray(params.vectors) || params.vectors.length === 0) {
         throw new TypeError("store.ingest: { vectors: StoreIngestItem[] } required (non-empty)");
       }
       return request("POST", "/api/v1/store/ingest", {
         body: { vectors: params.vectors },
-        idempotent: false
+        idempotent: false,
+        ...opts ?? {}
       });
     }
   };
@@ -820,8 +934,9 @@ function makeStoreResource(request) {
 // src/seed/resources/witness.ts
 function makeWitnessResource(request) {
   return {
-    chain: () => request("GET", "/api/v1/witness/chain", {
-      idempotent: true
+    chain: (opts) => request("GET", "/api/v1/witness/chain", {
+      idempotent: true,
+      ...opts ?? {}
     })
   };
 }
@@ -844,10 +959,15 @@ var SeedSession = class {
   store;
   /** OTA resource on the pinned peer. */
   ota;
+  /** Mesh observability — read endpoints routed through the pinned peer. */
+  mesh;
   /** @internal — constructed by {@link SeedClient.session}. */
   constructor(client, pinnedPeer) {
     this.pinnedPeer = pinnedPeer;
-    const req = (method, path, opts) => client.request(method, path, { ...opts ?? {}, pinnedPeerKey: pinnedPeer });
+    const req = (method, path, opts) => client.request(method, path, {
+      ...opts ?? {},
+      pinnedPeerKey: pinnedPeer
+    });
     this.status = makeStatusResource(req);
     this.identity = makeIdentityResource(req);
     this.pair = makePairResource(req);
@@ -855,6 +975,7 @@ var SeedSession = class {
     this.custody = makeCustodyResource(req);
     this.store = makeStoreResource(req);
     this.ota = makeOtaResource(req);
+    this.mesh = makeMeshResource(req);
   }
 };
 
@@ -876,6 +997,12 @@ var SeedClient = class _SeedClient {
   store;
   /** OTA — config + check-now. */
   ota;
+  /**
+   * Mesh observability — `status()`, `peers()`, `swarmStatus()`,
+   * `clusterHealth()` (ADR-0016a §D8). Read-only; all four are on the
+   * seed's WiFi-read allowlist so no pairing token is needed.
+   */
+  mesh;
   /** Peer set — closest-first picker with per-peer health state. */
   peerSet;
   /** Per-peer pairing-token store. */
@@ -915,6 +1042,7 @@ var SeedClient = class _SeedClient {
     this.custody = makeCustodyResource(req);
     this.store = makeStoreResource(req);
     this.ota = makeOtaResource(req);
+    this.mesh = makeMeshResource(req);
     if (this.config.healthInterval !== void 0) {
       this.healthProbe = startHealthProbe({
         peers: this.peerSet,
@@ -955,6 +1083,25 @@ var SeedClient = class _SeedClient {
     this.healthProbe?.stop();
   }
   /**
+   * Rebuild the per-peer routing state from scratch (ADR-0016a §D7
+   * "rediscover"). Resets every peer's {@link Peer.state} to `"healthy"`,
+   * clears `latencyEmaMs`, zeroes `consecutiveFailures`, and re-sorts
+   * the table so the next `request()` is driven by constructor order.
+   *
+   * Use this after rotating pairing tokens or when the caller knows the
+   * previous failure bookkeeping is stale (e.g. the mesh transport
+   * recovered out-of-band from a brown-out). Idempotent — calling it
+   * multiple times in a row is a no-op beyond the first.
+   *
+   * Phase 2 placeholder: when mDNS discovery lands (ADR-0016a §D6),
+   * this method will also re-run discovery; for now it only resets the
+   * in-memory peer state.
+   */
+  rediscover() {
+    this.peerSet.resetAll();
+    this.authFailures.clear();
+  }
+  /**
    * Introspection helper for tests: look up a pairing token by
    * canonical peer URL. Returns `undefined` when the book has no entry.
    * @internal
@@ -993,13 +1140,39 @@ var SeedClient = class _SeedClient {
    * JSON body. Implements the Phase 1.5 failover state machine.
    */
   async request(method, path, opts = {}) {
+    if (opts.consistency === "strong") {
+      throw new UnsupportedError(
+        "consistency=strong",
+        "strong consistency unsupported; seed has no quorum protocol today"
+      );
+    }
+    let explicitPeer;
+    if (opts.peer !== void 0) {
+      explicitPeer = this.peerSet.findByKey(opts.peer);
+      if (!explicitPeer) {
+        throw new ConfigError(`peer not in mesh: ${opts.peer}`);
+      }
+    }
     const methodUpper = method.toUpperCase();
     const idempotent = opts.idempotent ?? (methodUpper === "GET" || methodUpper === "HEAD");
     const totalBudgetMs = this.config.timeouts.total ?? DEFAULT_MAX_ELAPSED_MS;
+    const retriesBudget = opts.retries === null ? 0 : typeof opts.retries === "number" ? opts.retries : this.config.retries;
+    const preferOrder = explicitPeer === void 0 && opts.prefer !== void 0 ? this.peerSet.preferOrder(opts.prefer) : void 0;
+    let preferCursor = 0;
     const startedAt = Date.now();
     const hasBody = opts.body !== void 0 && methodUpper !== "GET" && methodUpper !== "HEAD";
     const bodyStr = hasBody ? JSON.stringify(opts.body) : void 0;
-    let peer = this.initialPeer(opts.pinnedPeerKey);
+    let peer;
+    if (explicitPeer) {
+      peer = explicitPeer;
+    } else if (preferOrder && preferOrder.length > 0) {
+      peer = preferOrder[0];
+      preferCursor = 1;
+    } else if (opts.consistency === "eventual") {
+      peer = this.peerSet.pick();
+    } else {
+      peer = this.initialPeer(opts.pinnedPeerKey);
+    }
     const totalPeers = this.peerSet.len();
     let peersTried = 0;
     let retryAttempt = 0;
@@ -1045,9 +1218,18 @@ var SeedClient = class _SeedClient {
       lastErr = outcome.error;
       switch (outcome.disposition) {
         case "cycle": {
+          if (explicitPeer) {
+            throw outcome.error;
+          }
           peersTried += 1;
           if (peersTried < totalPeers) {
-            const next = this.peerSet.nextAfter(peer);
+            let next;
+            if (preferOrder) {
+              next = preferOrder[preferCursor];
+              preferCursor += 1;
+            } else {
+              next = this.peerSet.nextAfter(peer);
+            }
             if (next) {
               peer = next;
               continue;
@@ -1061,13 +1243,14 @@ var SeedClient = class _SeedClient {
             if (Date.now() - startedAt + delayMs > totalBudgetMs) {
               throw outcome.error;
             }
-            if (retryAttempt + 1 > this.config.retries) {
+            if (retryAttempt + 1 > retriesBudget) {
               throw outcome.error;
             }
             await sleep(delayMs);
             retryAttempt += 1;
             peersTried = 0;
-            peer = this.initialPeer(opts.pinnedPeerKey);
+            preferCursor = preferOrder ? 1 : 0;
+            peer = preferOrder ? preferOrder[0] : this.initialPeer(opts.pinnedPeerKey);
             continue;
           }
           throw outcome.error;
@@ -1076,7 +1259,7 @@ var SeedClient = class _SeedClient {
           if (!this.shouldBackoffRetry(outcome.error, methodUpper, idempotent)) {
             throw outcome.error;
           }
-          if (retryAttempt + 1 > this.config.retries) {
+          if (retryAttempt + 1 > retriesBudget) {
             throw outcome.error;
           }
           const delayMs = this.backoffDelay(retryAttempt, outcome.retryHintMs);
@@ -1147,6 +1330,15 @@ var SeedClient = class _SeedClient {
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), attemptTimeoutMs);
+    const callerSignal = opts.signal;
+    const onCallerAbort = () => controller.abort();
+    if (callerSignal) {
+      if (callerSignal.aborted) {
+        controller.abort();
+      } else {
+        callerSignal.addEventListener("abort", onCallerAbort, { once: true });
+      }
+    }
     init.signal = controller.signal;
     const callStarted = Date.now();
     let response;
@@ -1154,6 +1346,18 @@ var SeedClient = class _SeedClient {
       response = await this.fetchFn(url, init);
     } catch (err) {
       clearTimeout(timer);
+      if (callerSignal) {
+        callerSignal.removeEventListener("abort", onCallerAbort);
+      }
+      if (callerSignal?.aborted) {
+        const e2 = new NetworkError("request aborted by caller signal", err);
+        return {
+          kind: "err",
+          disposition: "surface",
+          peerClass: "network",
+          error: e2
+        };
+      }
       if (isAbortError(err)) {
         const e2 = new TimeoutError(
           "read",
@@ -1178,6 +1382,9 @@ var SeedClient = class _SeedClient {
       };
     }
     clearTimeout(timer);
+    if (callerSignal) {
+      callerSignal.removeEventListener("abort", onCallerAbort);
+    }
     if (response.ok) {
       const value = response.status === 204 ? void 0 : await parseJson(response);
       this.peerSet.markSuccess(peer.key, Date.now() - callStarted);
@@ -1236,6 +1443,7 @@ export {
   ServiceUnavailableError,
   TimeoutError,
   TrustScoreBlockedError,
+  UnsupportedError,
   ValidationError,
   normaliseBaseUrl2 as normaliseBaseUrl,
   pairAll,

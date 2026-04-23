@@ -668,6 +668,64 @@ All seven ADR-0017 §5 mesh tests pass:
 - Routing strategy enum is preserved (`session`, `pinned`, `round-robin`,
   `read-any-write-one`) but only `session` is wired — Rust is the same.
 
+## Phase 2 delivery (2026-04-23)
+
+Executes ADR-0016a §D8 mesh-observability and ADR-0016b §"Per-call knobs"
+for the Python SDK. Mirrors the Rust 0014c Phase 2 delivery style.
+
+### What landed
+
+| File | Purpose |
+|------|---------|
+| `cognitum/_errors.py` | New `UnsupportedError(CognitumError)` — raised when the caller asks for capabilities the seed protocol does not offer (e.g. `consistency="strong"`). Distinct from `NotImplementedError` (a 501 from the seed). |
+| `cognitum/seed/_call_options.py` | New. `CallOptions` (slots+frozen) with `peer`/`prefer`/`consistency`/`timeout`/`retries`; `DISABLE_RETRY=0` sentinel; `ResolvedCallOptions` + `resolve_call_options()` shared resolver so sync + async loops merge defaults via one code path. |
+| `cognitum/seed/_models/mesh.py` | New. `MeshStatus`, `MeshPeers`, `SwarmStatus`, `ClusterHealth`, `MeshPeer` dataclasses (slots, frozen, `extra`). Wire shapes captured from live seed v0.20.0 on 2026-04-22 — all four endpoints return 200 on v0.20.0, no 404/501 stubs needed. |
+| `cognitum/seed/resources/mesh.py` | New. `MeshResource` + `AsyncMeshResource` exposing `status()` / `peers()` / `swarm_status()` / `cluster_health()`. All four are in the seed's WiFi-read allowlist so no pairing token required. |
+| `cognitum/seed/_client.py`, `_async_client.py` | Transport `request()` accepts `options: CallOptions \| None`; merges via `resolve_call_options`. Per-call `timeout` overrides httpx's per-request timeout and resets the ADR-0005 total deadline; `retries` overrides `max_retries`; `consistency="eventual"` drops any session peer pin; `options.peer=` pins to a single endpoint (unknown peer → `ConfigError`). `client.mesh` attribute added; `client.peers()` alias forwards to `peers_snapshot()` (distinct from `client.mesh.peers()`). |
+| `cognitum/seed/_client.py`, `_async_client.py` | New `rediscover()` method — resets `PeerSet` state and per-peer trust-score counters. Idempotent; no network calls (mDNS deferred). |
+| `cognitum/seed/_session.py` | `_PinnedTransport` + `_AsyncPinnedTransport` pass `options` through to the inner transport; `SeedSession` / `AsyncSeedSession` gain a `mesh` attribute. |
+| `cognitum/seed/resources/*.py` | Every resource method (store, pair, custody, witness, ota) now accepts `options: CallOptions \| None`. Parity with the new mesh resource. |
+| `cognitum/seed/__init__.py` | Exports `CallOptions`, `Consistency`, `Prefer`, `DISABLE_RETRY`, `UnsupportedError`, `MeshStatus`, `MeshPeers`, `MeshPeer`, `SwarmStatus`, `ClusterHealth`. |
+| `tests/seed/unit/test_mesh_resource.py` | 5 tests — 4 sync resource methods against live wire shapes + async parity. |
+| `tests/seed/unit/test_call_options.py` | 8 tests — peer override, unknown peer, strong/eventual consistency, scalar/tuple timeout, `DISABLE_RETRY` caps the ADR-0005 loop, async cancellation regression. |
+| `tests/seed/unit/test_rediscover.py` | 2 tests — resets degraded state + trust counter; idempotent. |
+
+### Test results (2026-04-23)
+
+```
+$ /tmp/swarm-seed-validation/python/venv/bin/pytest sdks/python/tests/seed/ -q
+206 passed, 3 skipped in 14.14s
+```
+
+All 15 new Phase 2 tests pass; no Phase 1 / 1.5 regressions.
+
+### Live seed probes (v0.20.0, 2026-04-22)
+
+All four §D8 endpoints returned HTTP 200 — no 404 / 501 stubs needed:
+
+- `GET /api/v1/network/mesh/status` → `{"ap_active":true,"auto_mesh":false,"connected_to_seed":false,"device_id":"…","has_mesh_password":false,"peer_count":0,"peers":[]}`
+- `GET /api/v1/peers` → `{"count":0,"discovery_active":true,"peers":[]}`
+- `GET /api/v1/swarm/status` → `{"device_id":"…","discovery_active":true,"epoch":20564,"peer_count":0,"total_vectors":8460,"uptime_secs":23001}`
+- `GET /api/v1/cluster/health` → `{"auto_sync_interval_secs":60,"cluster_enabled":true,"discovery_active":true,"last_sync_attempt":1776906537,"peer_count":0,"peers":[]}`
+
+### Naming clarity (ADR-0016b)
+
+`client.peers()` (SDK-local peer table) vs `client.mesh.peers()` (seed's
+own overlay view) — both exist and answer different questions. The
+former returns `list[Peer]` from the config + health-probe bookkeeping;
+the latter returns a `MeshPeers` wire model from the seed's
+`/api/v1/peers` endpoint.
+
+### Known gaps carried into Phase 3
+
+- `CallOptions.prefer` is validated but not yet wired into the picker —
+  today the picker is unconditionally closest-first. Matches Rust. The
+  SDK accepts the knob so callers can pin it now without re-compiling
+  when Phase 3 lands.
+- `rediscover()` does no DNS / mDNS re-resolution; it only resets
+  bookkeeping. Callers rotating tailnet IPs still need to construct a
+  fresh client. Tracked in ADR-0017 Phase 3 deferred.
+
 ---
 
 ## References

@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from typing import Any, Literal
 
 from cognitum._errors import ValidationError
+from cognitum.seed._call_options import CallOptions
 from cognitum.seed._models import (
     StoreIngestRequest,
     StoreQueryResult,
@@ -38,8 +39,10 @@ class StoreResource:
     def __init__(self, http: object) -> None:
         self._http = http
 
-    def status(self) -> StoreStatus:
-        data = self._http.request("GET", "/api/v1/store/status")  # type: ignore[attr-defined]
+    def status(self, *, options: CallOptions | None = None) -> StoreStatus:
+        data = self._http.request(  # type: ignore[attr-defined]
+            "GET", "/api/v1/store/status", options=options,
+        )
         return StoreStatus.from_wire(data or {})
 
     def query(
@@ -49,19 +52,25 @@ class StoreResource:
         k: int = 10,
         metric: Literal["cosine", "euclidean", "dot"] = "cosine",
         filter: dict[str, Any] | None = None,
+        options: CallOptions | None = None,
     ) -> StoreQueryResult:
         payload = _build_query_payload(vector, k, metric, filter)
         data = self._http.request(  # type: ignore[attr-defined]
             "POST", "/api/v1/store/query", json=payload, idempotent=True,
+            options=options,
         )
         return StoreQueryResult.from_wire(data or {})
 
     def ingest(
-        self, *, vectors: Sequence[VectorUpsert | dict[str, Any]]
+        self,
+        *,
+        vectors: Sequence[VectorUpsert | dict[str, Any]],
+        options: CallOptions | None = None,
     ) -> dict[str, Any]:
         req = StoreIngestRequest.from_any(list(vectors))
         data = self._http.request(  # type: ignore[attr-defined]
             "POST", "/api/v1/store/ingest", json=req.to_wire(),
+            options=options,
         )
         return data or {}
 
@@ -70,8 +79,12 @@ class AsyncStoreResource:
     def __init__(self, http: object) -> None:
         self._http = http
 
-    async def status(self) -> StoreStatus:
-        data = await self._http.request("GET", "/api/v1/store/status")  # type: ignore[attr-defined]
+    async def status(
+        self, *, options: CallOptions | None = None
+    ) -> StoreStatus:
+        data = await self._http.request(  # type: ignore[attr-defined]
+            "GET", "/api/v1/store/status", options=options,
+        )
         return StoreStatus.from_wire(data or {})
 
     async def query(
@@ -81,18 +94,24 @@ class AsyncStoreResource:
         k: int = 10,
         metric: Literal["cosine", "euclidean", "dot"] = "cosine",
         filter: dict[str, Any] | None = None,
+        options: CallOptions | None = None,
     ) -> StoreQueryResult:
         payload = _build_query_payload(vector, k, metric, filter)
         data = await self._http.request(  # type: ignore[attr-defined]
             "POST", "/api/v1/store/query", json=payload, idempotent=True,
+            options=options,
         )
         return StoreQueryResult.from_wire(data or {})
 
     async def ingest(
-        self, *, vectors: Sequence[VectorUpsert | dict[str, Any]]
+        self,
+        *,
+        vectors: Sequence[VectorUpsert | dict[str, Any]],
+        options: CallOptions | None = None,
     ) -> dict[str, Any]:
         req = StoreIngestRequest.from_any(list(vectors))
         data = await self._http.request(  # type: ignore[attr-defined]
             "POST", "/api/v1/store/ingest", json=req.to_wire(),
+            options=options,
         )
         return data or {}

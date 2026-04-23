@@ -52,11 +52,14 @@ pub mod session;
 pub mod token_book;
 
 pub use client::{SeedClient, SeedClientBuilder};
-pub use config::{Failover, Routing, SeedAuth, SeedTls, Timeouts};
+pub use config::{
+    CallOptions, Consistency, Failover, Prefer, Routing, SeedAuth, SeedTls, Timeouts,
+};
 pub use models::{
-    CustodyEpoch, Extras, Identity, OtaCheckNowAck, OtaConfig, PairCreate, PairCreateResponse,
-    PairStatus, Status, StoreIngest, StoreIngestAck, StoreIngestEntry, StoreQuery, StoreQueryHit,
-    StoreQueryResult, StoreStatus, WitnessChain,
+    ClusterHealth, CustodyEpoch, Extras, Identity, MeshPeers, MeshStatus, OtaCheckNowAck,
+    OtaConfig, PairCreate, PairCreateResponse, PairStatus, Status, StoreIngest, StoreIngestAck,
+    StoreIngestEntry, StoreQuery, StoreQueryHit, StoreQueryResult, StoreStatus, SwarmStatus,
+    WitnessChain,
 };
 pub use peers::{Endpoint, Peer, PeerErrorClass, PeerSet, PeerState};
 pub use session::{

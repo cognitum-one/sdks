@@ -1,5 +1,7 @@
 /** Vector store — status / query / ingest. */
 
+import type { CallOptions } from "../callOptions.js";
+
 export interface StoreStatus extends Record<string, unknown> {
   total_vectors: number;
   deleted_vectors: number;
@@ -52,7 +54,7 @@ export interface StoreIngestResponse extends Record<string, unknown> {
 type RequestFn = <T>(
   method: string,
   path: string,
-  opts?: {
+  opts?: CallOptions & {
     body?: unknown;
     idempotent?: boolean;
   },
@@ -60,21 +62,22 @@ type RequestFn = <T>(
 
 export interface StoreResource {
   /** GET /api/v1/store/status — WiFi-read allowlist. */
-  status(): Promise<StoreStatus>;
+  status(opts?: CallOptions): Promise<StoreStatus>;
   /** POST /api/v1/store/query — treated as idempotent for retry purposes. */
-  query(params: StoreQueryParams): Promise<StoreQueryResponse>;
+  query(params: StoreQueryParams, opts?: CallOptions): Promise<StoreQueryResponse>;
   /** POST /api/v1/store/ingest — not idempotent; no retry on read-timeout. */
-  ingest(params: StoreIngestParams): Promise<StoreIngestResponse>;
+  ingest(params: StoreIngestParams, opts?: CallOptions): Promise<StoreIngestResponse>;
 }
 
 export function makeStoreResource(request: RequestFn): StoreResource {
   return {
-    status: () =>
+    status: (opts) =>
       request<StoreStatus>("GET", "/api/v1/store/status", {
         idempotent: true,
+        ...(opts ?? {}),
       }),
 
-    query: (params) => {
+    query: (params, opts) => {
       if (!params || !Array.isArray(params.vector) || typeof params.k !== "number") {
         throw new TypeError("store.query: { vector: number[], k: number } required");
       }
@@ -85,16 +88,18 @@ export function makeStoreResource(request: RequestFn): StoreResource {
           ...(params.metric ? { metric: params.metric } : {}),
         },
         idempotent: true, // read-only query; safe to retry on timeout
+        ...(opts ?? {}),
       });
     },
 
-    ingest: (params) => {
+    ingest: (params, opts) => {
       if (!params || !Array.isArray(params.vectors) || params.vectors.length === 0) {
         throw new TypeError("store.ingest: { vectors: StoreIngestItem[] } required (non-empty)");
       }
       return request<StoreIngestResponse>("POST", "/api/v1/store/ingest", {
         body: { vectors: params.vectors },
         idempotent: false,
+        ...(opts ?? {}),
       });
     },
   };
