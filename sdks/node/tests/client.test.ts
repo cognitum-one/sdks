@@ -213,8 +213,14 @@ describe("Cognitum SDK", () => {
   // -------------------------------------------------------------------------
 
   describe("constructor", () => {
-    it("should throw AuthError if apiKey is empty", () => {
-      expect(() => new Cognitum({ apiKey: "" })).toThrow(AuthError);
+    it("should throw AuthError if apiKey is empty and env is unset", () => {
+      const saved = process.env.COGNITUM_API_KEY;
+      delete process.env.COGNITUM_API_KEY;
+      try {
+        expect(() => new Cognitum({ apiKey: "" })).toThrow(AuthError);
+      } finally {
+        if (saved !== undefined) process.env.COGNITUM_API_KEY = saved;
+      }
     });
   });
 });

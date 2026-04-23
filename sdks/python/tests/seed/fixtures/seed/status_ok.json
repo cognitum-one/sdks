@@ -1,0 +1,12 @@
+{
+  "device_id": "ad7d7e7b-56e7-4e03-b078-939209858144",
+  "uptime_secs": 12345,
+  "epoch": 42,
+  "total_vectors": 1000,
+  "deleted_vectors": 5,
+  "file_size_bytes": 1048576,
+  "dimension": 384,
+  "paired": true,
+  "witness_chain_length": 123,
+  "optimizer_state": "idle"
+}

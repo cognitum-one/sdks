@@ -14,7 +14,24 @@ node_modules/
 .idea/
 .vscode/
 
-# Claude tooling
-.agentic-qe/
+# Local / per-machine Claude context (not committed)
+CLAUDE.local.md
 .claude-flow/
-*.db
+/tmp-swarm/
+
+# Python build artifacts
+*.egg-info/
+**/__pycache__/
+*.pyc
+**/build/
+/sdks/python/dist/
+
+# Node build artifacts (keep under /sdks/node/ only; root has no node)
+/sdks/node/*.tgz
+
+# Claude Code / claude-flow runtime state
+.claude/
+.claude-flow/
+
+# Test / validation scratch
+/tmp-swarm/

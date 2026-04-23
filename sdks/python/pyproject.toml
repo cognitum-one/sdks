@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cognitum"
-version = "0.1.0"
+version = "0.2.0"
 description = "Official Cognitum SDK for Python"
 readme = "README.md"
 license = {text = "MIT"}
@@ -13,6 +13,11 @@ dependencies = ["httpx>=0.25.0"]
 keywords = ["cognitum", "ai", "mcp", "sdk", "seed"]
 
 [project.optional-dependencies]
+# ADR-0016a §D6: mDNS discovery is opt-in. Install with
+#   pip install cognitum[mdns]
+# to pull in the `zeroconf` dependency; without it,
+# `cognitum.seed.discovery.MdnsDiscovery` raises a helpful ImportError.
+mdns = ["zeroconf>=0.131"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "respx>=0.21"]
 
 [tool.setuptools.packages.find]

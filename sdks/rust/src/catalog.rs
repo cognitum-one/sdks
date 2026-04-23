@@ -14,14 +14,8 @@ impl<'a> CatalogResource<'a> {
     }
 
     /// Browse products filtered by a specific category.
-    pub async fn browse_with_category(
-        &self,
-        category: &str,
-    ) -> Result<CatalogResponse, Error> {
-        let path = format!(
-            "/listTemplates?category={}",
-            urlencoding_minimal(category)
-        );
+    pub async fn browse_with_category(&self, category: &str) -> Result<CatalogResponse, Error> {
+        let path = format!("/listTemplates?category={}", urlencoding_minimal(category));
         self.client.get(&path).await
     }
 }

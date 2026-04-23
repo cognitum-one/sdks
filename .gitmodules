@@ -1,0 +1,3 @@
+[submodule "seed"]
+	path = seed
+	url = https://github.com/cognitum-one/seed
