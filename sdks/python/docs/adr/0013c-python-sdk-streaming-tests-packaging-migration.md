@@ -784,6 +784,162 @@ fallback in `MdnsDiscovery` is exercised by the stubbed path.
 
 ---
 
+## MCP stdio parity (OQ-4, 2026-04-23)
+
+Closes the Python portion of OQ-4 (tracker: `docs/adr/README.md`
+§"Open questions tracked across ADRs", row OQ-4). Node has shipped
+both HTTP and stdio MCP transports since `sdks/node/src/mcp-stdio.ts`
+landed; Python previously shipped HTTP-only via
+`cognitum.mcp.McpResource` / `AsyncMcpResource`. This section records
+the Python parity work. Rust parity remains outstanding and is tracked
+separately.
+
+### Decision
+
+Introduce a transport-agnostic async client,
+`cognitum.mcp.McpClient`, that accepts any object implementing the
+four-method `Transport` protocol (`open` / `send` / `recv` / `close`).
+Ship two concrete transports — `HttpTransport` and `StdioTransport` —
+in `cognitum.mcp.transports`. Keep the existing `McpResource` /
+`AsyncMcpResource` surface bound to `cognitum.Cognitum` /
+`AsyncCognitum` unchanged (ADR-0013a §5.4 guarantees `.mcp` continues
+to resolve to the HTTP resource).
+
+### File layout
+
+```
+sdks/python/cognitum/mcp/                     # was: cognitum/mcp.py
+├── __init__.py                               # re-exports both surfaces
+├── _client.py                                # McpClient + Transport Protocol
+├── _framing.py                               # ND-JSON line encode/decode
+├── _resource.py                              # McpResource / AsyncMcpResource (unchanged logic)
+└── transports/
+    ├── __init__.py                           # re-exports
+    ├── _http.py                              # HttpTransport
+    └── _stdio.py                             # StdioTransport
+```
+
+All files are under 500 LOC; `_stdio.py` is the largest at ~170 LOC.
+`from __future__ import annotations` everywhere; `@dataclass(slots=True)`
+on `StdioTransport` and `HttpTransport` per the ADR-0013a style rules.
+
+### Transport contract
+
+```python
+@runtime_checkable
+class Transport(Protocol):
+    async def open(self) -> None: ...
+    async def send(self, message: dict[str, Any]) -> None: ...
+    async def recv(self) -> dict[str, Any]: ...
+    async def close(self) -> None: ...
+```
+
+`McpClient` is async-only — MCP stdio's interleaved
+read/write/stderr-drain needs a running event loop, and the sync
+surface already exists as `McpResource` for the subset of callers
+that want blocking HTTP.
+
+### Stdio transport behavior
+
+- `open()` spawns the subprocess via
+  `asyncio.create_subprocess_exec(command, *args, stdin=PIPE,
+  stdout=PIPE, stderr=PIPE, env=…, cwd=…)`. Inherits the parent env
+  and layers `env=` overrides on top.
+- A background `asyncio.Task` drains stderr to the module logger
+  (`cognitum.mcp.stdio`). A noisy server no longer blocks the stdin
+  pipe — covered by `test_noisy_stderr_does_not_block_stdin_pipe`.
+- `send()` writes `<json>\n` via `_framing.encode` and awaits
+  `StreamWriter.drain()`.
+- `recv()` reads one line from stdout and decodes it. Empty line ⇒
+  `EOFError` (subprocess closed stdout).
+- `close()` is the escalation ladder: close stdin → `wait()` up to
+  `close_timeout` (default 5 s) → `terminate()` → `wait()` again →
+  `kill()`. Covered by `test_close_timeout_triggers_terminate`
+  against a `SIGTERM`-ignoring subprocess.
+
+### Public API shape
+
+```python
+from cognitum.mcp import McpClient
+from cognitum.mcp.transports import HttpTransport, StdioTransport
+
+# stdio (NEW — subprocess MCP server)
+async with McpClient(transport=StdioTransport(
+    command="npx",
+    args=["-y", "@some/mcp-server"],
+    env={"SOME_KEY": "..."},   # optional
+    cwd="/path",                # optional
+)) as client:
+    tools = await client.list_tools()
+    result = await client.call_tool("some_tool", {"arg": "value"})
+
+# HTTP (explicit)
+async with McpClient(transport=HttpTransport(
+    url="https://api.cognitum.one/mcpSse",
+    headers={"X-Api-Key": "sk-..."},
+)) as client:
+    ...
+
+# HTTP (shortcut — builds HttpTransport implicitly)
+async with McpClient(url="https://api.cognitum.one/mcpSse") as client:
+    ...
+```
+
+### Backward compatibility
+
+Verified: the 0.1.x imports still resolve unchanged —
+
+```python
+from cognitum.mcp import McpResource, AsyncMcpResource   # still works
+from cognitum import Cognitum, AsyncCognitum
+Cognitum(api_key=...).mcp          # still McpResource
+AsyncCognitum(api_key=...).mcp     # still AsyncMcpResource
+```
+
+`McpClient` is additive. No existing code path changes behavior. The
+pre-refactor `cognitum/mcp.py` logic is now in
+`cognitum/mcp/_resource.py` verbatim.
+
+### Tests
+
+| File | Count | Highlights |
+|------|-------|------------|
+| `tests/mcp/test_stdio_transport.py` | 7 | Round-trip echo server; clean close; timeout→terminate→kill escalation path; noisy stderr drain; double-open and recv-before-open guards; end-to-end `McpClient` over stdio with `tools/list` + `tools/call`. |
+| `tests/mcp/test_http_transport.py` | 5 | `respx`-backed: send/recv cycle; header pass-through; injected `httpx.AsyncClient` not closed by transport; recv-before-send raises; `McpClient` + `HttpTransport` happy path. |
+| `tests/mcp/test_client_compat.py` | 7 | Old imports resolve; `Cognitum`/`AsyncCognitum` still expose `.mcp`; `url=` shortcut; constructor validation (require-one, reject-both, reject-bad-transport); injected client survives `McpClient` close. |
+
+No `pytest-asyncio` dependency introduced — the suite uses
+`asyncio.run()` directly so it runs in the existing `[dev]` extra
+environment.
+
+### Test results (2026-04-23)
+
+```
+$ /tmp/swarm-seed-validation/python/venv/bin/pytest sdks/python/tests/mcp/ -q
+19 passed in 1.19s
+
+$ /tmp/swarm-seed-validation/python/venv/bin/pytest sdks/python/tests/ -q
+259 passed, 3 skipped in 22.58s
+# (2 pre-existing failures in tests/test_client.py are the
+#  pytest-asyncio-missing baseline — unchanged by this work.)
+```
+
+Baseline was 240 passed; +19 new tests = 259 exactly. No regressions
+in `tests/seed/` or `tests/test_client_retry.py`.
+
+### Out of scope
+
+- Rust MCP stdio parity — tracked separately on the Rust agent side.
+- Registering the new client under `cognitum.Cognitum` as, e.g.,
+  `client.mcp_stdio(...)` — deferred; callers construct `McpClient`
+  directly for now since the stdio path is a local-developer feature,
+  not a cloud surface.
+- Long-running SSE streaming on the HTTP transport — the existing
+  `AsyncMcpResource.connect_sse` keeps that surface; `McpClient`
+  stays on the simple request/response contract.
+
+---
+
 ## References
 
 - `/home/ruvultra/projects/sdks/docs/adr/0002-seed-wire-protocol.md`

@@ -534,6 +534,107 @@ Endpoints that 404 / 501 on v0.20.0: **none of the four** — every
 ADR-0016a §D8 endpoint returns 200 with a live JSON body on the current
 firmware.
 
+### MCP stdio parity (OQ-4, 2026-04-23)
+
+Closes the Rust portion of cross-cutting **OQ-4** (MCP stdio parity with
+Node's `createStdioTransport`). Before this change the Rust SDK only
+spoke MCP over the cloud HTTP endpoint (`POST /mcpSse`); callers who
+wanted to run a local MCP subprocess server had no path. Node shipped
+both transports at 0.1.0 via `sdks/node/src/mcp-stdio.ts` — Rust now
+matches.
+
+**Files added:**
+
+- `src/mcp/transport.rs` — `Transport` async trait (object-safe via
+  `async_trait`), shared `JsonRpcMessage` / `JsonRpcError` serde types,
+  and a transport-layer `McpError` with a `From<McpError> for
+  crate::Error` bridge. `JsonRpcMessage` keeps the spec fields separate
+  (`id`, `method`, `params`, `result`, `error`) and uses
+  `#[serde(skip_serializing_if = "Option::is_none")]` so the wire form
+  matches Node/Python byte-for-byte.
+- `src/mcp/http.rs` — `HttpTransport` (request/response JSON-RPC over
+  reqwest, `X-API-Key` auth). This is the baseline transport that
+  mirrors the existing cloud code path; it is additive — the existing
+  `McpResource` continues to ride the `Client` HTTP surface directly.
+- `src/mcp/stdio.rs` — **new**: `StdioTransport` +
+  `StdioTransportBuilder` (fluent `.command()` / `.args()` / `.env()` /
+  `.cwd()` / `.inherit_env()`). Uses `tokio::process::Command` with
+  `stdin/stdout/stderr = Stdio::piped()` and `kill_on_drop(true)`.
+  Framing is newline-delimited JSON via `BufReader::read_line` on the
+  child's stdout. Stderr is drained on a dedicated `tokio::spawn` task
+  (prefixed with `[mcp-stdio]`) so a chatty child can't back-pressure
+  the main pipe. `close()` drops stdin, waits up to 5 s for graceful
+  exit (`CLOSE_GRACE`), then force-kills.
+- `src/mcp/client.rs` — `McpClient` that owns a `Box<dyn Transport +
+  Send + Sync>`. Auto-increments `id` via `AtomicU64`, correlates
+  request/response by id, exposes `initialize()` / `list_tools()` /
+  `call_tool()` / `notify()` / `close()`.
+- `src/mcp/mod.rs` — wires the sub-modules, splits the old
+  monolithic `src/mcp.rs` (kept as `src/mcp/resource.rs`, untouched).
+  `pub use`: `McpClient`, `HttpTransport`, `StdioTransport`,
+  `StdioTransportBuilder`, `Transport`, `JsonRpcMessage`,
+  `JsonRpcError`, `McpError`, plus the pre-existing `McpResource`
+  and `InitializeResponse`.
+- `tests/mcp_stdio.rs` — 5 integration tests (see below).
+
+**Files edited:**
+
+- `Cargo.toml` — added `process` + `io-util` to tokio's feature list
+  (previously `time`, `macros` only); lifted `async-trait` out of the
+  optional / `seed`-gated slot so the cloud-only default build can
+  expose `mcp::Transport` without forcing `seed` on. `seed` feature
+  stripped of its `dep:async-trait` dependency (now unconditional).
+  No new crate pulled in — `async-trait 0.1` was already in the
+  `seed` build since Phase 3 (mDNS).
+
+**Tests added (5 in `tests/mcp_stdio.rs`):**
+
+- `transport_send_recv_round_trip` — spawns a `sh` echo shim, sends a
+  JSON-RPC request, verifies the response shape and method name.
+- `close_kills_subprocess_cleanly` — spawns `cat`, round-trips a
+  notification, asserts `close()` returns under the 5 s budget and
+  `pid()` reports `None` after.
+- `stderr_drain_does_not_block_send` — child spams 4096 lines to
+  stderr before reading stdin. Without the drain task the ~64 KB
+  stderr pipe buffer would wedge the child and `recv()` would time
+  out; this pins the drain invariant.
+- `mcp_client_request_returns_rpc_error_on_server_error` — child
+  always returns a JSON-RPC `error` object (`code: -32601`); asserts
+  `McpClient::request()` surfaces it as `McpError::Rpc { code: -32601,
+  message }`.
+- `builder_requires_command` — `StdioTransport::builder().spawn()`
+  with no command set returns a deterministic
+  `McpError::Other("StdioTransport: command not set")` rather than
+  panicking.
+
+All 5 tests gate on `sh` being on PATH (skipped with an `eprintln!`
+breadcrumb otherwise) so the suite stays green on minimal Windows
+CI runners.
+
+**Checks:**
+
+- `cargo fmt --all --check` — clean.
+- `cargo clippy --all-targets -- -D warnings` — clean (default
+  features).
+- `cargo clippy --all-targets --features seed -- -D warnings` — clean.
+- `cargo test --no-fail-fast` — `mcp_stdio` 5/5 new; pre-existing
+  suites unchanged. The same 2 pre-existing cloud-side PEM failures
+  (`invalid_pem_is_surfaced_as_validation_error`,
+  `builder_trust_root_pem_round_trips`) remain outside scope per the
+  ADR-0014 fencing rule (do not touch `src/client.rs` or
+  `src/error.rs`).
+
+**Signature impact:** fully additive at the public-API level. The
+existing `McpResource` is re-exported verbatim from the new
+`src/mcp/mod.rs` (it moved to `src/mcp/resource.rs`), so
+`client.mcp().list_tools()` / `call_tool()` / `search_docs()` /
+`initialize()` call sites compile without edits. The new
+`McpClient` + transports are additive surface.
+
+**OQ-4 status:** Rust portion closed. Python parity is tracked in
+parallel; `docs/adr/README.md` flips OQ-4 to fully Answered once
+Python lands.
+
 - **Status:** Proposed
 - **Date:** 2026-04-22
 - **Deciders:** SDK WG (Rust lead + cross-cutting)

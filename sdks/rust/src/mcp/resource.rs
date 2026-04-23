@@ -1,3 +1,10 @@
+//! Cloud-side MCP HTTP proxy (pre-existing).
+//!
+//! This is the original `McpResource` surface that talks to the Cognitum
+//! cloud API (`/apiMcpTools`, `/mcpSse`, `/docsSearch`). It is kept exactly
+//! as it was before the OQ-4 stdio work so downstream `client.mcp()` usage
+//! is byte-compatible.
+
 use serde::Serialize;
 use serde_json::Value;
 
