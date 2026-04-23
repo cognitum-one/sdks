@@ -36,6 +36,7 @@ __export(seed_exports, {
   SeedClient: () => SeedClient,
   SeedSession: () => SeedSession,
   ServiceUnavailableError: () => ServiceUnavailableError,
+  TailscaleDiscovery: () => TailscaleDiscovery,
   TimeoutError: () => TimeoutError,
   TlsPinError: () => TlsPinError,
   TrustScoreBlockedError: () => TrustScoreBlockedError,
@@ -1739,6 +1740,125 @@ var ExplicitDiscovery = class {
     return this.peers.map((p) => ({ ...p }));
   }
 };
+
+// src/seed/discovery/tailscale.ts
+var DEFAULT_PREFIX = "cognitum-";
+var DEFAULT_PORT = 8443;
+var DEFAULT_COMMAND = "tailscale";
+var TailscaleDiscovery = class {
+  prefix;
+  port;
+  scheme;
+  command;
+  predicate;
+  execFile;
+  constructor(opts = {}) {
+    const port = opts.port ?? DEFAULT_PORT;
+    if (!Number.isFinite(port) || port <= 0 || port > 65535) {
+      throw new ConfigError(
+        `TailscaleDiscovery.port must be a TCP port in 1..65535 (got ${port})`
+      );
+    }
+    this.prefix = (opts.prefix ?? DEFAULT_PREFIX).toLowerCase();
+    this.port = port;
+    this.scheme = opts.scheme ?? "https";
+    this.command = opts.command ?? DEFAULT_COMMAND;
+    this.predicate = opts.predicate;
+    this.execFile = opts.execFile;
+  }
+  async discover() {
+    const exec = this.execFile ?? await loadExecFile();
+    const stdout = await runTailscale(exec, this.command);
+    const status = parseStatus(stdout);
+    const peers = [];
+    if (status.Peer) {
+      for (const p of Object.values(status.Peer)) peers.push(p);
+    }
+    if (status.Self) peers.push(status.Self);
+    const seen = /* @__PURE__ */ new Map();
+    for (const p of peers) {
+      if (!this.keep(p)) continue;
+      const host = pickHost(p);
+      if (!host) continue;
+      const url = `${this.scheme}://${host}:${this.port}`;
+      if (!seen.has(url)) seen.set(url, { url });
+    }
+    return Array.from(seen.values());
+  }
+  keep(p) {
+    if (this.predicate) return this.predicate(p);
+    const candidate = (p.HostName ?? p.DNSName ?? "").toLowerCase();
+    return candidate.startsWith(this.prefix);
+  }
+};
+function pickHost(p) {
+  const dns = p.DNSName?.trim();
+  if (dns) {
+    const stripped = dns.replace(/\.$/, "");
+    if (stripped) return stripped;
+  }
+  const h = p.HostName?.trim();
+  return h ? h : void 0;
+}
+function parseStatus(raw) {
+  try {
+    const obj = JSON.parse(raw);
+    if (obj === null || typeof obj !== "object") {
+      throw new Error("not an object");
+    }
+    return obj;
+  } catch (err) {
+    throw new ConfigError(
+      `TailscaleDiscovery: failed to parse \`tailscale status --json\` output: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+function runTailscale(exec, command) {
+  return new Promise((resolve, reject) => {
+    try {
+      exec(command, ["status", "--json"], (err, stdout, stderr) => {
+        if (err) {
+          const code = err.code;
+          if (code === "ENOENT") {
+            reject(
+              new ConfigError(
+                `TailscaleDiscovery: \`${command}\` not found on PATH. Install the Tailscale CLI (https://tailscale.com/download) or pass \`command\` with an absolute path.`
+              )
+            );
+            return;
+          }
+          reject(
+            new ConfigError(
+              `TailscaleDiscovery: \`${command} status --json\` failed: ${err.message}${stderr ? ` \u2014 stderr: ${stderr.trim()}` : ""}`
+            )
+          );
+          return;
+        }
+        resolve(stdout);
+      });
+    } catch (err) {
+      reject(
+        new ConfigError(
+          `TailscaleDiscovery: unable to spawn \`${command}\`: ${err instanceof Error ? err.message : String(err)}`
+        )
+      );
+    }
+  });
+}
+async function loadExecFile() {
+  try {
+    const spec = "node:child_process";
+    const mod = await import(spec);
+    if (typeof mod.execFile !== "function") {
+      throw new Error("child_process.execFile is unavailable");
+    }
+    return mod.execFile;
+  } catch (err) {
+    throw new ConfigError(
+      `TailscaleDiscovery requires Node's \`child_process\` module, which is unavailable in this runtime: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   AuthError,
@@ -1757,6 +1877,7 @@ var ExplicitDiscovery = class {
   SeedClient,
   SeedSession,
   ServiceUnavailableError,
+  TailscaleDiscovery,
   TimeoutError,
   TlsPinError,
   TrustScoreBlockedError,

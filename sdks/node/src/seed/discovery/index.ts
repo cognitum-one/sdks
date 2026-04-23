@@ -8,3 +8,11 @@
 
 export type { DiscoveryProvider, DiscoveredPeer } from "./types.js";
 export { ExplicitDiscovery } from "./explicit.js";
+// `TailscaleDiscovery` only needs Node built-ins (`child_process.execFile`),
+// so we re-export it from the top-level discovery barrel — no peer-dep
+// subpath gymnastics required.
+export { TailscaleDiscovery } from "./tailscale.js";
+export type {
+  TailscaleDiscoveryOptions,
+  ExecFileFn,
+} from "./tailscale.js";

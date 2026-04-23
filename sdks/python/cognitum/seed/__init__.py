@@ -36,6 +36,7 @@ from cognitum.seed.discovery import (
     DiscoveredPeer,
     DiscoveryProvider,
     ExplicitDiscovery,
+    TailscaleDiscovery,
 )
 from cognitum.seed._token_book import (
     InMemoryTokenBook,
@@ -118,6 +119,7 @@ __all__ = [
     "DiscoveredPeer",
     "DiscoveryProvider",
     "ExplicitDiscovery",
+    "TailscaleDiscovery",
     # Per-call knobs (Phase 2)
     "CallOptions",
     "Consistency",

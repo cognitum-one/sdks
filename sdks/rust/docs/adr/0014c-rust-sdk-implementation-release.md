@@ -436,6 +436,50 @@ match on `Error::Validation` and fall back to `SeedClient::builder()
 
 #D6 is closable for the Rust SDK.
 
+### Phase 3 — Tailscale discovery (2026-04-23)
+
+Closes **OQ-11** (docs/adr/README.md). Adds a second `Discovery` impl
+alongside `MdnsDiscovery` that reads the local tailnet and filters for
+seeds.
+
+**Files (all under `sdks/rust/`):**
+
+- `src/seed/discovery/tailscale.rs` — `TailscaleDiscovery` +
+  `PeerPredicate` trait. `Discovery::discover()` wraps the blocking
+  `std::process::Command::new("tailscale").args(["status", "--json"])`
+  call in `tokio::task::spawn_blocking`, so it composes with the
+  SDK's tokio runtime without a dedicated async-CLI dep.
+  Fluent config: `.with_prefix(...)` (default `"cognitum-"`,
+  case-insensitive), `.with_port(...)` (default 8443),
+  `.with_command(...)` (default `"tailscale"`), `.with_predicate(...)`.
+  Parses the status JSON with `serde_json` into a small
+  `TailscaleStatus { Peer, Self }` shape; unknown keys ignored.
+- `src/seed/discovery/mod.rs` — `pub mod tailscale; pub use
+  tailscale::TailscaleDiscovery;`. **No feature gate** — the module
+  only uses `std::process` + `tokio::task::spawn_blocking` + `serde`,
+  all already pulled in by the base `seed` feature.
+- `src/seed/mod.rs` — top-level re-export of `TailscaleDiscovery`
+  alongside `Explicit` / `MdnsDiscovery`.
+- `tests/seed_discovery_tailscale.rs` — 4 `#[tokio::test]` integration
+  tests (`cfg(unix)` gate because the fake CLI is a shell script):
+  default prefix + URL mapping, custom port override, missing binary
+  → `Error::Validation("not found on PATH")`, malformed JSON →
+  `Error::Validation("failed to parse")`. Each test writes a tiny
+  `/bin/sh` script to `$TMPDIR` that echoes fixture JSON and points
+  `TailscaleDiscovery.with_command(...)` at it — no real `tailscale`
+  binary needed. Core parsing + predicate logic also has 3 inline
+  unit tests in `src/seed/discovery/tailscale.rs::tests` that run on
+  all platforms (including Windows CI).
+
+Tailnet carries no `device_id` or cert fingerprint, so
+`DiscoveredPeer::device_id` and `tls_fingerprint` stay `None`; combine
+with `MdnsDiscovery` if per-peer TLS pinning is required.
+
+On Windows, `Command::new("tailscale")` resolves `tailscale.exe` via
+`PATHEXT` — default config works unchanged. Override
+`.with_command("C:\\Program Files\\Tailscale\\tailscale.exe")` if the
+CLI lives outside `PATH`.
+
 ### fp= cert pinning (2026-04-23)
 
 Closes the per-peer TLS cert fingerprint pinning gap that Phase 3 mDNS

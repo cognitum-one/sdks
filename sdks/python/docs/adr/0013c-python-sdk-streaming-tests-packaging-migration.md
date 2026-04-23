@@ -781,6 +781,25 @@ fallback in `MdnsDiscovery` is exercised by the stubbed path.
 - No built-in "try mDNS then explicit list" composite provider.
   Callers compose manually today.
 
+### Phase 3 — Tailscale discovery (2026-04-23)
+
+Closes OQ-11 (docs/adr/README.md). Adds a `TailscaleDiscovery`
+provider that shells out to the local Tailscale CLI:
+
+| File | Change |
+|------|--------|
+| `cognitum/seed/discovery/tailscale.py` | `TailscaleDiscovery` — runs `tailscale status --json` via `subprocess.run`, iterates `Peer` entries, filters by `prefix` (default `"cognitum-"`) or a `predicate: Callable[[dict], bool]`, emits `DiscoveredPeer(url="https://<DNSName>:<port>")`. Options: `prefix`, `port` (default 8443), `scheme`, `command` (str or argv sequence), `predicate`, `runner` (test hook), `arunner` (optional async hook). Sync `discover()` + async `adiscover()`; the default async path offloads to the loop's executor. Errors surface as `ConfigError`: missing binary → "not found on PATH"; non-zero exit → "exited N"; parse failure → "failed to parse"; `TimeoutExpired` → "timed out". |
+| `cognitum/seed/discovery/__init__.py` | Eager re-export of `TailscaleDiscovery` (no extra required — stdlib only). |
+| `cognitum/seed/__init__.py` | Adds `TailscaleDiscovery` to the top-level seed surface + `__all__`. |
+| `tests/seed/unit/test_discovery_tailscale.py` | 6 tests — prefix filter + URL mapping, custom predicate + port override, `FileNotFoundError` → `ConfigError`, malformed JSON → `ConfigError`, non-zero exit → `ConfigError`, `TimeoutExpired` → `ConfigError`. All drive a `runner=` stub that mimics `subprocess.run`; no real CLI invoked. |
+
+Tailnet peers carry no `device_id` or cert fingerprint, so both fields
+remain `None`; for per-peer TLS pinning combine with `MdnsDiscovery`.
+
+No new runtime dependency — `subprocess` + `json` + `asyncio` are all
+stdlib. The provider does NOT move under an extra because importing it
+has zero third-party cost.
+
 ### `fp=` cert pinning (2026-04-23)
 
 Completes the anti-spoof path flagged by FINDING-28 in

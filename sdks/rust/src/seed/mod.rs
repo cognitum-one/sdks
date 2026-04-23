@@ -59,7 +59,7 @@ pub use config::{
 };
 #[cfg(feature = "mdns")]
 pub use discovery::MdnsDiscovery;
-pub use discovery::{DiscoveredPeer, Discovery, Explicit};
+pub use discovery::{DiscoveredPeer, Discovery, Explicit, TailscaleDiscovery};
 pub use models::{
     ClusterHealth, CustodyEpoch, Extras, Identity, MeshPeers, MeshStatus, OtaCheckNowAck,
     OtaConfig, PairCreate, PairCreateResponse, PairStatus, Status, StoreIngest, StoreIngestAck,

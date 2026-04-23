@@ -34,8 +34,10 @@ export {
 export { startHealthProbe, type HealthProbeHandle } from "./health.js";
 export {
   ExplicitDiscovery,
+  TailscaleDiscovery,
   type DiscoveryProvider,
   type DiscoveredPeer,
+  type TailscaleDiscoveryOptions,
 } from "./discovery/index.js";
 
 export type { StatusResource, SeedStatus } from "./resources/status.js";

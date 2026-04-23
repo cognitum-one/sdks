@@ -167,6 +167,37 @@ Punted to a future pass (tracked in ADR-0016a §D6 footnotes):
   `DiscoveryProvider` interface is deliberately portable and the
   Python/Rust ADRs (0018c/0019c) will mirror it verbatim.
 
+### Phase 3 — Tailscale discovery (2026-04-23)
+
+Closes OQ-11 (docs/adr/README.md). Ships a `TailscaleDiscovery`
+provider in the same discovery namespace as mDNS:
+
+- `src/seed/discovery/tailscale.ts` — `TailscaleDiscovery` shells out
+  to `tailscale status --json` via `node:child_process.execFile`,
+  iterates the `Peer` map, filters by a configurable hostname prefix
+  (`"cognitum-"` default, case-insensitive) or a caller-supplied
+  `predicate: (peer) => boolean`, and maps each kept entry to
+  `{ url: "https://<DNSName>:<port>" }`. `port` / `scheme` / `command`
+  are options; `execFile` is injectable for tests. Errors (missing
+  binary → `ENOENT`, non-zero exit, malformed JSON) surface as
+  `ConfigError` with an actionable message.
+- `src/seed/discovery/index.ts` + `src/seed/index.ts` — top-level
+  re-export. No new subpath: the provider only needs Node built-ins,
+  so no peer-dep gymnastics are required.
+- Tailnet does not carry a `device_id` or cert fingerprint today, so
+  `DiscoveredPeer.deviceId` / `tlsFingerprint` stay `undefined`.
+  Callers wanting per-peer TLS pinning should combine with
+  `MdnsDiscovery` (fallback chain) or supply `tls.ca`.
+- Tests: `tests/seed/unit/discovery-tailscale.test.ts` (4 tests —
+  default-prefix filter + URL mapping, custom predicate + port
+  override, `ENOENT` → `ConfigError` with "not found on PATH",
+  malformed JSON → `ConfigError`). Stubs `execFile` via the ctor
+  option; no real `tailscale` binary invoked.
+
+Windows note: `Command::new("tailscale")` resolves `tailscale.exe` via
+`PATHEXT`, so the default config works unchanged on Windows; override
+`command` with an absolute path if the CLI lives outside `PATH`.
+
 ### fp= cert pinning (2026-04-23)
 
 ADR-040 FINDING-28 + the commit `8e18963` "punt" item is now closed

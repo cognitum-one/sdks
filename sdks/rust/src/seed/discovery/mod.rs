@@ -38,6 +38,13 @@ pub mod mdns;
 #[cfg(feature = "mdns")]
 pub use mdns::MdnsDiscovery;
 
+// `TailscaleDiscovery` has no feature flag — it only needs
+// `std::process::Command` + `tokio::task::spawn_blocking`, which are
+// already available via the base `seed` feature. See
+// `src/seed/discovery/tailscale.rs` for rationale.
+pub mod tailscale;
+pub use tailscale::TailscaleDiscovery;
+
 /// Discovery provider contract (ADR-0016a §D6).
 ///
 /// Implementations MUST be `Send + Sync` — the SDK can call `discover()`

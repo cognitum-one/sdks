@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from cognitum.seed.discovery._explicit import ExplicitDiscovery
 from cognitum.seed.discovery._types import DiscoveredPeer, DiscoveryProvider
+from cognitum.seed.discovery.tailscale import TailscaleDiscovery
 
 
 def __getattr__(name: str) -> object:
@@ -41,4 +42,5 @@ __all__ = [
     "DiscoveryProvider",
     "ExplicitDiscovery",
     "MdnsDiscovery",
+    "TailscaleDiscovery",
 ]
