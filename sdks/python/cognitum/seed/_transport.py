@@ -263,20 +263,137 @@ def safe_json(response: httpx.Response) -> Mapping[str, Any] | None:
 
 def _fetch_peer_cert_sha256(
     host: str, port: int, *, timeout: float = 5.0
-) -> str:
-    """Open a raw TLS socket, fetch the DER cert, return SHA-256 hex.
+) -> tuple[str, bytes]:
+    """Open a raw TLS socket, fetch the DER cert, return (SHA-256 hex, DER bytes).
 
     Uses ``ssl.get_server_certificate`` which opens with ``CERT_NONE`` and
     no hostname check when no ``ca_certs`` is supplied — that is the
     desired behaviour here because we do NOT want chain validation to
     gate the fingerprint fetch (the seed cert is self-signed by design).
-    The caller compares the returned digest to the expected pin.
+    The caller compares the returned digest to the expected pin and
+    uses the returned DER to build a pinned SSLContext for subsequent
+    requests (see :func:`build_pinned_ssl_context`).
     """
     pem = ssl.get_server_certificate((host, port), timeout=timeout)
     # ``get_server_certificate`` returns PEM — convert back to DER so the
     # digest matches what the seed advertises in ``fp=sha256:<hex>``.
     der = ssl.PEM_cert_to_DER_cert(pem)
-    return hashlib.sha256(der).hexdigest().lower()
+    return hashlib.sha256(der).hexdigest().lower(), der
+
+
+class _PinnedToCertContext(ssl.SSLContext):
+    """SSLContext that accepts EXACTLY one cert, by DER bytes.
+
+    Security audit C2 — the previous design opened a separate raw TLS
+    socket to verify the pin, then used a DIFFERENT httpx handshake for
+    the actual request. An active attacker could answer handshake #1
+    with the real cert and handshake #2 with a forged cert, then be
+    cached as ``_verified`` forever. This class closes that window by
+    verifying on the SAME handshake httpx uses: the overridden
+    :meth:`wrap_socket` runs on the live connection, compares the
+    presented peer cert against the pinned DER, and closes+raises on
+    mismatch.
+
+    Why subclass SSLContext rather than wrap it: httpx passes its
+    ``verify=`` argument directly to the underlying httpcore transport
+    which calls ``ctx.wrap_socket(...)`` during connection setup. An
+    override here is the narrowest hook that still participates in the
+    real TLS handshake.
+    """
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> "_PinnedToCertContext":
+        # SSLContext constructors take the protocol as a positional arg
+        # via ``__new__`` (see CPython ssl.py). Subclasses must respect
+        # that. We pick TLS_CLIENT because this context is for outbound
+        # connections to the seed.
+        return super().__new__(cls, ssl.PROTOCOL_TLS_CLIENT)
+
+    def __init__(self, expected_der: bytes) -> None:
+        # Don't call super().__init__() — ssl._SSLContext constructs
+        # everything it needs in __new__; a second init raises TypeError
+        # on Python 3.14+.
+        self._expected_der = expected_der
+        # We perform our own check; the default verifier would reject
+        # the self-signed seed cert.
+        self.check_hostname = False
+        self.verify_mode = ssl.CERT_NONE
+
+    def wrap_socket(  # type: ignore[override]
+        self,
+        sock: Any,
+        *args: Any,
+        server_hostname: str | None = None,
+        **kwargs: Any,
+    ) -> ssl.SSLSocket:
+        # Force handshake inline so ``getpeercert(binary_form=True)``
+        # returns the actual peer cert before we hand the socket back
+        # to httpx. If we returned a pre-handshake socket, a caller
+        # could start writing plaintext-framed bytes before we had a
+        # chance to verify.
+        kwargs["do_handshake_on_connect"] = True
+        ssock = super().wrap_socket(
+            sock, *args, server_hostname=server_hostname, **kwargs
+        )
+        actual_der = ssock.getpeercert(binary_form=True)
+        if actual_der != self._expected_der:
+            # Log the mismatched digest for the caller's error, then
+            # close the socket so no request data crosses the wire.
+            try:
+                ssock.unwrap()
+            except (OSError, ssl.SSLError):
+                pass
+            ssock.close()
+            expected_sha = hashlib.sha256(self._expected_der).hexdigest()
+            actual_sha = (
+                hashlib.sha256(actual_der).hexdigest()
+                if actual_der
+                else "<none>"
+            )
+            raise ssl.SSLCertVerificationError(
+                f"TLS fingerprint pin mismatch for {server_hostname!r}: "
+                f"expected {expected_sha}, got {actual_sha}"
+            )
+        return ssock
+
+
+def build_pinned_ssl_context(
+    *, expected_sha256: str, host: str, port: int, timeout: float = 5.0
+) -> ssl.SSLContext:
+    """Fetch the peer cert, verify it matches ``expected_sha256``, and
+    return an SSLContext that accepts ONLY that specific cert on all
+    future handshakes routed through it.
+
+    This closes the TOCTOU window present in the prior out-of-band
+    verify design: the returned context's :meth:`wrap_socket` runs on
+    the live httpx connection and compares the real peer cert bytes,
+    not a cached boolean. An attacker who swapped in a forged cert
+    between the fingerprint fetch and the first HTTP request will fail
+    the wrap_socket check — the socket is closed before any request
+    bytes cross the wire.
+
+    Raises :class:`TlsPinError` if the fingerprint fetch fails or the
+    digest does not match ``expected_sha256``.
+    """
+    try:
+        actual_hex, der = _fetch_peer_cert_sha256(host, port, timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 — surface as TlsPinError
+        raise TlsPinError(
+            f"TLS fingerprint pin fetch failed for host {host!r}: {exc}",
+            peer_url=f"https://{host}:{port}",
+            expected=expected_sha256.lower(),
+            actual=None,
+            cause=exc,
+        ) from exc
+    expected_lower = expected_sha256.lower()
+    if actual_hex != expected_lower:
+        raise TlsPinError(
+            f"TLS fingerprint pin mismatch for host {host!r}: "
+            f"expected {expected_lower}, got {actual_hex}",
+            peer_url=f"https://{host}:{port}",
+            expected=expected_lower,
+            actual=actual_hex,
+        )
+    return _PinnedToCertContext(der)
 
 
 class PinVerifier:
@@ -336,7 +453,7 @@ class PinVerifier:
         host = parsed.hostname or ""
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         try:
-            actual = _fetch_peer_cert_sha256(host, port)
+            actual, _der = _fetch_peer_cert_sha256(host, port)
         except Exception as exc:  # noqa: BLE001 — surface as TlsPinError
             raise TlsPinError(
                 "TLS fingerprint pin check failed: "
