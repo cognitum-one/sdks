@@ -27,11 +27,7 @@ impl<'a> OrdersResource<'a> {
     }
 
     /// Create a new presale payment intent.
-    pub async fn create(
-        &self,
-        email: &str,
-        quantity: u32,
-    ) -> Result<OrderCreateResponse, Error> {
+    pub async fn create(&self, email: &str, quantity: u32) -> Result<OrderCreateResponse, Error> {
         let body = CreateOrderBody {
             email: email.to_owned(),
             quantity,

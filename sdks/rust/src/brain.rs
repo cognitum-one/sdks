@@ -84,11 +84,7 @@ impl<'a> BrainResource<'a> {
     }
 
     /// Vote on a memory entry (positive = 1, negative = -1).
-    pub async fn vote(
-        &self,
-        memory_id: &str,
-        vote: i8,
-    ) -> Result<VoteResponse, Error> {
+    pub async fn vote(&self, memory_id: &str, vote: i8) -> Result<VoteResponse, Error> {
         let body = VoteBody {
             memory_id: memory_id.to_owned(),
             vote,

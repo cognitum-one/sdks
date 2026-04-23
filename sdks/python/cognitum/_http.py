@@ -15,7 +15,30 @@ from cognitum.errors import (
     ValidationError,
 )
 
-_RETRYABLE_STATUS_CODES = {429, 500, 503}
+# ADR-0005 §Retriable outcomes — 502 and 504 are retriable gateway/upstream
+# timeout responses. Closes cognitum-one/sdks#8. Mirrors the seed-side set in
+# ``cognitum/seed/_retry.py`` but kept self-contained so the cloud transport
+# does not cross the seed package boundary (ADR-0013b §6 / §"cloud path").
+_RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+
+# ADR-0005 §Idempotency rule — methods whose repeat is safe by spec.
+# POST/PATCH are excluded; callers must opt-in via ``idempotent=True`` to
+# retry write verbs after a status response indicates the server accepted
+# (or may have accepted) the body. Closes cognitum-one/sdks#9.
+_IDEMPOTENT_METHODS: frozenset[str] = frozenset(
+    {"GET", "HEAD", "PUT", "DELETE", "OPTIONS"}
+)
+
+
+def _resolve_idempotent(method: str, idempotent: bool | None) -> bool:
+    """Return the effective idempotency flag for ``method``.
+
+    When ``idempotent`` is ``None`` (default), use the ADR-0005 method table;
+    when the caller passes an explicit bool, honour it.
+    """
+    if idempotent is not None:
+        return idempotent
+    return method.upper() in _IDEMPOTENT_METHODS
 
 
 def _map_error(response: httpx.Response) -> CognitumError:
@@ -78,7 +101,21 @@ class SyncHttpClient:
         *,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        idempotent: bool | None = None,
     ) -> Any:
+        """Execute a request with ADR-0005 retry policy.
+
+        Parameters
+        ----------
+        idempotent:
+            ``None`` (default) — auto-resolve from ``method``:
+            GET/HEAD/PUT/DELETE/OPTIONS retry on retriable status; POST/PATCH
+            do not.
+            ``True`` — caller attests semantic idempotency; retries enabled
+            even for POST/PATCH (e.g. read-only semantic POSTs).
+            ``False`` — force non-retriable even for GETs (rare).
+        """
+        is_idempotent = _resolve_idempotent(method, idempotent)
         last_exc: Exception | None = None
         for attempt in range(self._max_retries + 1):
             try:
@@ -87,6 +124,8 @@ class SyncHttpClient:
                 )
             except httpx.TransportError as exc:
                 last_exc = exc
+                # Transport errors before the body is sent are always
+                # retriable (ADR-0005 §Retriable outcomes).
                 if attempt < self._max_retries:
                     time.sleep(_backoff_delay(attempt))
                     continue
@@ -99,6 +138,7 @@ class SyncHttpClient:
 
             if (
                 response.status_code in _RETRYABLE_STATUS_CODES
+                and is_idempotent
                 and attempt < self._max_retries
             ):
                 delay = _backoff_delay(attempt)
@@ -129,8 +169,11 @@ class SyncHttpClient:
         *,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        idempotent: bool | None = None,
     ) -> Any:
-        return self.request("POST", path, json=json, params=params)
+        return self.request(
+            "POST", path, json=json, params=params, idempotent=idempotent
+        )
 
     def close(self) -> None:
         self._client.close()
@@ -164,9 +207,16 @@ class AsyncHttpClient:
         *,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        idempotent: bool | None = None,
     ) -> Any:
+        """Async twin of :meth:`SyncHttpClient.request`.
+
+        See the sync docstring for the ``idempotent`` semantics; the two
+        clients share the same ADR-0005 policy.
+        """
         import asyncio
 
+        is_idempotent = _resolve_idempotent(method, idempotent)
         last_exc: Exception | None = None
         for attempt in range(self._max_retries + 1):
             try:
@@ -187,6 +237,7 @@ class AsyncHttpClient:
 
             if (
                 response.status_code in _RETRYABLE_STATUS_CODES
+                and is_idempotent
                 and attempt < self._max_retries
             ):
                 delay = _backoff_delay(attempt)
@@ -217,8 +268,11 @@ class AsyncHttpClient:
         *,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        idempotent: bool | None = None,
     ) -> Any:
-        return await self.request("POST", path, json=json, params=params)
+        return await self.request(
+            "POST", path, json=json, params=params, idempotent=idempotent
+        )
 
     async def close(self) -> None:
         await self._client.aclose()

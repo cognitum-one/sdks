@@ -10,6 +10,12 @@ export interface CognitumConfig {
   retries?: number;
   /** Whether to automatically retry on 429 rate limit responses. Defaults to true. */
   rateLimitRetry?: boolean;
+  /**
+   * Total wall-clock budget across all retry attempts, in milliseconds.
+   * Defaults to 60_000 per ADR-0005. The retry loop breaks early if
+   * `Date.now() - start >= maxElapsedMs`.
+   */
+  maxElapsedMs?: number;
 }
 
 // ---------------------------------------------------------------------------
