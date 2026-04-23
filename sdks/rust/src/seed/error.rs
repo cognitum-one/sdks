@@ -119,6 +119,21 @@ pub fn config(reason: &str) -> BaseError {
     BaseError::Validation(format!("config: {reason}"))
 }
 
+/// Build the "fingerprint pin mismatch" error surfaced by the per-peer
+/// rustls verifier (ADR-0014c §"fp= cert pinning"). Wraps an
+/// [`BaseError::Validation`] with a `tls_pin:` prefix so callers that
+/// already match on `Error::Validation(msg)` keep working.
+///
+/// The rustls layer returns `rustls::Error::General("fingerprint pin
+/// mismatch for <host>")` at handshake time; by the time the reqwest
+/// future surfaces, the error has been wrapped in
+/// [`BaseError::Http`]. This helper is used by callers that want to
+/// construct the canonical validation shape (e.g. tests asserting on
+/// the `tls_pin:` prefix) without depending on reqwest internals.
+pub fn tls_pin(peer_host: &str) -> BaseError {
+    BaseError::Validation(format!("tls_pin: fingerprint mismatch for {peer_host}"))
+}
+
 /// Build the "trust-score blocked" error (ADR-0007 §Trust-score protection,
 /// `cognitum-one/sdks#16`).
 ///
@@ -250,6 +265,18 @@ mod tests {
             BaseError::Validation(m) => {
                 assert!(m.starts_with("config:"));
                 assert!(m.contains("peer not in mesh"));
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tls_pin_prefixes_validation_with_host() {
+        match tls_pin("seed-a.local") {
+            BaseError::Validation(m) => {
+                assert!(m.starts_with("tls_pin:"));
+                assert!(m.contains("seed-a.local"));
+                assert!(m.contains("fingerprint mismatch"));
             }
             other => panic!("expected Validation, got {other:?}"),
         }

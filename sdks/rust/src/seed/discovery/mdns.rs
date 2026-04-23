@@ -268,20 +268,33 @@ fn resolve_info_to_peer(
 
     let url = format!("{scheme}://{host_literal}:{port}");
     let device_id = info.get_property_val_str("id").map(str::to_owned);
+    // `fp=sha256:<hex>` per seed/src/cognitum-agent/src/discovery.rs.
+    // Normalise to lowercase hex without colons so the FingerprintPinVerifier
+    // comparison is trivial.
+    let fp = info
+        .get_property_val_str("fp")
+        .map(super::normalize_fingerprint);
 
     Some(
         DiscoveredPeer::new(url)
             .with_latency_ms(observed_ms)
-            .set_device_id(device_id),
+            .set_device_id(device_id)
+            .set_tls_fingerprint(fp),
     )
 }
 
-// Small helper: fluent `set_device_id(Option<String>)` — the existing
-// `with_device_id` takes an owned `String` so this keeps the call site
-// clean when the value may be missing.
+// Small helpers: fluent `set_device_id(Option<String>)` /
+// `set_tls_fingerprint(Option<String>)` — the existing `with_*`
+// constructors take owned values, so these keep the call site clean
+// when the parsed TXT key may be missing.
 impl DiscoveredPeer {
     fn set_device_id(mut self, id: Option<String>) -> Self {
         self.device_id = id;
+        self
+    }
+
+    fn set_tls_fingerprint(mut self, fp: Option<String>) -> Self {
+        self.tls_fingerprint = fp;
         self
     }
 }
@@ -321,5 +334,24 @@ mod tests {
             .build();
         let peers = d.discover().await.unwrap_or_default();
         assert!(peers.is_empty());
+    }
+
+    #[test]
+    fn fingerprint_normalisation_strips_prefix_and_colons() {
+        use super::super::normalize_fingerprint;
+        // Seed wire form is `sha256:AA:BB:...` — we want lowercase hex.
+        let got = normalize_fingerprint("sha256:AA:BB:CC:DD");
+        assert_eq!(got, "aabbccdd");
+        let got2 = normalize_fingerprint("  SHA256:AaBb  ");
+        assert_eq!(got2, "aabb");
+        // No prefix — still works.
+        let got3 = normalize_fingerprint("AABB");
+        assert_eq!(got3, "aabb");
+    }
+
+    #[test]
+    fn set_tls_fingerprint_round_trip_on_discovered_peer() {
+        let p = DiscoveredPeer::new("https://seed:8443").with_tls_fingerprint("sha256:AA:BB");
+        assert_eq!(p.tls_fingerprint.as_deref(), Some("aabb"));
     }
 }

@@ -436,6 +436,111 @@ match on `Error::Validation` and fall back to `SeedClient::builder()
 
 #D6 is closable for the Rust SDK.
 
+### fp= cert pinning (2026-04-23)
+
+Closes the per-peer TLS cert fingerprint pinning gap that Phase 3 mDNS
+discovery left open: seed adverts carry `fp=sha256:<hex>` in the TXT
+record (`seed/src/cognitum-agent/src/discovery.rs`) but until now the
+Rust SDK only consumed the `id` and `port` keys. The rustls handshake
+fell back to `SeedTls::System` (rejects link-local self-signed) or
+`SeedTls::Insecure` (accepts everything including MITM). The pinning
+path is the link-local story ADR-0007 §TLS calls out — pin the handshake
+to the exact end-entity cert hash the seed advertised, no trust-store
+round-trip required.
+
+**Files added:**
+
+- `sdks/rust/src/seed/tls_pin.rs` — `FingerprintPinVerifier` implements
+  `rustls::client::danger::ServerCertVerifier`. `verify_server_cert`
+  computes SHA-256 of the presented end-entity DER, compares to the
+  map entry for the current hostname, and either returns success or
+  `rustls::Error::General("fingerprint pin mismatch for <host>")` with
+  **no fallback to the inner verifier on mismatch**. Three constructors:
+  `with_webpki_roots(pins)` (production `SeedTls::System` + fp map),
+  `with_insecure_fallback(pins)` (dev `SeedTls::Insecure` + fp map —
+  pinned peers verified strictly, unknown peers waved through), and
+  `new(pins, inner)` (custom inner verifier). Lib unit tests: 7 in
+  `#[cfg(test)] mod tests`, covering the empty-openssl golden
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`,
+  hex round-trips, case-insensitive parsing, and empty-map passthrough.
+- `sdks/rust/tests/seed_fp_pin.rs` — 6 integration tests driving the
+  verifier end-to-end with `rcgen`-minted self-signed certs:
+  `matching_fingerprint_verifies_successfully`,
+  `mismatched_fingerprint_errors_without_fallback`,
+  `no_fingerprint_plus_insecure_builds_as_before` (back-compat
+  SeedClient build path — no fp + Insecure keeps waving everything
+  through), `mixed_peers_one_matches_one_does_not` (pin set, first
+  peer OK / second peer mismatch rejects / unpinned host delegates),
+  `webpki_backed_verifier_constructs_cleanly`, and
+  `explicit_inner_verifier_is_respected_on_fallthrough` (deny-all
+  inner proves the no-pin path actually delegates).
+
+**Files edited:**
+
+- `sdks/rust/src/seed/discovery/mod.rs` — `DiscoveredPeer` gained
+  `tls_fingerprint: Option<String>` (lowercased hex, no `sha256:`
+  prefix, no colons). New fluent `with_tls_fingerprint(...)` setter and
+  crate-local `normalize_fingerprint(raw)` helper so the mDNS parser and
+  the verifier agree on a single canonical form.
+- `sdks/rust/src/seed/discovery/mdns.rs` — `resolve_info_to_peer` now
+  reads the TXT `fp` key and normalises into the new `tls_fingerprint`
+  field via `set_tls_fingerprint(...)`. Two new unit tests:
+  `fingerprint_normalisation_strips_prefix_and_colons` and
+  `set_tls_fingerprint_round_trip_on_discovered_peer`.
+- `sdks/rust/src/seed/client.rs` — `SeedClientBuilder::build` now keeps
+  the full `Vec<DiscoveredPeer>` around (not just the URLs) and feeds
+  it to `build_http_client`. New `build_http_client(tls, timeouts,
+  discovered)` applies this precedence: **`SeedTls::Pinned(ca_pem)`
+  wins** (ignores fingerprints — caller asserted a named CA); else if
+  any discovered peer has a `tls_fingerprint`, install a
+  `FingerprintPinVerifier` via rustls `ClientConfig` +
+  `reqwest::ClientBuilder::use_preconfigured_tls`; else fall through to
+  the existing `System` / `Insecure` behaviour. A mismatch on any
+  pinned peer is a hard `Error::Http`/`Error::Validation` — no cycling.
+  `install_rustls_verifier` lazily installs the `ring` crypto provider
+  if none is set so test binaries work without a global install.
+- `sdks/rust/src/seed/error.rs` — new `tls_pin(peer_host)` helper
+  producing `BaseError::Validation("tls_pin: fingerprint mismatch for
+  <host>")`. Stays in the existing `Error` enum per ADR-0004; a
+  dedicated variant would require touching `src/error.rs` (pre-fix
+  track).
+- `sdks/rust/src/seed/mod.rs` — exposes the new `tls_pin` module.
+
+**Dependencies added (justified):**
+
+- `sha2 = "0.10"` — the SHA-256 primitive the verifier uses. Not in
+  reqwest's transitive tree (verified via `cargo tree --features seed`);
+  the explicit dep keeps the hash call reviewable.
+- `rustls = "0.23"` — already transitively pulled by reqwest's
+  `rustls-tls` feature; surfaced here so our `ServerCertVerifier` and
+  reqwest see the same rustls 0.23 types. `default-features = false`.
+- `webpki-roots = "1.0"` — production trust root for the `System`
+  fallthrough path. Matches reqwest's own default.
+- `rcgen = "0.13"` (dev only) — self-signed certs for the integration
+  tests. Dev-only means it never leaks into consumer builds.
+
+**Verification:**
+
+- `cargo fmt --all --check` — clean.
+- `cargo clippy --features "seed,mdns" --tests -- -D warnings` — clean.
+- `cargo test --features seed` — `seed_fp_pin` 6 green; all other seed
+  integration suites green (`seed_unit` 24, `seed_mesh` 7,
+  `seed_call_options` 8, `seed_discovery` 6, `seed_mesh_resource` 5,
+  `seed_rediscover` 2, `seed_trust_score` 5); lib tests 80 pass + the
+  pre-existing `invalid_pem_is_surfaced_as_validation_error` /
+  `builder_trust_root_pem_round_trips` cloud-path failures documented
+  earlier in this ADR.
+- `cargo test --features "seed,mdns"` — same integration suites green
+  (lib tests 85 pass including the 8 new `tls_pin` + `mdns` additions).
+
+**Scope boundary:** The http client is built once in `build()` from
+the initial discovery snapshot. If `rediscover()` introduces new
+fingerprints for peers that previously had none (or vice versa), the
+pin map does not rebuild — the existing client keeps its original
+verifier. This is a conscious trade-off for the 45-minute budget: a
+rebuild would require wrapping `SeedInner.http` behind a lock, which
+touches every call site in the request loop. Tracked for follow-up.
+
 ### Phase 2 delivery (2026-04-23)
 
 Closes the ADR-0016a §D8 + ADR-0016b §"Per-call knobs" conformance gap

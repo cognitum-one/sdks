@@ -90,15 +90,26 @@ pub struct DiscoveredPeer {
     /// it. mDNS typically records wall time to the first `ServiceFound`
     /// event; `Explicit` leaves this `None`.
     pub latency_ms: Option<u32>,
+    /// SHA-256 cert fingerprint parsed from the `fp=sha256:<hex>` TXT
+    /// record key (seed mDNS advert — `seed/src/cognitum-agent/src/discovery.rs`).
+    /// Stored as a lowercased hex string without colons so it compares
+    /// stably regardless of case. Used by the
+    /// [`FingerprintPinVerifier`](super::tls_pin::FingerprintPinVerifier)
+    /// to pin the per-peer rustls handshake on link-local self-signed
+    /// seeds. `None` for providers that cannot observe the fingerprint
+    /// (e.g. [`Explicit`]).
+    pub tls_fingerprint: Option<String>,
 }
 
 impl DiscoveredPeer {
-    /// Build a peer with just a URL. `device_id` / `latency_ms` are `None`.
+    /// Build a peer with just a URL. `device_id` / `latency_ms` /
+    /// `tls_fingerprint` are `None`.
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
             device_id: None,
             latency_ms: None,
+            tls_fingerprint: None,
         }
     }
 
@@ -113,6 +124,29 @@ impl DiscoveredPeer {
         self.latency_ms = Some(ms);
         self
     }
+
+    /// Attach a SHA-256 cert fingerprint. Accepts any case; stored
+    /// lowercased without colons.
+    pub fn with_tls_fingerprint(mut self, fp: impl Into<String>) -> Self {
+        self.tls_fingerprint = Some(normalize_fingerprint(&fp.into()));
+        self
+    }
+}
+
+/// Normalise a TXT-record fingerprint to a lowercased hex string with no
+/// `sha256:` prefix and no colons. Public-in-module so the mDNS parser
+/// and the verifier agree on a single canonical form.
+pub(crate) fn normalize_fingerprint(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let without_prefix = trimmed
+        .strip_prefix("sha256:")
+        .or_else(|| trimmed.strip_prefix("SHA256:"))
+        .unwrap_or(trimmed);
+    without_prefix
+        .chars()
+        .filter(|c| *c != ':')
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
 }
 
 /// Zero-dep provider that returns a fixed list of URLs.
@@ -195,9 +229,19 @@ mod tests {
     async fn discovered_peer_builder_is_fluent() {
         let p = DiscoveredPeer::new("https://x:8443")
             .with_device_id("abc")
-            .with_latency_ms(42);
+            .with_latency_ms(42)
+            .with_tls_fingerprint("sha256:AA:BB:CC");
         assert_eq!(p.url, "https://x:8443");
         assert_eq!(p.device_id.as_deref(), Some("abc"));
         assert_eq!(p.latency_ms, Some(42));
+        assert_eq!(p.tls_fingerprint.as_deref(), Some("aabbcc"));
+    }
+
+    #[test]
+    fn normalize_fingerprint_handles_prefix_and_case() {
+        assert_eq!(normalize_fingerprint("sha256:AA:BB"), "aabb");
+        assert_eq!(normalize_fingerprint("SHA256:AaBb"), "aabb");
+        assert_eq!(normalize_fingerprint("aabb"), "aabb");
+        assert_eq!(normalize_fingerprint("  sha256:CC:DD  "), "ccdd");
     }
 }

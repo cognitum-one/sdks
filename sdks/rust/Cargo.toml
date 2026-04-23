@@ -46,7 +46,17 @@ async-trait = "0.1"
 # the optional `async`/`log` integrations — we drive mdns-sd's sync receiver
 # from `tokio::task::spawn_blocking` ourselves.
 mdns-sd = { version = "0.19", optional = true, default-features = false }
+# Per-peer `fp=` cert fingerprint pinning for the seed rustls handshake
+# (ADR-0014c §"fp= cert pinning", ADR-0007 §TLS). `sha2` computes the
+# SHA-256 digest of the presented end-entity cert; `rustls` and
+# `webpki-roots` are already pulled transitively by reqwest's
+# `rustls-tls` feature, we surface them here so our custom
+# `ServerCertVerifier` sees the same rustls 0.23 types reqwest does.
+sha2 = { version = "0.10", default-features = false }
+rustls = { version = "0.23", default-features = false }
+webpki-roots = "1.0"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 wiremock = "0.6"
+rcgen = "0.13"

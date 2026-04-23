@@ -879,7 +879,13 @@ impl SeedClientBuilder {
         // builder expects, and lets us surface config errors (e.g. empty
         // mDNS response) at construction time instead of lurking until
         // the first request.
+        //
+        // We keep the full `Vec<DiscoveredPeer>` around (not just the
+        // URL list) so the builder can feed any `tls_fingerprint=`
+        // advertisements into `FingerprintPinVerifier` alongside the
+        // PeerSet construction.
         let mut endpoints_str = self.endpoints.clone();
+        let mut discovered_peers: Vec<DiscoveredPeer> = Vec::new();
         if endpoints_str.is_empty() {
             if let Some(ref d) = self.discovery {
                 let discovered = block_on_discover(d.as_ref())?;
@@ -888,7 +894,8 @@ impl SeedClientBuilder {
                         "SeedClient: Discovery returned zero peers at build time".into(),
                     ));
                 }
-                endpoints_str = discovered.into_iter().map(|p| p.url).collect();
+                endpoints_str = discovered.iter().map(|p| p.url.clone()).collect();
+                discovered_peers = discovered;
             }
         }
 
@@ -905,7 +912,7 @@ impl SeedClientBuilder {
 
         let peer_set = PeerSet::new(endpoints)?;
         let peers = Arc::new(Mutex::new(peer_set));
-        let http = build_http_client(&self.tls, &self.timeouts)?;
+        let http = build_http_client(&self.tls, &self.timeouts, &discovered_peers)?;
 
         let token_book = match self.token_book {
             Some(book) => SharedTokenBook::new_boxed(book),
@@ -970,22 +977,58 @@ fn block_on_discover(d: &dyn Discovery) -> Result<Vec<DiscoveredPeer>, Error> {
     })
 }
 
-fn build_http_client(tls: &SeedTls, timeouts: &Timeouts) -> Result<reqwest::Client, Error> {
+fn build_http_client(
+    tls: &SeedTls,
+    timeouts: &Timeouts,
+    discovered: &[DiscoveredPeer],
+) -> Result<reqwest::Client, Error> {
     let mut builder = reqwest::Client::builder()
         .connect_timeout(timeouts.connect)
         .timeout(timeouts.read)
         .redirect(reqwest::redirect::Policy::none())
         .pool_idle_timeout(Some(Duration::from_secs(60)));
 
+    // Collect any `fp=` fingerprints surfaced by discovery. A non-empty
+    // pin map activates `FingerprintPinVerifier` — see ADR-0014c
+    // §"fp= cert pinning" for the precedence rules.
+    let pins = super::tls_pin::build_pin_map(discovered)
+        .map_err(|e| Error::Validation(format!("seed: invalid peer URL during pin map: {e}")))?;
+
     match tls {
-        SeedTls::System => {}
         SeedTls::Pinned(pem) => {
+            // Explicit pinned CA trumps per-peer fingerprint pinning —
+            // the caller has asked for a named CA and we honour that
+            // verbatim. Fingerprints from discovery are ignored.
             let cert = reqwest::Certificate::from_pem(pem)
                 .map_err(|e| Error::Validation(format!("invalid seed trust root PEM: {e}")))?;
             builder = builder
                 .tls_built_in_root_certs(false)
                 .add_root_certificate(cert);
         }
+        SeedTls::System if !pins.is_empty() => {
+            // System trust + per-peer fingerprint pins. Build a rustls
+            // ClientConfig backed by webpki-roots and install our
+            // FingerprintPinVerifier as the custom verifier.
+            let verifier = super::tls_pin::FingerprintPinVerifier::with_webpki_roots(pins)
+                .map_err(|e| Error::Validation(format!("seed: fingerprint verifier: {e}")))?;
+            builder = install_rustls_verifier(builder, verifier)?;
+        }
+        SeedTls::Insecure if !pins.is_empty() => {
+            // Insecure + fingerprint pins — pinned peers are verified
+            // strictly; unknown peers are waved through. This keeps
+            // dev-on-seed setups that mix pinned mDNS-discovered peers
+            // with a locally-mocked wiremock working.
+            if !INSECURE_WARN.swap(true, Ordering::Relaxed) {
+                eprintln!(
+                    "cognitum-rs seed: TLS verification is DISABLED via \
+                     SeedTls::Insecure. Never use this in production — \
+                     prefer SeedTls::Pinned for self-signed seeds (ADR-0007)."
+                );
+            }
+            let verifier = super::tls_pin::FingerprintPinVerifier::with_insecure_fallback(pins);
+            builder = install_rustls_verifier(builder, verifier)?;
+        }
+        SeedTls::System => {}
         SeedTls::Insecure => {
             if !INSECURE_WARN.swap(true, Ordering::Relaxed) {
                 eprintln!(
@@ -1001,6 +1044,32 @@ fn build_http_client(tls: &SeedTls, timeouts: &Timeouts) -> Result<reqwest::Clie
     builder
         .build()
         .map_err(|e| Error::Validation(format!("seed http client: {e}")))
+}
+
+/// Build a rustls `ClientConfig` that uses `verifier` and hand it to
+/// reqwest via `use_preconfigured_tls`. The crypto provider falls back
+/// to the process-wide default if one has been installed; otherwise we
+/// install `rustls::crypto::ring` so a test binary that never touches
+/// the process-wide default still gets a working ClientConfig.
+fn install_rustls_verifier(
+    builder: reqwest::ClientBuilder,
+    verifier: super::tls_pin::FingerprintPinVerifier,
+) -> Result<reqwest::ClientBuilder, Error> {
+    use rustls::crypto::CryptoProvider;
+    // Ensure a CryptoProvider is installed. The builder below calls
+    // `.with_safe_default_protocol_versions()` which panics if no
+    // default provider is available. `install_default` is a no-op if
+    // one is already set — and it ignores `Err` to tolerate the
+    // double-install case in tests.
+    if CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
+    let config = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(verifier))
+        .with_no_client_auth();
+    Ok(builder.use_preconfigured_tls(config))
 }
 
 // Convenience helpers so `SharedTokenBook` can accept a pre-boxed value

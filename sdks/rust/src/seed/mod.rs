@@ -50,6 +50,7 @@ pub mod peers;
 pub mod resources;
 pub mod retry;
 pub mod session;
+pub mod tls_pin;
 pub mod token_book;
 
 pub use client::{SeedClient, SeedClientBuilder};
