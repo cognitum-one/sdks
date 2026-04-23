@@ -45,4 +45,8 @@ Start here — these apply to **all** SDKs and are referenced throughout:
 - **OQ-P2** `WitnessEntry` wire shape (modeled from `ddd/seed-domain.md:105`).
 - **OQ-P3** `retry_after_us` placement (chose top-level + fallback regex over `error` string).
 - **OQ-P4** `TokenStore` concrete implementation deferred (stdlib file vs `keyring`).
-- **OQ-4** (shared) MCP parity — Python currently HTTP-only; mirror Node's stdio transport.
+- **OQ-4** (shared) **Answered 2026-04-23** — Python ships both HTTP and
+  stdio transports via `cognitum.mcp` (`McpClient`, `StdioTransport`,
+  `HttpTransport`, `Transport` Protocol). See
+  [`0013c-python-sdk-streaming-tests-packaging-migration.md`](0013c-python-sdk-streaming-tests-packaging-migration.md)
+  §"MCP stdio parity".

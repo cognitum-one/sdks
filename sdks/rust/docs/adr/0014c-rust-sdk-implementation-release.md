@@ -1173,7 +1173,11 @@ Carry-forward + Rust-specific (as mandated by the brief).
   typed stream handles and gates them behind `stream` feature. Unchanged
   status — the seed ships SSE, the SDK stops raising `NotImplemented`
   automatically.
-- **OQ-4** (ADR-0010) — MCP stdio parity — out of scope for 0.2.0; tracked.
+- **OQ-4** (ADR-0010) — MCP stdio parity — **Answered 2026-04-23**,
+  landed via `src/mcp/transport.rs` + `src/mcp/stdio.rs` (`Transport`
+  trait, `HttpTransport`, `StdioTransport::builder()`, `McpClient`).
+  See §"MCP stdio parity (OQ-4, 2026-04-23)" above; 5 green integration
+  tests in `tests/mcp_stdio.rs`.
 - **OQ-5** (ADR-0003) — Request signing (`X-Signature`) — still TBD.
 - **OQ-6** (ADR-0012) — Legacy `sdk-typescript/` — unrelated; tracked.
 

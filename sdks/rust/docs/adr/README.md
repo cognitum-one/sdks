@@ -49,4 +49,9 @@ Read in this order (cross-references form a chain):
 
 - **OQ-R1..OQ-R6** — enumerated in `0014c` §Open Questions.
 - **OQ-1** (shared) — Bearer → X-API-Key fix: needs backend confirmation the cloud API won't silently accept Bearer.
-- **OQ-4** (shared) — MCP parity: Rust currently HTTP-only; mirror Node's stdio transport.
+- **OQ-4** (shared) **Answered 2026-04-23** — Rust ships both HTTP and
+  stdio transports via `src/mcp/transport.rs` + `src/mcp/stdio.rs`
+  (`Transport` trait, `HttpTransport`, `StdioTransport::builder()`,
+  `McpClient`). See
+  [`0014c-rust-sdk-implementation-release.md`](0014c-rust-sdk-implementation-release.md)
+  §"MCP stdio parity".

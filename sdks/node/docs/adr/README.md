@@ -42,4 +42,6 @@ Start here — these apply to **all** SDKs and are referenced throughout:
 
 - **OQ-N1** `undici.Agent` per-client vs global — defaulted to per-client.
 - **OQ-N2** `vitest` vs `node:test` — kept vitest pending tooling re-evaluation.
-- **OQ-4** (shared) MCP parity: Python/Rust should mirror Node's stdio transport.
+- **OQ-4** (shared) **Resolved 2026-04-23** — all three SDKs now ship
+  stdio + HTTP MCP transports. Python via `cognitum.mcp`, Rust via
+  `src/mcp/{transport,stdio}.rs`. See cross-ADR README OQ table.

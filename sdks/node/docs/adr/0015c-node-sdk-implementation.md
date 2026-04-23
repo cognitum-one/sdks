@@ -771,7 +771,7 @@ before/after snippets for every breaking row above.
 | ID | Question | Owner | Default |
 |----|----------|-------|---------|
 | OQ-3 (carried) | SSE endpoints return 501 today. Keep throwing `NotImplementedError` or return an empty closed iterator? | ADR-0002 | throw; surface path |
-| OQ-4 (carried) | Python/Rust to mirror `createStdioTransport`? | ADRs 0009/0010 | yes |
+| OQ-4 (carried) | Python/Rust to mirror `createStdioTransport`? | ADRs 0009/0010 | **Resolved 2026-04-23** — Python ships `cognitum.mcp` (StdioTransport/HttpTransport); Rust ships `src/mcp/{transport,stdio}.rs` (StdioTransport::builder + McpClient). |
 | OQ-5 (carried) | When seed enforces `X-Signature`, expose `requestSigner` callback or move to subclass? | ADR-0003 | callback |
 | OQ-N1 | One `undici.Agent` per `SeedClient` or one global? | this ADR | **per client** — matches isolated credential lifetime; pay the 16-socket pool per client. Revisit if users run dozens of seed clients per process. |
 | OQ-N2 | Test runner: keep `vitest` or move to `node:test`? | this ADR | **vitest** — existing setup, MSW integration, UI, coverage. `node:test` is attractive but has no official fetch-mock story. |
