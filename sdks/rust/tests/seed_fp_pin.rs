@@ -69,7 +69,7 @@ fn matching_fingerprint_verifies_successfully() {
     let (der, hex) = self_signed("seed-a.local");
     let digest = parse_hex_sha256(&hex).expect("parse");
     let mut pins = PinMap::new();
-    pins.insert("seed-a.local".into(), digest);
+    pins.insert("seed-a.local".into(), digest.to_vec());
 
     let verifier = FingerprintPinVerifier::with_insecure_fallback(pins);
     let cert = CertificateDer::from(der);
@@ -92,7 +92,7 @@ fn mismatched_fingerprint_errors_without_fallback() {
     let (_, hex_wrong) = self_signed("imposter.example");
     let wrong_digest = parse_hex_sha256(&hex_wrong).expect("parse");
     let mut pins = PinMap::new();
-    pins.insert("seed-a.local".into(), wrong_digest);
+    pins.insert("seed-a.local".into(), wrong_digest.to_vec());
 
     // NOTE: insecure fallback would OK anything — so the hard error
     // proves the verifier refuses to fall back on mismatch.
@@ -208,7 +208,7 @@ fn webpki_backed_verifier_constructs_cleanly() {
     // Prove the webpki-roots wire still compiles and constructs — the
     // realistic "System TLS + pinned peer" production path.
     let mut pins = PinMap::new();
-    pins.insert("x.example".into(), [0u8; 32]);
+    pins.insert("x.example".into(), vec![0u8; 32]);
     let v = FingerprintPinVerifier::with_webpki_roots(pins).expect("webpki builds");
     assert_eq!(v.pin_count(), 1);
 }
