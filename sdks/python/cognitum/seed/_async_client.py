@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import ssl
 import threading
 import time
 import uuid
 from dataclasses import replace as dataclass_replace
 from typing import Any, Sequence
 from types import TracebackType
+from urllib.parse import urlparse
 
 import httpx
 
@@ -20,10 +22,11 @@ from cognitum._errors import (
     NetworkError,
     ParseError,
     TimeoutError as SeedTimeoutError,
+    TlsPinError,
     TrustScoreBlockedError,
 )
 from cognitum.seed._call_options import CallOptions, resolve_call_options
-from cognitum.seed._client import map_error
+from cognitum.seed._client import _find_pin_mismatch_in_chain, map_error
 from cognitum.seed._config import (
     EndpointsInput,
     SeedAuth,
@@ -43,7 +46,12 @@ from cognitum.seed._retry import (
     parse_retry_after,
 )
 from cognitum.seed._token_book import InMemoryTokenBook, SecretString, TokenBook
-from cognitum.seed._transport import PinVerifier, build_async_client, safe_json
+from cognitum.seed._transport import (
+    build_async_client,
+    build_async_pinned_client,
+    build_pinned_ssl_context,
+    safe_json,
+)
 from cognitum.seed.resources import (
     AsyncCustodyResource,
     AsyncMeshResource,
@@ -87,8 +95,15 @@ class _AsyncTransport:
         # never hold this across an ``await``.
         self._auth_failure_counts: dict[str, int] = {}
         self._trust_lock = threading.Lock()
-        # Per-peer fingerprint pinner. See _SyncTransport for rationale.
-        self._pin_verifier = PinVerifier(options.fingerprints)
+        # Per-peer TLS fingerprint pinning (security audit C2). See
+        # `_SyncTransport.__init__` for the design rationale — same
+        # approach here, just with AsyncClient + an `asyncio.Lock`
+        # guarding the `_pinned_clients` map.
+        self._fingerprints: dict[str, str] = {
+            k: v.lower() for k, v in options.fingerprints.items()
+        }
+        self._pinned_clients: dict[str, httpx.AsyncClient] = {}
+        self._pinned_lock = asyncio.Lock()
         self._closed: bool = False
 
     async def close(self) -> None:
@@ -97,6 +112,48 @@ class _AsyncTransport:
             return
         self._closed = True
         await self._client.aclose()
+        async with self._pinned_lock:
+            for client in self._pinned_clients.values():
+                try:
+                    await client.aclose()
+                except Exception:  # noqa: BLE001 — best-effort cleanup
+                    pass
+            self._pinned_clients.clear()
+
+    async def _client_for_peer(self, peer_url: str) -> httpx.AsyncClient:
+        """Async counterpart of :meth:`_SyncTransport._client_for_peer`.
+
+        Builds the pinned SSLContext on the running loop's default
+        executor so the initial handshake (`ssl.get_server_certificate`
+        is blocking) doesn't stall the event loop. Raises
+        :class:`TlsPinError` if the pre-fetch fails or the digest
+        doesn't match the pinned value.
+        """
+        expected = self._fingerprints.get(peer_url)
+        if expected is None:
+            return self._client
+        async with self._pinned_lock:
+            existing = self._pinned_clients.get(peer_url)
+            if existing is not None:
+                return existing
+        parsed = urlparse(peer_url)
+        host = parsed.hostname or ""
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        loop = asyncio.get_running_loop()
+        ctx = await loop.run_in_executor(
+            None,
+            lambda: build_pinned_ssl_context(
+                expected_sha256=expected, host=host, port=port
+            ),
+        )
+        client = build_async_pinned_client(self._options, ctx)
+        async with self._pinned_lock:
+            winner = self._pinned_clients.get(peer_url)
+            if winner is not None:
+                await client.aclose()
+                return winner
+            self._pinned_clients[peer_url] = client
+            return client
 
     # Alias to match httpx / asyncpg naming convention. Tests and
     # existing callers use ``close()``; ``aclose()`` is the preferred
@@ -193,14 +250,11 @@ class _AsyncTransport:
             if tok is not None:
                 headers["X-Pairing-Token"] = tok.as_str()
 
-            # Per-peer TLS fingerprint pin check (ADR-0007 §TLS).
-            # Runs before httpx dispatches. The fetch happens in a
-            # worker thread to avoid blocking the event loop on the
-            # first handshake to each peer; cached afterwards.
-            if self._pin_verifier.needs_verification(peer.endpoint.url):
-                await asyncio.get_running_loop().run_in_executor(
-                    None, self._pin_verifier.verify, peer.endpoint.url,
-                )
+            # Per-peer TLS fingerprint pin (security audit C2). See
+            # `_SyncTransport.request` — this is the async mirror. The
+            # initial cert fetch runs in the default executor to avoid
+            # blocking the event loop.
+            http_client = await self._client_for_peer(peer.endpoint.url)
 
             url = f"{peer.endpoint.url}{path if path.startswith('/api') else '/api/v1' + path}"
             call_started = time.monotonic()
@@ -210,7 +264,7 @@ class _AsyncTransport:
                 extra_kw: dict[str, Any] = {}
                 if per_call_timeout_override is not None:
                     extra_kw["timeout"] = per_call_timeout_override
-                response = await self._client.request(
+                response = await http_client.request(
                     method_u, url, json=json, params=params, headers=headers,
                     **extra_kw,
                 )
@@ -238,6 +292,25 @@ class _AsyncTransport:
                 ):
                     raise last_exc
             except httpx.TransportError as exc:
+                # Security audit C2 — async mirror of _SyncTransport.
+                # Mid-session pin mismatch bubbles up as a TransportError
+                # whose cause is ssl.SSLCertVerificationError.
+                pin_cause = _find_pin_mismatch_in_chain(exc)
+                if pin_cause is not None:
+                    async with self._pinned_lock:
+                        stale = self._pinned_clients.pop(peer.endpoint.url, None)
+                    if stale is not None:
+                        try:
+                            await stale.aclose()
+                        except Exception:  # noqa: BLE001 — best-effort
+                            pass
+                    raise TlsPinError(
+                        str(pin_cause),
+                        peer_url=peer.endpoint.url,
+                        expected=self._fingerprints.get(peer.endpoint.url),
+                        actual=None,
+                        cause=exc,
+                    ) from exc
                 last_exc = NetworkError(
                     str(exc) or "transport error",
                     cause=exc,

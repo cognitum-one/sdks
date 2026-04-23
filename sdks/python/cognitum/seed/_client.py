@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import ssl
 import threading
 import time
 import uuid
 from dataclasses import replace as dataclass_replace
 from typing import Any, Mapping, Sequence
 from types import TracebackType
+from urllib.parse import urlparse
 
 import httpx
 
@@ -25,6 +27,7 @@ from cognitum._errors import (
     RateLimitError,
     ServiceUnavailableError,
     TimeoutError as SeedTimeoutError,
+    TlsPinError,
     TrustScoreBlockedError,
     ValidationError,
 )
@@ -48,7 +51,12 @@ from cognitum.seed._retry import (
     parse_retry_after,
 )
 from cognitum.seed._token_book import InMemoryTokenBook, SecretString, TokenBook
-from cognitum.seed._transport import PinVerifier, build_sync_client, safe_json
+from cognitum.seed._transport import (
+    build_pinned_ssl_context,
+    build_sync_client,
+    build_sync_pinned_client,
+    safe_json,
+)
 from cognitum.seed.resources import (
     CustodyResource,
     MeshResource,
@@ -57,6 +65,29 @@ from cognitum.seed.resources import (
     StoreResource,
     WitnessResource,
 )
+
+
+def _find_pin_mismatch_in_chain(
+    exc: BaseException,
+) -> ssl.SSLCertVerificationError | None:
+    """Walk the exception chain (``__cause__`` / ``__context__``) looking
+    for a ``SSLCertVerificationError`` raised by
+    ``_PinnedToCertContext.wrap_socket``. httpx wraps ssl errors into
+    ``httpx.ConnectError`` on the transport layer; this lets the
+    request loop distinguish a pin mismatch from a generic transport
+    failure so the former aborts without cycling peers and without
+    retrying.
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, ssl.SSLCertVerificationError):
+            msg = str(cur)
+            if "fingerprint pin mismatch" in msg.lower():
+                return cur
+        cur = cur.__cause__ or cur.__context__
+    return None
 
 
 def _timeout_phase(exc: httpx.TimeoutException) -> str:
@@ -181,10 +212,18 @@ class _SyncTransport:
         self._peers = PeerSet.new(list(options.endpoints))
         self._peers_lock = threading.Lock()
         self._token_book: TokenBook = options.token_book or InMemoryTokenBook()
-        # Per-peer fingerprint pinner (ADR-0007 §TLS, mDNS fp= TXT).
-        # Empty when discovery did not surface any fingerprints — the
-        # verifier then no-ops for every peer.
-        self._pin_verifier = PinVerifier(options.fingerprints)
+        # Per-peer TLS fingerprint pinning (ADR-0007 §TLS, mDNS fp= TXT,
+        # security audit C2). `_fingerprints` is the {peer_url: sha256_hex}
+        # map from discovery. `_pinned_clients` holds a dedicated
+        # httpx.Client for each pinned peer — built lazily on first use,
+        # with an SSLContext that only trusts the cert matching the pin.
+        # The context is applied on the SAME handshake the request uses,
+        # so there's no TOCTOU window between verify and dispatch.
+        self._fingerprints: dict[str, str] = {
+            k: v.lower() for k, v in options.fingerprints.items()
+        }
+        self._pinned_clients: dict[str, httpx.Client] = {}
+        self._pinned_lock = threading.Lock()
         self._closed: bool = False
         # Trust-score counter: per-peer consecutive 401/403 count (ADR-0007
         # §Trust-score protection, issue #16 / audit P-D1). Lives on the
@@ -203,6 +242,59 @@ class _SyncTransport:
             return
         self._closed = True
         self._client.close()
+        with self._pinned_lock:
+            for client in self._pinned_clients.values():
+                try:
+                    client.close()
+                except Exception:  # noqa: BLE001 — best-effort cleanup
+                    pass
+            self._pinned_clients.clear()
+
+    def _client_for_peer(self, peer_url: str) -> httpx.Client:
+        """Return the httpx.Client that handles requests for ``peer_url``.
+
+        For peers with a pinned SHA-256 in ``_fingerprints``, returns a
+        dedicated pinned client (built lazily on first call) whose
+        SSLContext accepts only the cert matching the pin. For unpinned
+        peers, returns the default client.
+
+        Building the pinned client performs the initial cert fetch +
+        fingerprint comparison via :func:`build_pinned_ssl_context`. If
+        the seed presents a cert whose SHA-256 doesn't match
+        ``_fingerprints[peer_url]``, :class:`TlsPinError` is raised and
+        nothing is cached — the next call will retry the pre-fetch.
+        Subsequent requests through the returned client reuse the
+        SSLContext; an attacker who swaps in a forged cert mid-session
+        causes the next request's handshake to abort at
+        :class:`~ssl.SSLCertVerificationError`, which the caller
+        re-raises as :class:`TlsPinError`.
+        """
+        expected = self._fingerprints.get(peer_url)
+        if expected is None:
+            return self._client
+        with self._pinned_lock:
+            existing = self._pinned_clients.get(peer_url)
+            if existing is not None:
+                return existing
+        # Drop the lock while we do the network-costly pre-fetch so
+        # concurrent callers for DIFFERENT peers don't serialise.
+        parsed = urlparse(peer_url)
+        host = parsed.hostname or ""
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        ctx = build_pinned_ssl_context(
+            expected_sha256=expected, host=host, port=port
+        )
+        client = build_sync_pinned_client(self._options, ctx)
+        with self._pinned_lock:
+            # Race: another caller may have inserted the same peer's
+            # client while we were fetching. Prefer the first-inserted
+            # one and close our duplicate.
+            winner = self._pinned_clients.get(peer_url)
+            if winner is not None:
+                client.close()
+                return winner
+            self._pinned_clients[peer_url] = client
+            return client
 
     def _trust_record_failure(self, peer_key: str) -> int:
         with self._trust_lock:
@@ -291,14 +383,20 @@ class _SyncTransport:
             if tok is not None:
                 headers["X-Pairing-Token"] = tok.as_str()
 
-            # Per-peer TLS fingerprint pin check (ADR-0007 §TLS). Runs
-            # before httpx dispatches so a mismatch never exfiltrates
-            # a pairing token. Cached per session lifetime — first use
-            # per peer costs one handshake; subsequent calls no-op.
-            # NOTE: TlsPinError is never retriable and never triggers
-            # mesh failover — it indicates active tampering.
-            if self._pin_verifier.needs_verification(peer.endpoint.url):
-                self._pin_verifier.verify(peer.endpoint.url)
+            # Per-peer TLS fingerprint pin (ADR-0007 §TLS, security
+            # audit C2). For pinned peers we route through a dedicated
+            # httpx.Client whose SSLContext only trusts the cert
+            # matching the pin — the check runs on the SAME handshake
+            # the request uses, closing the prior TOCTOU window.
+            # `_client_for_peer` returns the default client for
+            # unpinned peers, or raises TlsPinError if the pre-fetch
+            # fails or fingerprint mismatches. TlsPinError is never
+            # retriable and never triggers mesh failover — it
+            # indicates active tampering.
+            try:
+                http_client = self._client_for_peer(peer.endpoint.url)
+            except TlsPinError:
+                raise
 
             url = f"{peer.endpoint.url}{path if path.startswith('/api') else '/api/v1' + path}"
             call_started = time.monotonic()
@@ -308,7 +406,7 @@ class _SyncTransport:
                 extra_kw: dict[str, Any] = {}
                 if per_call_timeout_override is not None:
                     extra_kw["timeout"] = per_call_timeout_override
-                response = self._client.request(
+                response = http_client.request(
                     method_u, url, json=json, params=params, headers=headers,
                     **extra_kw,
                 )
@@ -337,6 +435,31 @@ class _SyncTransport:
                 ):
                     raise last_exc
             except httpx.TransportError as exc:
+                # Security audit C2 — a pin mismatch raised mid-session
+                # by `_PinnedToCertContext.wrap_socket` bubbles through
+                # httpx as a TransportError whose cause is an
+                # ssl.SSLCertVerificationError. Surface as TlsPinError
+                # so the caller can distinguish active tampering from a
+                # generic network hiccup. NEVER cycle peers or retry on
+                # a pin mismatch.
+                pin_cause = _find_pin_mismatch_in_chain(exc)
+                if pin_cause is not None:
+                    # Invalidate the cached pinned client so the next
+                    # attempt to reach this peer re-runs the pre-fetch.
+                    with self._pinned_lock:
+                        stale = self._pinned_clients.pop(peer.endpoint.url, None)
+                    if stale is not None:
+                        try:
+                            stale.close()
+                        except Exception:  # noqa: BLE001 — best-effort
+                            pass
+                    raise TlsPinError(
+                        str(pin_cause),
+                        peer_url=peer.endpoint.url,
+                        expected=self._fingerprints.get(peer.endpoint.url),
+                        actual=None,
+                        cause=exc,
+                    ) from exc
                 last_exc = NetworkError(
                     str(exc) or "transport error",
                     cause=exc,

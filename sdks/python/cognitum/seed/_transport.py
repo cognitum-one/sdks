@@ -209,45 +209,66 @@ def _headers(auth: SeedAuth, user_agent: str) -> dict[str, str]:
     return h
 
 
+def _httpx_common_kwargs(
+    options: SeedClientOptions, verify: Any
+) -> dict[str, Any]:
+    """Shared kwargs for httpx.Client / httpx.AsyncClient construction.
+
+    Extracted so that the pinned variants ({build_sync,build_async}
+    _pinned_client) can pass a custom SSLContext as ``verify`` without
+    duplicating every other knob.
+    """
+    connect, read, _total = options.timeouts
+    return {
+        "timeout": httpx.Timeout(
+            connect=connect, read=read, write=read, pool=connect
+        ),
+        "headers": _headers(options.auth, options.user_agent),
+        "limits": httpx.Limits(
+            max_connections=32,
+            max_keepalive_connections=16,
+            keepalive_expiry=30.0,
+        ),
+        "verify": verify,
+        "cert": options.tls.client_cert,
+        "follow_redirects": False,
+        "http2": False,
+    }
+
+
 def build_sync_client(options: SeedClientOptions) -> httpx.Client:
     # Phase 1.5: no base_url pinning — the mesh loop assembles absolute
     # URLs from the picked peer. httpx still reuses the same underlying
     # connection pool across peers.
     ep = options.primary
-    connect, read, total = options.timeouts
     verify = build_verify(ep.host, options.tls, tls_explicit=options.tls_explicit)
-    return httpx.Client(
-        timeout=httpx.Timeout(connect=connect, read=read, write=read, pool=connect),
-        headers=_headers(options.auth, options.user_agent),
-        limits=httpx.Limits(
-            max_connections=32,
-            max_keepalive_connections=16,
-            keepalive_expiry=30.0,
-        ),
-        verify=verify,
-        cert=options.tls.client_cert,
-        follow_redirects=False,
-        http2=False,
-    )
+    return httpx.Client(**_httpx_common_kwargs(options, verify))
 
 
 def build_async_client(options: SeedClientOptions) -> httpx.AsyncClient:
     ep = options.primary
-    connect, read, total = options.timeouts
     verify = build_verify(ep.host, options.tls, tls_explicit=options.tls_explicit)
-    return httpx.AsyncClient(
-        timeout=httpx.Timeout(connect=connect, read=read, write=read, pool=connect),
-        headers=_headers(options.auth, options.user_agent),
-        limits=httpx.Limits(
-            max_connections=32,
-            max_keepalive_connections=16,
-            keepalive_expiry=30.0,
-        ),
-        verify=verify,
-        cert=options.tls.client_cert,
-        follow_redirects=False,
-        http2=False,
-    )
+    return httpx.AsyncClient(**_httpx_common_kwargs(options, verify))
+
+
+def build_sync_pinned_client(
+    options: SeedClientOptions, context: ssl.SSLContext
+) -> httpx.Client:
+    """Build an httpx.Client whose SSLContext is the caller-supplied
+    pinned context. Used by :class:`_SyncTransport` to route requests
+    for a fingerprint-pinned peer through a dedicated client whose
+    TLS layer rejects any cert that doesn't match the pinned DER (see
+    :func:`build_pinned_ssl_context`). Closes the C2 TOCTOU window by
+    performing the pin check on the SAME handshake the request uses.
+    """
+    return httpx.Client(**_httpx_common_kwargs(options, context))
+
+
+def build_async_pinned_client(
+    options: SeedClientOptions, context: ssl.SSLContext
+) -> httpx.AsyncClient:
+    """Async counterpart of :func:`build_sync_pinned_client`."""
+    return httpx.AsyncClient(**_httpx_common_kwargs(options, context))
 
 
 def safe_json(response: httpx.Response) -> Mapping[str, Any] | None:
@@ -396,95 +417,25 @@ def build_pinned_ssl_context(
     return _PinnedToCertContext(der)
 
 
-class PinVerifier:
-    """Per-peer TLS fingerprint pin verifier (ADR-0007 §TLS).
-
-    Pre-check strategy: before httpx dispatches the first request to a
-    peer with an expected ``fp=sha256:<hex>``, we open a raw TLS socket
-    and compute the server-cert DER SHA-256. The result is cached per
-    peer-URL for the session lifetime; mismatches raise
-    :class:`TlsPinError` with no insecure fallback — even when the
-    caller set ``insecure=True`` on ``SeedTLS``.
-
-    Chosen over a custom ``httpx.HTTPTransport`` subclass because the
-    httpx connection layer does not expose a post-handshake callback
-    that reaches the caller's context cleanly, and the pre-check gives
-    us a single well-defined place to raise a canonical exception.
-    The trade-off is one extra TLS handshake per peer at first use —
-    acceptable given peer counts are single-digit (ADR-0016a).
-    """
-
-    __slots__ = ("_expected", "_verified", "_lock")
-
-    def __init__(self, expected: Mapping[str, str]) -> None:
-        # Normalise keys and values once so lookups by peer URL are
-        # cheap and case-insensitive on the hex digest.
-        self._expected: dict[str, str] = {
-            k: v.lower() for k, v in expected.items()
-        }
-        self._verified: set[str] = set()
-        self._lock = threading.Lock()
-
-    def expected_for(self, peer_url: str) -> str | None:
-        return self._expected.get(peer_url)
-
-    def needs_verification(self, peer_url: str) -> bool:
-        with self._lock:
-            return (
-                peer_url in self._expected and peer_url not in self._verified
-            )
-
-    def verify(self, peer_url: str) -> None:
-        """Verify ``peer_url``. Raises :class:`TlsPinError` on mismatch.
-
-        Idempotent: subsequent calls for an already-verified peer are
-        cheap no-ops. Callers should only invoke this when they hold a
-        pinned fingerprint for the peer (see :meth:`needs_verification`).
-        """
-
-        with self._lock:
-            if peer_url not in self._expected:
-                return
-            if peer_url in self._verified:
-                return
-            expected = self._expected[peer_url]
-
-        parsed = urlparse(peer_url)
-        host = parsed.hostname or ""
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        try:
-            actual, _der = _fetch_peer_cert_sha256(host, port)
-        except Exception as exc:  # noqa: BLE001 — surface as TlsPinError
-            raise TlsPinError(
-                "TLS fingerprint pin check failed: "
-                f"could not fetch cert from {peer_url!r}: {exc}",
-                peer_url=peer_url,
-                expected=expected,
-                actual=None,
-                cause=exc,
-            ) from exc
-        if actual != expected:
-            raise TlsPinError(
-                f"TLS fingerprint pin mismatch for {peer_url!r}: "
-                f"expected {expected}, got {actual}",
-                peer_url=peer_url,
-                expected=expected,
-                actual=actual,
-            )
-        with self._lock:
-            self._verified.add(peer_url)
-
-    def mark_verified(self, peer_url: str) -> None:
-        """Test hook: mark a peer as already verified (bypasses fetch)."""
-        with self._lock:
-            self._verified.add(peer_url)
+# NOTE: the previous `PinVerifier` class was removed as part of the
+# security audit C2 fix. It performed pin verification on a SEPARATE
+# TLS socket (via `ssl.get_server_certificate`) and cached a boolean
+# "verified" flag — an attacker could answer handshake #1 with the real
+# cert and handshake #2 (the actual httpx request) with a forged cert
+# and bypass the pin forever. Replacement: `_PinnedToCertContext` +
+# `build_pinned_ssl_context` above, wired into `_client.py` so the pin
+# check runs on the SAME handshake httpx uses. No caching of a boolean;
+# the context holds the pinned DER and the `wrap_socket` override
+# verifies every connection.
 
 
 __all__ = [
-    "PinVerifier",
     "SeedPinnedVerifier",
     "build_async_client",
+    "build_async_pinned_client",
+    "build_pinned_ssl_context",
     "build_sync_client",
+    "build_sync_pinned_client",
     "build_verify",
     "safe_json",
 ]
