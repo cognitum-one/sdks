@@ -3,6 +3,43 @@
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/en/1.1.0/).
 This package follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] — 2026-04-23
+
+Security patch release. No functional changes — fixes two findings
+from the 0.2.0 post-release QE audit (`docs/qe/security-audit.md`).
+See the [root CHANGELOG](../../../CHANGELOG.md) for the full
+cross-SDK picture.
+
+### Security
+
+- **C1 — `fp=` length bounds `[16, 64]` hex.** `parseFingerprint`
+  (`src/seed/discovery/mdns.ts`) and `matchFingerprint`
+  (`src/seed/transport.ts`) previously accepted any even-length hex.
+  An attacker advertising `fp=ab` via mDNS could match 1/256 of any
+  self-signed cert because the transport layer uses `startsWith`
+  against the actual SHA-256. The floor is now 16 hex (8 bytes,
+  matching the seed firmware's truncated TXT form per
+  `seed/src/cognitum-agent/src/discovery.rs:162`); the ceiling is
+  64 hex (full SHA-256). Defense-in-depth: the match layer also
+  enforces the bounds so a hand-rolled `PeerSet` bypassing the mDNS
+  parser cannot install a short pin.
+- **H2 — Trust-score counter concurrency race.** Added per-peer
+  `authInFlight: Map<string, number>` alongside `authFailures`. The
+  pre-dispatch gate now evaluates `confirmed + inFlight >= LIMIT` so
+  N concurrent 401s cannot all pass the gate before any response
+  arrives. Reservation is made synchronously before the first `await`
+  and released in a `try/finally` covering every exit path. Under
+  10 concurrent 401s: only 3 requests reach the wire (was 10).
+
+### Tests
+
+- `tests/seed/unit/discovery-mdns-fp.test.ts` — floor rejection
+  (`fp=ab`) and ceiling rejection (>64 hex).
+- `tests/seed/unit/transport-fp-pin.test.ts` — defense-in-depth at
+  the match layer.
+- `tests/seed/unit/trust-score.test.ts` — 10 concurrent 401s cap
+  dispatch at 3; in-flight 2xx releases its reservation.
+
 ## [0.2.0] — 2026-04-23
 
 Aligned release across the Cognitum SDK monorepo. See the

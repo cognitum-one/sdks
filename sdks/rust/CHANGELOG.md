@@ -3,6 +3,76 @@
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/en/1.1.0/).
 This crate follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] — 2026-04-23
+
+Security patch release. No functional changes — fixes one high
+finding, one silent-bypass, and one high finding from the 0.2.0
+post-release QE audit (`docs/qe/security-audit.md`). See the
+[root CHANGELOG](../../../CHANGELOG.md) for the full cross-SDK
+picture.
+
+### Security
+
+- **H1 — `SecretString::Serialize` now redacts by default.** The
+  serde `Serialize` impl previously emitted the raw inner string,
+  matching the `Deserialize` direction for `PairCreateResponse`
+  round-trip. But nothing in the SDK actually serialises a response
+  back to JSON — the wire flow is ingress-only — while
+  `serde_json::to_string(&resp)` / `tracing::info!("{}", json!(resp))`
+  paths silently exposed the pairing token. Node's SDK redacts via
+  `toJSON`; Rust now matches. `Deserialize` is unchanged. Added
+  `SecretString::serialize_raw` as an explicit opt-in for any
+  future field that genuinely needs the raw value via
+  `#[serde(serialize_with = ...)]`.
+- **H5 — `SecretString::Drop` zeroise via volatile writes.** The
+  previous Drop impl used `*b = 0` in a loop, which LLVM's dead-
+  store elimination can legally delete on `-O2` release builds. On
+  release the zero-on-drop contract was cosmetic. Replaced with
+  per-byte `std::ptr::write_volatile` + a `compiler_fence(SeqCst)`
+  so the optimiser cannot elide the scrub. No new deps. Zeroise
+  logic extracted to `zeroise_string_in_place` so the contract can
+  be unit-tested without racing the allocator.
+- **Silent-bypass fix — accept seed's 16-char fingerprint.**
+  `parse_hex_sha256` required exactly 64 hex chars, so
+  `build_pin_map` silently skipped every real seed pin (seed
+  firmware emits `fp={first 16 hex chars}`, see
+  `seed/src/cognitum-agent/src/discovery.rs:162`). `PinMap` type
+  changed from `BTreeMap<String, [u8; 32]>` to
+  `BTreeMap<String, Vec<u8>>` to hold variable-length prefixes.
+  New `parse_hex_pin()` accepts `[16, 64]` hex with bounds
+  enforcement; `verify_server_cert` prefix-matches and re-validates
+  length bounds at runtime (defense in depth).
+
+### Changed
+
+- `PinMap` — value type is now `Vec<u8>` (was `[u8; 32]`). Callers
+  constructing pins directly via `pins.insert(host, digest)` need
+  `digest.to_vec()` or `vec![0u8; N]`.
+- `parse_hex_sha256` — retained for callers needing a fixed-size
+  32-byte digest; still requires exactly 64 hex chars. New callers
+  should prefer `parse_hex_pin`.
+
+### Added
+
+- `parse_hex_pin(hex: &str) -> Option<Vec<u8>>` — accepts
+  `[PIN_MIN_BYTES * 2, PIN_MAX_BYTES * 2]` = `[16, 64]` hex chars.
+- `PIN_MIN_BYTES` / `PIN_MAX_BYTES` — public constants (8 / 32).
+- `SecretString::serialize_raw` — explicit opt-in for
+  `#[serde(serialize_with = ...)]` on fields that genuinely need
+  raw wire egress.
+
+### Tests
+
+- `tls_pin::tests` — 6 new cases covering `parse_hex_pin` bounds,
+  `build_pin_map` with a 16-hex seed-form pin, and prefix-match
+  behaviour in `verify_server_cert`.
+- `token_book::tests` — 4 new cases: `SecretString::Serialize`
+  redaction (alone and via `PairCreateResponse`),
+  `zeroise_string_in_place` scrub correctness, and a Drop
+  smoke-test.
+- Existing integration tests in `tests/seed_fp_pin.rs` updated to
+  pass `Vec<u8>` into `PinMap`.
+
 ## [0.2.0] — 2026-04-23
 
 Aligned release across the Cognitum SDK monorepo. See the

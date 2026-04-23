@@ -10,6 +10,61 @@ For per-SDK detail, see:
 - [`sdks/python/CHANGELOG.md`](sdks/python/CHANGELOG.md)
 - [`sdks/rust/CHANGELOG.md`](sdks/rust/CHANGELOG.md)
 
+## [0.2.1] — 2026-04-23
+
+Aligned security patch across all three SDKs. No functional changes
+— fixes for findings in the 0.2.0 post-release QE audit
+(`docs/qe/security-audit.md`). Upgrade is recommended for any
+deployment using mDNS discovery, TLS pinning, or running on a shared
+local network.
+
+### Security highlights
+
+| Severity | ID  | SDK(s)       | Fix |
+|----------|-----|--------------|-----|
+| CRITICAL | C1  | Node         | `fp=` fingerprint pin now requires `[16, 64]` hex chars. Previously `fp=ab` matched 1/256 of any self-signed cert via `startsWith`. |
+| CRITICAL | C2  | Python       | TLS pin TOCTOU closed. Replaced out-of-band `PinVerifier` with an `ssl.SSLContext` subclass that verifies on the same handshake httpx uses; per-peer `httpx.Client` cache. No cached "verified" boolean. |
+| CRITICAL | C3  | Python       | `cognitum.local` dropped from the default-host auto-insecure allowlist. An attacker on the same wifi/LAN could publish an mDNS PTR and get a silent `CERT_NONE` fallback. |
+| HIGH     | H1  | Rust         | `SecretString::Serialize` now emits `"<redacted>"`. Previously leaked the raw pairing token via `serde_json::to_string(&resp)` / `tracing::info!("{}", json!(resp))`. Matches Node's `toJSON` contract. |
+| HIGH     | H2  | Node         | Trust-score counter concurrency race. Added per-peer in-flight reservation so N concurrent 401s cannot all pass the pre-dispatch gate before any response arrives. Burst of 10 concurrent 401s now puts only 3 requests on the wire. |
+| HIGH     | H5  | Rust         | `SecretString::Drop` zeroise via `ptr::write_volatile` + `compiler_fence(SeqCst)`. Previously used plain byte writes subject to LLVM dead-store elimination on `-O2`. |
+|          | —   | Rust, Python | Silent-bypass fix: accept the seed firmware's 16-char truncated fingerprint (`seed/src/cognitum-agent/src/discovery.rs:162`). Previously both required exactly 64 hex chars, so `build_pin_map` / `_parse_fp_txt` silently dropped every real seed pin — pinning was effectively OFF for mDNS-discovered peers. |
+
+### Not addressed in this release
+
+- **H4 — Tailscale prefix filter.** Deferred to 0.3.0 as a design
+  change (explicit peer allowlist or cryptographic side-channel
+  assertion), not a simple patch.
+- **H3 — Per-peer dispatcher's `rejectUnauthorized: false`.**
+  Effectively neutralised by the C1 fix (the pin is the trust
+  anchor, and weak pins are no longer possible). No code change
+  needed.
+- Medium and low findings from the audit — 0.3.0 scope.
+
+### Upgrade notes
+
+- **Node callers using a custom short `fp=` via mDNS** — fingerprints
+  shorter than 16 hex chars are now rejected at parse time.
+  Advertised pins must match the seed firmware's emission (16 hex).
+- **Python callers targeting `cognitum.local`** — requests with no
+  explicit `tls=` now raise `ConfigError`. Pass
+  `tls=SeedTLS(insecure=True)` for dev or
+  `tls=SeedTLS(ca_pem=...)` / `fp=` pinning for production.
+- **Rust callers constructing `PinMap` directly** —
+  `pins.insert(host, digest)` now takes `Vec<u8>` (was `[u8; 32]`).
+  Use `digest.to_vec()` at call sites.
+- **Rust callers relying on `serde_json::to_string(&PairCreateResponse)`
+  to carry the raw token** — the token now serialises as
+  `"<redacted>"`. Opt in via
+  `#[serde(serialize_with = "SecretString::serialize_raw")]` on the
+  specific field if round-trip is genuinely required.
+
+### Per-SDK detail
+
+- [Node](sdks/node/CHANGELOG.md#021--2026-04-23)
+- [Python](sdks/python/CHANGELOG.md#021--2026-04-23)
+- [Rust](sdks/rust/CHANGELOG.md#021--2026-04-23)
+
 ## [0.2.0] — 2026-04-23
 
 First aligned release across all three SDKs. Ships the full seed-client
