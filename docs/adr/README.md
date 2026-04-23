@@ -61,6 +61,13 @@ are referenced by each SDK's architecture + implementation ADRs.
     Language-agnostic constructor/method signatures, Node/Python/Rust
     examples, mesh lifecycle, and conformance test matrix realising
     ADR-0016a.
+13. [`0017-phase-1-5-mesh-implementation-plan.md`](0017-phase-1-5-mesh-implementation-plan.md) —
+    Work-breakdown + rollout order realising ADR-0016a/b; Phase 1.5
+    delivered across all three SDKs 2026-04-22/23.
+14. [`0018-sd-card-flashing-tool.md`](0018-sd-card-flashing-tool.md) —
+    **Proposed** — new first-party `cognitum-seed-flash` Rust binary
+    tool codifying the seed-image flashing recipe from project
+    `CLAUDE.md`; thin `seed.images.*` read-only helpers in each SDK.
 
 Then jump into the per-SDK folders:
 
