@@ -187,5 +187,5 @@ Pairing-token resolution is analogous (`pairingToken` arg, then
 
 ## License
 
-Apache-2.0. Every SDK package carries its own `LICENSE` file; the licence
-applies identically.
+MIT. Every SDK package carries its own `LICENSE` file matching the root
+`LICENSE`; the licence applies identically.
