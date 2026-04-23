@@ -140,6 +140,12 @@ class SeedClientOptions:
     # (with a one-time warning). When True, the caller's SeedTLS is
     # honoured strictly regardless of host (issue #17 / P-B1).
     tls_explicit: bool = False
+    # Per-peer lowercased-hex SHA-256 fingerprints sourced from
+    # :class:`DiscoveryProvider` metadata (today: mDNS ``fp=sha256:<hex>``
+    # TXT record). Keyed by :attr:`Endpoint.url`. Consumed by the
+    # transport pin verifier. Mismatch → :class:`TlsPinError` with no
+    # insecure fallback (ADR-0007 §TLS, anti-spoof FINDING-28).
+    fingerprints: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def primary(self) -> Endpoint:
@@ -178,6 +184,7 @@ def normalise_options(
     keeps the reference so :meth:`rediscover` can re-query.
     """
 
+    discovered_fingerprints: dict[str, str] = {}
     if isinstance(endpoints, str):
         raw_list: list[str] = [endpoints]
     elif isinstance(endpoints, (list, tuple)):
@@ -194,6 +201,12 @@ def normalise_options(
                 field="endpoints",
             )
         raw_list = [p.url for p in discovered]
+        # Snapshot per-peer fingerprints for the transport pin verifier.
+        # Normalised so subsequent lookups by Endpoint.url match.
+        for p in discovered:
+            if p.tls_fingerprint:
+                key = Endpoint.parse(p.url).url
+                discovered_fingerprints[key] = p.tls_fingerprint.lower()
     else:
         raise ConfigError(
             "endpoints must be str, list[str], or DiscoveryProvider",
@@ -272,6 +285,7 @@ def normalise_options(
         health_interval=health_interval,
         token_book=book,
         tls_explicit=tls_explicit,
+        fingerprints=dict(discovered_fingerprints),
     )
 
 

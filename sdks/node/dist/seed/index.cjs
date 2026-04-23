@@ -37,6 +37,7 @@ __export(seed_exports, {
   SeedSession: () => SeedSession,
   ServiceUnavailableError: () => ServiceUnavailableError,
   TimeoutError: () => TimeoutError,
+  TlsPinError: () => TlsPinError,
   TrustScoreBlockedError: () => TrustScoreBlockedError,
   UnsupportedError: () => UnsupportedError,
   ValidationError: () => ValidationError,
@@ -155,6 +156,24 @@ var UnsupportedError = class extends CognitumError {
     this.feature = feature;
   }
 };
+var TlsPinError = class extends CognitumError {
+  /** Canonical peer URL that failed pinning. */
+  peerKey;
+  /** Fingerprint the peer advertised (hex, lowercase, no colons). */
+  expectedFingerprint;
+  /** SHA-256 of the cert the peer actually presented (hex, lowercase). */
+  actualFingerprint;
+  constructor(peerKey, expectedFingerprint, actualFingerprint, message) {
+    super(
+      message ?? `TLS fingerprint mismatch for ${peerKey}: expected ${expectedFingerprint}, got ${actualFingerprint ?? "<unknown>"}`,
+      "TLS_PIN_ERROR"
+    );
+    this.name = "TlsPinError";
+    this.peerKey = peerKey;
+    this.expectedFingerprint = expectedFingerprint;
+    this.actualFingerprint = actualFingerprint;
+  }
+};
 var TrustScoreBlockedError = class extends CognitumError {
   /** Canonical URL key of the peer whose trust-score budget was exhausted. */
   peerKey;
@@ -194,9 +213,11 @@ function resolveSeedConfig(opts) {
       "`endpoints` is a DiscoveryProvider \u2014 use `await SeedClient.create(options)` which resolves discovery before constructing the client."
     );
   }
+  let peerOptions;
   if (opts._preResolvedFromDiscovery) {
     const internal = opts;
     discovery = internal._preResolvedFromDiscovery;
+    peerOptions = internal._peerOptions;
   }
   const endpointList = Array.isArray(resolvedEndpoints) ? resolvedEndpoints : [resolvedEndpoints];
   if (endpointList.length === 0) {
@@ -268,6 +289,7 @@ function resolveSeedConfig(opts) {
     tokenBook: opts.tokenBook,
     healthInterval,
     discovery,
+    peerOptions,
     fetchFn: opts.fetch ?? globalThis.fetch,
     logger: opts.logger ?? {}
   };
@@ -491,7 +513,7 @@ function stateRank(state) {
       return 2;
   }
 }
-function makePeer(listIndex, rawUrl) {
+function makePeer(listIndex, rawUrl, opts) {
   const normalised = normaliseBaseUrl2(rawUrl);
   return {
     listIndex,
@@ -501,7 +523,8 @@ function makePeer(listIndex, rawUrl) {
     state: "healthy",
     latencyEmaMs: void 0,
     lastUsedAt: void 0,
-    consecutiveFailures: 0
+    consecutiveFailures: 0,
+    tlsFingerprint: opts?.tlsFingerprint
   };
 }
 function sortKey(p) {
@@ -515,11 +538,11 @@ function compareSortKeys(a, b) {
 }
 var PeerSet = class {
   peers;
-  constructor(endpoints) {
+  constructor(endpoints, peerOptions) {
     if (!Array.isArray(endpoints) || endpoints.length === 0) {
       throw new ConfigError("PeerSet requires at least one endpoint");
     }
-    this.peers = endpoints.map((url, i) => makePeer(i, url));
+    this.peers = endpoints.map((url, i) => makePeer(i, url, peerOptions?.[i]));
   }
   /** Total peer count. */
   len() {
@@ -713,6 +736,7 @@ function labelFor(url) {
 }
 
 // src/seed/transport.ts
+var import_node_crypto = require("crypto");
 var import_undici = require("undici");
 var warnedInsecure = false;
 function buildSeedFetch(cfg) {
@@ -760,6 +784,78 @@ function buildDispatcher(tls) {
         rejectUnauthorized: true
       }
     });
+  }
+  return void 0;
+}
+function buildPeerDispatcherFactory(tls) {
+  if (tls.ca !== void 0) {
+    return () => void 0;
+  }
+  const cache = /* @__PURE__ */ new Map();
+  return (peer) => {
+    if (!peer.tlsFingerprint) return void 0;
+    const cached = cache.get(peer.key);
+    if (cached !== void 0) return cached;
+    const agent = buildPinnedAgent(peer.key, peer.tlsFingerprint);
+    cache.set(peer.key, agent);
+    return agent;
+  };
+}
+function buildPinnedAgent(peerKey, expectedFingerprint) {
+  return new import_undici.Agent({
+    keepAliveTimeout: 1e4,
+    connections: 16,
+    allowH2: false,
+    connect: {
+      // rejectUnauthorized must stay off here because the seed serves a
+      // self-signed cert — standard chain validation would always fail.
+      // The fingerprint pin IS the trust anchor, enforced below.
+      rejectUnauthorized: false,
+      checkServerIdentity: makePinCheckServerIdentity(
+        peerKey,
+        expectedFingerprint
+      )
+    }
+  });
+}
+function makePinCheckServerIdentity(peerKey, expectedFingerprint) {
+  return (_host, cert) => {
+    const actual = sha256OfCert(cert);
+    if (!matchFingerprint(expectedFingerprint, actual)) {
+      const e = new Error(
+        `TLS fingerprint mismatch for ${peerKey}: expected ${expectedFingerprint}, got ${actual ?? "<unknown>"}`
+      );
+      e.code = "TLS_PIN_ERROR";
+      e.peerKey = peerKey;
+      e.expectedFingerprint = expectedFingerprint;
+      e.actualFingerprint = actual;
+      return e;
+    }
+    return void 0;
+  };
+}
+function sha256OfCert(cert) {
+  const raw = cert?.raw;
+  if (!raw) return void 0;
+  return (0, import_node_crypto.createHash)("sha256").update(raw).digest("hex");
+}
+function matchFingerprint(expected, actual) {
+  if (!actual) return false;
+  if (expected.length === 0) return false;
+  if (expected.length > actual.length) return false;
+  return actual.startsWith(expected);
+}
+function classifyPinFailure(err) {
+  const seen = /* @__PURE__ */ new Set();
+  let cur = err;
+  while (cur !== void 0 && cur !== null && !seen.has(cur)) {
+    seen.add(cur);
+    const rec = cur;
+    if (rec.code === "TLS_PIN_ERROR" && typeof rec.peerKey === "string" && typeof rec.expectedFingerprint === "string") {
+      const actual = typeof rec.actualFingerprint === "string" ? rec.actualFingerprint : void 0;
+      return new TlsPinError(rec.peerKey, rec.expectedFingerprint, actual);
+    }
+    cur = rec.cause;
   }
   return void 0;
 }
@@ -1078,6 +1174,14 @@ var SeedClient = class _SeedClient {
   tokenBook;
   /** TLS-aware fetch bound to this client. */
   fetchFn;
+  /**
+   * Per-peer dispatcher factory (ADR-0015c Phase 3 §fp= cert pinning).
+   * Returns a pinned undici Agent when the peer carries an mDNS
+   * fingerprint; `undefined` otherwise (→ client-wide dispatcher
+   * applies). Memoised inside the factory — one Agent per peer for the
+   * client's lifetime.
+   */
+  peerDispatcher;
   /** Active health-probe handle; `undefined` when disabled. */
   healthProbe;
   /**
@@ -1130,7 +1234,10 @@ var SeedClient = class _SeedClient {
       const internal = {
         ...options,
         endpoints: peers.map((p) => p.url),
-        _preResolvedFromDiscovery: provider
+        _preResolvedFromDiscovery: provider,
+        _peerOptions: peers.map(
+          (p) => p.tlsFingerprint !== void 0 ? { tlsFingerprint: p.tlsFingerprint } : void 0
+        )
       };
       return new _SeedClient(internal);
     }
@@ -1138,8 +1245,12 @@ var SeedClient = class _SeedClient {
   }
   constructor(options) {
     this.config = resolveSeedConfig(options);
-    this.peerSet = new PeerSet(this.config.endpoints);
+    this.peerSet = new PeerSet(
+      this.config.endpoints,
+      this.config.peerOptions
+    );
     this.discovery = this.config.discovery;
+    this.peerDispatcher = buildPeerDispatcherFactory(this.config.tls);
     this.tokenBook = this.config.tokenBook ?? new InMemoryTokenBook();
     if (this.config.pairingToken !== void 0) {
       const shared = new SecretString(this.config.pairingToken);
@@ -1256,7 +1367,10 @@ var SeedClient = class _SeedClient {
         this.tokenBook.delete?.(peer.key);
       }
     }
-    this.peerSet = new PeerSet(urls);
+    const peerOpts = fresh.map(
+      (p) => p.tlsFingerprint !== void 0 ? { tlsFingerprint: p.tlsFingerprint } : void 0
+    );
+    this.peerSet = new PeerSet(urls, peerOpts);
     if (this.config.pairingToken !== void 0) {
       const shared = new SecretString(this.config.pairingToken);
       for (const peer of this.peerSet.iter()) {
@@ -1494,6 +1608,10 @@ var SeedClient = class _SeedClient {
       headers["Content-Type"] = "application/json";
       init.body = bodyStr;
     }
+    const pinnedDispatcher = this.peerDispatcher(peer);
+    if (pinnedDispatcher !== void 0) {
+      init.dispatcher = pinnedDispatcher;
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), attemptTimeoutMs);
     const callerSignal = opts.signal;
@@ -1534,6 +1652,14 @@ var SeedClient = class _SeedClient {
           disposition: "cycle",
           peerClass: "timeout",
           error: e2
+        };
+      }
+      const pinErr = classifyPinFailure(err);
+      if (pinErr) {
+        return {
+          kind: "err",
+          disposition: "surface",
+          error: pinErr
         };
       }
       const e = new NetworkError(
@@ -1632,6 +1758,7 @@ var ExplicitDiscovery = class {
   SeedSession,
   ServiceUnavailableError,
   TimeoutError,
+  TlsPinError,
   TrustScoreBlockedError,
   UnsupportedError,
   ValidationError,

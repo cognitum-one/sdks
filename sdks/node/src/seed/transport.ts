@@ -10,10 +10,22 @@
  *
  * The key invariant: TLS pinning / insecure-mode choices are resolved
  * once per client at construction — request paths stay pure.
+ *
+ * Per-peer fingerprint pinning (ADR-0015c Phase 3 §fp= cert pinning,
+ * closes FINDING-28): when a peer's mDNS TXT record carries
+ * `fp=sha256:<hex>`, the SDK builds a dedicated dispatcher whose
+ * `checkServerIdentity` verifies that SHA-256(peerCert.raw) matches the
+ * advertised prefix. A mismatch throws {@link TlsPinError} with no
+ * fallback to `tls.insecure` — the peer's mDNS record asserted a
+ * specific cert; accepting a different one would silently consent to
+ * the classic mDNS-spoofing attack.
  */
 
+import { createHash } from "node:crypto";
 import { Agent } from "undici";
 import type { ResolvedSeedConfig } from "./config.js";
+import { TlsPinError } from "../errors.js";
+import type { Peer } from "./peers.js";
 
 let warnedInsecure = false;
 
@@ -113,4 +125,191 @@ export function buildDispatcher(tls: {
 /** Reset the insecure-warning latch — test hook only. */
 export function __resetInsecureWarnLatch(): void {
   warnedInsecure = false;
+}
+
+/**
+ * Per-peer dispatcher cache. Keyed by `peer.key` (canonical URL), value
+ * is the pinned {@link Agent} built lazily on first use. Precedence:
+ *
+ *   1. Explicit `tls.ca` — user-supplied CA wins for every peer; no
+ *      per-peer entry is built (the client-wide dispatcher handles it).
+ *   2. Peer has `tlsFingerprint` — pinned Agent with `checkServerIdentity`
+ *      that verifies SHA-256(cert.raw) starts with the advertised hex.
+ *      A mismatch surfaces as {@link TlsPinError}; no insecure fallback.
+ *   3. Otherwise — per-peer entry is `undefined`; the caller uses the
+ *      client-wide dispatcher (`tls.insecure` / system CA / custom CA).
+ *
+ * The cache is scoped to a single {@link SeedClient} via
+ * {@link buildPeerDispatcherFactory}. Agents live for the client's
+ * lifetime and are re-used across every retry / request to the same
+ * peer — this matters because each `new Agent()` allocates a TLS
+ * session cache and a keep-alive pool.
+ */
+export type PeerDispatcherFactory = (peer: Peer) => Agent | undefined;
+
+/**
+ * Build a per-peer dispatcher factory with a private cache. Call once
+ * at {@link SeedClient} construction; dispatchers are memoised by
+ * `peer.key` so five calls to the same peer share one Agent.
+ */
+export function buildPeerDispatcherFactory(tls: {
+  insecure: boolean;
+  ca: Buffer | string | undefined;
+}): PeerDispatcherFactory {
+  // ca wins — no per-peer pinning needed; the client-wide dispatcher
+  // already applies the CA uniformly.
+  if (tls.ca !== undefined) {
+    return () => undefined;
+  }
+  const cache = new Map<string, Agent | undefined>();
+  return (peer: Peer): Agent | undefined => {
+    if (!peer.tlsFingerprint) return undefined;
+    const cached = cache.get(peer.key);
+    if (cached !== undefined) return cached;
+    const agent = buildPinnedAgent(peer.key, peer.tlsFingerprint);
+    cache.set(peer.key, agent);
+    return agent;
+  };
+}
+
+/**
+ * Construct a pinned {@link Agent} for `peerKey`. The `checkServerIdentity`
+ * callback computes the SHA-256 of the peer's DER-encoded cert
+ * (`cert.raw`) and asserts it starts with the advertised hex prefix
+ * (the seed truncates to 16 hex chars — 8 bytes — per its TXT budget).
+ *
+ * Rejecting with a non-`Error` Error instance is critical: undici
+ * surfaces the returned Error through the fetch promise chain, and
+ * {@link SeedClient.dispatchOnce} then unwraps it into a
+ * {@link TlsPinError}. The returned error has a stable `code`
+ * (`TLS_PIN_ERROR`) so callers can `err.cause instanceof TlsPinError`
+ * and `err.message` contains the mismatch details.
+ *
+ * Exported for testing
+ * (`tests/seed/unit/transport-fp-pin.test.ts`).
+ */
+export function buildPinnedAgent(
+  peerKey: string,
+  expectedFingerprint: string,
+): Agent {
+  return new Agent({
+    keepAliveTimeout: 10_000,
+    connections: 16,
+    allowH2: false,
+    connect: {
+      // rejectUnauthorized must stay off here because the seed serves a
+      // self-signed cert — standard chain validation would always fail.
+      // The fingerprint pin IS the trust anchor, enforced below.
+      rejectUnauthorized: false,
+      checkServerIdentity: makePinCheckServerIdentity(
+        peerKey,
+        expectedFingerprint,
+      ),
+    },
+  });
+}
+
+/**
+ * Build the `checkServerIdentity` callback used by
+ * {@link buildPinnedAgent}. Exported so unit tests can exercise the
+ * comparator against stubbed peer certs without spinning up a TLS
+ * server.
+ *
+ * Returning an {@link Error} aborts the handshake; returning
+ * `undefined` accepts it. The error carries a stable `code` marker
+ * (`TLS_PIN_ERROR`) plus the peer / fingerprint fields that
+ * {@link classifyPinFailure} unwraps into a typed {@link TlsPinError}.
+ */
+export function makePinCheckServerIdentity(
+  peerKey: string,
+  expectedFingerprint: string,
+): (host: string, cert: unknown) => Error | undefined {
+  return (_host: string, cert: unknown): Error | undefined => {
+    const actual = sha256OfCert(cert);
+    if (!matchFingerprint(expectedFingerprint, actual)) {
+      const e = new Error(
+        `TLS fingerprint mismatch for ${peerKey}: expected ${expectedFingerprint}, got ${actual ?? "<unknown>"}`,
+      ) as Error & {
+        code?: string;
+        peerKey?: string;
+        expectedFingerprint?: string;
+        actualFingerprint?: string | undefined;
+      };
+      e.code = "TLS_PIN_ERROR";
+      e.peerKey = peerKey;
+      e.expectedFingerprint = expectedFingerprint;
+      e.actualFingerprint = actual;
+      return e;
+    }
+    return undefined;
+  };
+}
+
+/** Compute SHA-256 of a peer cert's DER (`raw`) bytes → lowercase hex. */
+function sha256OfCert(cert: unknown): string | undefined {
+  const raw = (cert as { raw?: Uint8Array } | undefined)?.raw;
+  if (!raw) return undefined;
+  return createHash("sha256").update(raw).digest("hex");
+}
+
+/**
+ * Compare the advertised fingerprint against the actual SHA-256 hex.
+ * The seed truncates to 16 hex chars (8 bytes) in its TXT record, so
+ * we accept any byte-prefix of the actual hash. Both inputs must
+ * already be lowercase hex (no colons, no `sha256:`).
+ */
+function matchFingerprint(
+  expected: string,
+  actual: string | undefined,
+): boolean {
+  if (!actual) return false;
+  if (expected.length === 0) return false;
+  if (expected.length > actual.length) return false;
+  // Constant-time compare is overkill here — the fingerprint is public
+  // info (broadcast over mDNS), so timing leaks are a non-issue.
+  return actual.startsWith(expected);
+}
+
+/**
+ * Classify a fetch failure into a typed {@link TlsPinError} when the
+ * underlying cause was our pinning check. Called by
+ * {@link SeedClient.dispatchOnce} before the generic `NetworkError`
+ * fallback — pinning failures MUST surface verbatim, never degrade to
+ * a cycleable "connect failed".
+ *
+ * Node + undici re-wrap errors thrown from `checkServerIdentity` into
+ * a `TypeError: fetch failed` with a nested `cause`. We walk the cause
+ * chain looking for the `TLS_PIN_ERROR` marker we stamped in
+ * {@link buildPinnedAgent}.
+ */
+export function classifyPinFailure(err: unknown): TlsPinError | undefined {
+  // Walk the cause chain. Undici produces
+  //   TypeError: fetch failed
+  //     cause: Error: ... (our stamped error)
+  // possibly wrapped further by future Node versions.
+  const seen = new Set<unknown>();
+  let cur: unknown = err;
+  while (cur !== undefined && cur !== null && !seen.has(cur)) {
+    seen.add(cur);
+    const rec = cur as {
+      code?: unknown;
+      peerKey?: unknown;
+      expectedFingerprint?: unknown;
+      actualFingerprint?: unknown;
+      cause?: unknown;
+    };
+    if (
+      rec.code === "TLS_PIN_ERROR" &&
+      typeof rec.peerKey === "string" &&
+      typeof rec.expectedFingerprint === "string"
+    ) {
+      const actual =
+        typeof rec.actualFingerprint === "string"
+          ? rec.actualFingerprint
+          : undefined;
+      return new TlsPinError(rec.peerKey, rec.expectedFingerprint, actual);
+    }
+    cur = rec.cause;
+  }
+  return undefined;
 }

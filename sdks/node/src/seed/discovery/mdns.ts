@@ -16,9 +16,12 @@
  *
  * - PTR → SRV → A/AAAA chain lookup. Today we trust the TXT-record host
  *   hint plus a fallback to the seed's default `.local` hostname.
- * - Full `fp=` (cert fingerprint) propagation. Parsed but not yet
- *   surfaced on `DiscoveredPeer` — ADR-040 FINDING-28 wants it wired
- *   into the TLS handshake path. Deferred to the mDNS-spoofing track.
+ *
+ * `fp=` (cert fingerprint) pinning — ADR-0015c Phase 3 §fp= cert
+ * pinning (2026-04-23) — is now parsed into
+ * {@link DiscoveredPeer.tlsFingerprint} and wired into the per-peer
+ * TLS handshake by `src/seed/transport.ts`. A mismatch throws
+ * {@link TlsPinError}; see that class' docstring for semantics.
  */
 
 import type { DiscoveryProvider, DiscoveredPeer } from "./types.js";
@@ -229,11 +232,55 @@ export class MdnsDiscovery implements DiscoveryProvider {
     const host = hostFromRecordName(recordName) ?? txt.host;
     if (!host) return undefined;
     const url = `${this.scheme}://${host}:${port}`;
-    return {
+    const tlsFingerprint = parseFingerprint(txt.fp);
+    const peer: DiscoveredPeer = {
       url,
       deviceId: txt.id,
     };
+    if (tlsFingerprint !== undefined) {
+      peer.tlsFingerprint = tlsFingerprint;
+    }
+    return peer;
   }
+}
+
+/**
+ * Parse a TXT-record `fp=` value into the canonical hex-only form used
+ * by the transport layer's pinning check.
+ *
+ * Accepts:
+ *  - `sha256:<hex>` (the form documented in ADR-040 FINDING-28)
+ *  - bare `<hex>` (the form the seed emits today, per
+ *    `seed/src/cognitum-agent/src/discovery.rs:162`)
+ *
+ * Normalisation: strip any `sha256:` prefix (case-insensitive), strip
+ * colons (some DNS-SD responders format fingerprints as
+ * `aa:bb:cc:...`), lowercase. A string that contains any non-hex
+ * character after normalisation is rejected — returning `undefined`
+ * rather than throwing so a malformed TXT doesn't tank the whole
+ * `discover()` batch.
+ *
+ * Exported for unit testing (`tests/seed/unit/discovery-mdns-fp.test.ts`).
+ */
+export function parseFingerprint(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "string") return undefined;
+  let s = raw.trim();
+  if (s.length === 0) return undefined;
+  // Strip `sha256:` / `SHA256:` prefix if present.
+  const colonIdx = s.indexOf(":");
+  if (colonIdx > 0 && colonIdx <= 7) {
+    const prefix = s.slice(0, colonIdx).toLowerCase();
+    if (prefix === "sha256" || prefix === "sha-256") {
+      s = s.slice(colonIdx + 1);
+    }
+  }
+  // Strip any remaining colons (legacy `aa:bb:cc` style).
+  s = s.replace(/:/g, "").toLowerCase();
+  if (s.length === 0) return undefined;
+  if (s.length % 2 !== 0) return undefined;
+  if (!/^[0-9a-f]+$/.test(s)) return undefined;
+  return s;
 }
 
 /**

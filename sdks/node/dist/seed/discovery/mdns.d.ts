@@ -32,6 +32,23 @@ interface DiscoveredPeer {
     deviceId?: string;
     /** Optional RTT hint (ms) — not currently populated by mDNS. */
     latencyMs?: number;
+    /**
+     * SHA-256 cert fingerprint advertised by the peer in its mDNS TXT
+     * record (`fp=sha256:<hex>`, per ADR-0015c Phase 3 §fp= pinning and
+     * `seed/src/cognitum-agent/src/discovery.rs:155-162` — FINDING-28).
+     *
+     * Canonical form: lowercase hexadecimal, no colons, no `sha256:`
+     * prefix. The seed currently advertises only the first 16 hex chars
+     * (8 bytes) per its bandwidth budget; the SDK accepts any length that
+     * matches a byte-prefix of the peer's cert SHA-256.
+     *
+     * When set, the transport pins the TLS handshake to this fingerprint
+     * — a mismatch throws {@link TlsPinError} with no fallback to
+     * `tls.insecure`. `undefined` means "no mDNS-side pinning available";
+     * the transport falls through to `tls.ca` / `tls.insecure` / system
+     * CA per the configured precedence.
+     */
+    tlsFingerprint?: string;
 }
 /**
  * Producer of candidate seed endpoints. Implementations MUST be safe
@@ -67,9 +84,12 @@ interface DiscoveryProvider {
  *
  * - PTR → SRV → A/AAAA chain lookup. Today we trust the TXT-record host
  *   hint plus a fallback to the seed's default `.local` hostname.
- * - Full `fp=` (cert fingerprint) propagation. Parsed but not yet
- *   surfaced on `DiscoveredPeer` — ADR-040 FINDING-28 wants it wired
- *   into the TLS handshake path. Deferred to the mDNS-spoofing track.
+ *
+ * `fp=` (cert fingerprint) pinning — ADR-0015c Phase 3 §fp= cert
+ * pinning (2026-04-23) — is now parsed into
+ * {@link DiscoveredPeer.tlsFingerprint} and wired into the per-peer
+ * TLS handshake by `src/seed/transport.ts`. A mismatch throws
+ * {@link TlsPinError}; see that class' docstring for semantics.
  */
 
 /**
@@ -171,5 +191,24 @@ declare class MdnsDiscovery implements DiscoveryProvider {
     private matchesService;
     private peerFromTxt;
 }
+/**
+ * Parse a TXT-record `fp=` value into the canonical hex-only form used
+ * by the transport layer's pinning check.
+ *
+ * Accepts:
+ *  - `sha256:<hex>` (the form documented in ADR-040 FINDING-28)
+ *  - bare `<hex>` (the form the seed emits today, per
+ *    `seed/src/cognitum-agent/src/discovery.rs:162`)
+ *
+ * Normalisation: strip any `sha256:` prefix (case-insensitive), strip
+ * colons (some DNS-SD responders format fingerprints as
+ * `aa:bb:cc:...`), lowercase. A string that contains any non-hex
+ * character after normalisation is rejected — returning `undefined`
+ * rather than throwing so a malformed TXT doesn't tank the whole
+ * `discover()` batch.
+ *
+ * Exported for unit testing (`tests/seed/unit/discovery-mdns-fp.test.ts`).
+ */
+declare function parseFingerprint(raw: string | undefined): string | undefined;
 
-export { MdnsDiscovery, type MdnsDiscoveryOptions };
+export { MdnsDiscovery, type MdnsDiscoveryOptions, parseFingerprint };

@@ -163,12 +163,83 @@ Punted to a future pass (tracked in ADR-0016a §D6 footnotes):
   from the DNS-SD label. Sufficient for the seed's emitter
   (`seed/src/cognitum-agent/src/discovery.rs:137-180`); more strict
   mDNS responders may need the chain walk.
-- Surfacing the `fp=` cert-fingerprint field on `DiscoveredPeer`.
-  Parsed but unused — ADR-040 FINDING-28 wants it wired into the TLS
-  handshake path; that will be a separate PR to `transport.ts`.
 - Python + Rust ports. This Phase 3 subsection is Node-only — the
   `DiscoveryProvider` interface is deliberately portable and the
   Python/Rust ADRs (0018c/0019c) will mirror it verbatim.
+
+### fp= cert pinning (2026-04-23)
+
+ADR-040 FINDING-28 + the commit `8e18963` "punt" item is now closed
+for Node. The mDNS TXT-record `fp=sha256:<hex>` field is surfaced on
+`DiscoveredPeer.tlsFingerprint` and threaded through the per-peer
+TLS handshake so a seed impersonator with a different self-signed
+cert is rejected at handshake time.
+
+Deliverables (all under `sdks/node/`):
+
+- `src/errors.ts` — new `TlsPinError` (code `TLS_PIN_ERROR`) carrying
+  `peerKey`, `expectedFingerprint`, `actualFingerprint`. NOT retryable
+  and does NOT fall back to `tls.insecure` — a fingerprint mismatch
+  is a hard trust failure. Re-exported from `src/seed/errors.ts` and
+  `src/seed/index.ts`.
+- `src/seed/discovery/types.ts` — `DiscoveredPeer` gains
+  `tlsFingerprint?: string` (hex, lowercase, no colons / no `sha256:`
+  prefix).
+- `src/seed/discovery/mdns.ts` — new `parseFingerprint()` helper
+  accepts `sha256:<hex>`, bare `<hex>`, and colon-separated forms;
+  normalises to canonical lowercase hex. Malformed values are ignored
+  (the peer still surfaces without a pin) so one bad TXT never tanks
+  a `discover()` batch.
+- `src/seed/peers.ts` — `Peer` gains `readonly tlsFingerprint: string
+  | undefined`; `PeerSet` constructor accepts an optional parallel
+  `PeerOptions[]`. Propagated through `SeedClient.create()` and
+  `rediscoverFromProvider()` so mesh rediscovery preserves pins.
+- `src/seed/config.ts` — `ResolvedSeedConfig.peerOptions` carries
+  per-peer options from the pre-resolved discovery provider;
+  `SeedClientOptionsInternal._peerOptions` is the internal escape
+  hatch.
+- `src/seed/transport.ts` — new `buildPeerDispatcherFactory(tls)`
+  returns a per-peer dispatcher factory with a private cache. When a
+  peer has `tlsFingerprint`, the factory yields a pinned
+  `undici.Agent` whose `connect.checkServerIdentity` asserts
+  SHA-256(cert.raw) starts with the advertised hex prefix (the seed
+  truncates to 16 hex chars per `discovery.rs:162`; the SDK accepts
+  any byte-prefix so a future full-fingerprint firmware is
+  forward-compatible). Precedence: explicit `tls.ca` wins → peer
+  fingerprint pins → `tls.insecure` / system CA fall-through. New
+  helpers `buildPinnedAgent`, `makePinCheckServerIdentity`,
+  `classifyPinFailure` are exported for testability.
+- `src/seed/client.ts` — `SeedClient` instantiates the per-peer
+  dispatcher factory once at construction; `dispatchOnce` attaches
+  `init.dispatcher` per-call when the peer has a pin. A fetch
+  failure's cause chain is walked by `classifyPinFailure`; a hit
+  surfaces a `TlsPinError` with `disposition: "surface"` — NO
+  cycling, NO retry, NO insecure fallback.
+- Agent cache strategy: keyed by `peer.key` (canonical URL). One
+  `Agent` per pinned peer for the lifetime of the `SeedClient`, so
+  five retry attempts against the same peer share one TLS session
+  cache + keep-alive pool.
+
+Tests (8 new, all green):
+
+- `tests/seed/unit/discovery-mdns-fp.test.ts` (3) — `fp=sha256:...`
+  parse into `tlsFingerprint`, malformed/empty `fp=` ignored, missing
+  `fp=` → `undefined`.
+- `tests/seed/unit/transport-fp-pin.test.ts` (4) — matching
+  fingerprint accepts, mismatch rejects with `TLS_PIN_ERROR` marker
+  that `classifyPinFailure` unwraps into a typed `TlsPinError`,
+  insecure + no-fingerprint back-compat path, `tls.ca` precedence
+  overrides per-peer pins, end-to-end `SeedClient.request`
+  classification (no cycle, no retry, no insecure fallback).
+- `tests/seed/unit/transport-agent-cache.test.ts` (1) — same peer
+  yields the same `Agent` across 5 calls, distinct peers get
+  distinct Agents, plain peers (no fingerprint) get `undefined`.
+
+Not yet surfaced (intentional narrow scope):
+
+- Python + Rust ports of `fp=` pinning. Today's change is Node-only;
+  the wire contract is symmetric so the Python/Rust ADRs (0018c/0019c)
+  will mirror it in a follow-up.
 
 ## Phase 1.5 delivery (2026-04-23)
 

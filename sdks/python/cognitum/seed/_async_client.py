@@ -43,7 +43,7 @@ from cognitum.seed._retry import (
     parse_retry_after,
 )
 from cognitum.seed._token_book import InMemoryTokenBook, SecretString, TokenBook
-from cognitum.seed._transport import build_async_client, safe_json
+from cognitum.seed._transport import PinVerifier, build_async_client, safe_json
 from cognitum.seed.resources import (
     AsyncCustodyResource,
     AsyncMeshResource,
@@ -87,6 +87,8 @@ class _AsyncTransport:
         # never hold this across an ``await``.
         self._auth_failure_counts: dict[str, int] = {}
         self._trust_lock = threading.Lock()
+        # Per-peer fingerprint pinner. See _SyncTransport for rationale.
+        self._pin_verifier = PinVerifier(options.fingerprints)
         self._closed: bool = False
 
     async def close(self) -> None:
@@ -190,6 +192,15 @@ class _AsyncTransport:
             tok = self._token_book.get(peer.endpoint.url)
             if tok is not None:
                 headers["X-Pairing-Token"] = tok.as_str()
+
+            # Per-peer TLS fingerprint pin check (ADR-0007 §TLS).
+            # Runs before httpx dispatches. The fetch happens in a
+            # worker thread to avoid blocking the event loop on the
+            # first handshake to each peer; cached afterwards.
+            if self._pin_verifier.needs_verification(peer.endpoint.url):
+                await asyncio.get_running_loop().run_in_executor(
+                    None, self._pin_verifier.verify, peer.endpoint.url,
+                )
 
             url = f"{peer.endpoint.url}{path if path.startswith('/api') else '/api/v1' + path}"
             call_started = time.monotonic()

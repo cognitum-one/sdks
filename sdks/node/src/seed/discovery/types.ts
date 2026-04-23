@@ -33,6 +33,23 @@ export interface DiscoveredPeer {
   deviceId?: string;
   /** Optional RTT hint (ms) — not currently populated by mDNS. */
   latencyMs?: number;
+  /**
+   * SHA-256 cert fingerprint advertised by the peer in its mDNS TXT
+   * record (`fp=sha256:<hex>`, per ADR-0015c Phase 3 §fp= pinning and
+   * `seed/src/cognitum-agent/src/discovery.rs:155-162` — FINDING-28).
+   *
+   * Canonical form: lowercase hexadecimal, no colons, no `sha256:`
+   * prefix. The seed currently advertises only the first 16 hex chars
+   * (8 bytes) per its bandwidth budget; the SDK accepts any length that
+   * matches a byte-prefix of the peer's cert SHA-256.
+   *
+   * When set, the transport pins the TLS handshake to this fingerprint
+   * — a mismatch throws {@link TlsPinError} with no fallback to
+   * `tls.insecure`. `undefined` means "no mDNS-side pinning available";
+   * the transport falls through to `tls.ca` / `tls.insecure` / system
+   * CA per the configured precedence.
+   */
+  tlsFingerprint?: string;
 }
 
 /**

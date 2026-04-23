@@ -5,8 +5,10 @@ Seeds advertise themselves per
 ``seed/src/cognitum-agent/src/discovery.rs`` with TXT entries:
 
 - ``id=<device_id>`` — surfaced as :attr:`DiscoveredPeer.device_id`
-- ``fp=<sha256>`` — cert fingerprint (not consumed here today; pinning
-  is handled via :class:`SeedPinnedVerifier`)
+- ``fp=sha256:<hex>`` — DER SHA-256 of the seed's self-signed cert,
+  surfaced as :attr:`DiscoveredPeer.tls_fingerprint` (lowercased hex,
+  no colons). Consumed by the transport to pin per-peer TLS
+  handshakes (ADR-0007 §TLS, anti-spoof FINDING-28).
 
 The port comes from the SRV record; the scheme is assumed ``https`` (the
 seed's HTTPS API is the only supported transport — ADR-0002).
@@ -37,6 +39,32 @@ except ImportError as exc:  # pragma: no cover — import-guard branch
 
 _DEFAULT_SERVICE = "_cognitum._tcp.local."
 _DEFAULT_TIMEOUT_S = 2.0
+
+
+def _parse_fp_txt(raw: str | None) -> str | None:
+    """Parse a TXT ``fp=sha256:<hex>`` value into lowercased hex.
+
+    Accepts the canonical seed form (``sha256:`` prefix, 64 hex chars,
+    colons optional) and returns ``None`` for anything else — malformed
+    values MUST NOT be treated as pins, since the downstream verifier
+    rejects insecure fallbacks once a pin is present.
+    """
+
+    if not raw:
+        return None
+    s = raw.strip()
+    low = s.lower()
+    if low.startswith("sha256:"):
+        low = low[len("sha256:") :]
+    # Strip any colons (``aa:bb:cc:...``) and whitespace.
+    low = low.replace(":", "").replace(" ", "")
+    if len(low) != 64:
+        return None
+    try:
+        int(low, 16)
+    except ValueError:
+        return None
+    return low
 
 
 def _decode_txt(raw: dict[bytes | str, bytes | str | None]) -> dict[str, str]:
@@ -178,8 +206,13 @@ class MdnsDiscovery:
                 return
             txt = _decode_txt(getattr(info, "properties", {}) or {})
             device_id = txt.get("id")
+            tls_fp = _parse_fp_txt(txt.get("fp"))
             url = f"{self._scheme}://{host}:{int(port)}"
-            found[url] = DiscoveredPeer(url=url, device_id=device_id)
+            found[url] = DiscoveredPeer(
+                url=url,
+                device_id=device_id,
+                tls_fingerprint=tls_fp,
+            )
 
         browser = ServiceBrowser(
             zc, self._service_type, handlers=[_handler]

@@ -397,6 +397,41 @@ class ConfigError(ValidationError):
         self.code = "config_error"
 
 
+class TlsPinError(CognitumError):
+    """Per-peer TLS certificate fingerprint mismatch (ADR-0007 §TLS).
+
+    Raised when the SDK has a pinned SHA-256 fingerprint for a peer
+    (today sourced from the mDNS ``fp=sha256:<hex>`` TXT record) and
+    the cert served at handshake time does not match it.
+
+    Never retriable; there is NO insecure fallback — a pin mismatch
+    signals active tampering (anti-spoof FINDING-28) and the SDK hard-
+    aborts the call. Callers MUST surface this to the operator rather
+    than suppress it, and MUST NOT cycle to the next peer.
+    """
+
+    def __init__(
+        self,
+        message: str = "TLS fingerprint pin mismatch",
+        *,
+        peer_url: str,
+        expected: str,
+        actual: str | None = None,
+        correlation_id: str | None = None,
+        cause: BaseException | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            code="tls_pin_error",
+            retriable=False,
+            correlation_id=correlation_id,
+            cause=cause,
+        )
+        self.peer_url = peer_url
+        self.expected = expected
+        self.actual = actual
+
+
 class UnsupportedError(CognitumError):
     """Requested feature is not implementable against this backend (ADR-0016b).
 
@@ -436,6 +471,7 @@ __all__ = [
     "ServiceUnavailableError",
     "TimeoutError",
     "TimeoutPhase",
+    "TlsPinError",
     "TrustScoreBlockedError",
     "UnsupportedError",
     "ValidationError",

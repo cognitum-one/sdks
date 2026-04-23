@@ -7,14 +7,17 @@ Builds :class:`httpx.Client` / :class:`httpx.AsyncClient` honouring the
 
 from __future__ import annotations
 
+import hashlib
 import ssl
+import threading
 import warnings
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
 import httpx
 
-from cognitum._errors import ConfigError
+from cognitum._errors import ConfigError, TlsPinError
 from cognitum.seed._config import Endpoint, SeedAuth, SeedClientOptions, SeedTLS
 
 
@@ -248,7 +251,110 @@ def safe_json(response: httpx.Response) -> Mapping[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _fetch_peer_cert_sha256(
+    host: str, port: int, *, timeout: float = 5.0
+) -> str:
+    """Open a raw TLS socket, fetch the DER cert, return SHA-256 hex.
+
+    Uses ``ssl.get_server_certificate`` which opens with ``CERT_NONE`` and
+    no hostname check when no ``ca_certs`` is supplied — that is the
+    desired behaviour here because we do NOT want chain validation to
+    gate the fingerprint fetch (the seed cert is self-signed by design).
+    The caller compares the returned digest to the expected pin.
+    """
+    pem = ssl.get_server_certificate((host, port), timeout=timeout)
+    # ``get_server_certificate`` returns PEM — convert back to DER so the
+    # digest matches what the seed advertises in ``fp=sha256:<hex>``.
+    der = ssl.PEM_cert_to_DER_cert(pem)
+    return hashlib.sha256(der).hexdigest().lower()
+
+
+class PinVerifier:
+    """Per-peer TLS fingerprint pin verifier (ADR-0007 §TLS).
+
+    Pre-check strategy: before httpx dispatches the first request to a
+    peer with an expected ``fp=sha256:<hex>``, we open a raw TLS socket
+    and compute the server-cert DER SHA-256. The result is cached per
+    peer-URL for the session lifetime; mismatches raise
+    :class:`TlsPinError` with no insecure fallback — even when the
+    caller set ``insecure=True`` on ``SeedTLS``.
+
+    Chosen over a custom ``httpx.HTTPTransport`` subclass because the
+    httpx connection layer does not expose a post-handshake callback
+    that reaches the caller's context cleanly, and the pre-check gives
+    us a single well-defined place to raise a canonical exception.
+    The trade-off is one extra TLS handshake per peer at first use —
+    acceptable given peer counts are single-digit (ADR-0016a).
+    """
+
+    __slots__ = ("_expected", "_verified", "_lock")
+
+    def __init__(self, expected: Mapping[str, str]) -> None:
+        # Normalise keys and values once so lookups by peer URL are
+        # cheap and case-insensitive on the hex digest.
+        self._expected: dict[str, str] = {
+            k: v.lower() for k, v in expected.items()
+        }
+        self._verified: set[str] = set()
+        self._lock = threading.Lock()
+
+    def expected_for(self, peer_url: str) -> str | None:
+        return self._expected.get(peer_url)
+
+    def needs_verification(self, peer_url: str) -> bool:
+        with self._lock:
+            return (
+                peer_url in self._expected and peer_url not in self._verified
+            )
+
+    def verify(self, peer_url: str) -> None:
+        """Verify ``peer_url``. Raises :class:`TlsPinError` on mismatch.
+
+        Idempotent: subsequent calls for an already-verified peer are
+        cheap no-ops. Callers should only invoke this when they hold a
+        pinned fingerprint for the peer (see :meth:`needs_verification`).
+        """
+
+        with self._lock:
+            if peer_url not in self._expected:
+                return
+            if peer_url in self._verified:
+                return
+            expected = self._expected[peer_url]
+
+        parsed = urlparse(peer_url)
+        host = parsed.hostname or ""
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        try:
+            actual = _fetch_peer_cert_sha256(host, port)
+        except Exception as exc:  # noqa: BLE001 — surface as TlsPinError
+            raise TlsPinError(
+                "TLS fingerprint pin check failed: "
+                f"could not fetch cert from {peer_url!r}: {exc}",
+                peer_url=peer_url,
+                expected=expected,
+                actual=None,
+                cause=exc,
+            ) from exc
+        if actual != expected:
+            raise TlsPinError(
+                f"TLS fingerprint pin mismatch for {peer_url!r}: "
+                f"expected {expected}, got {actual}",
+                peer_url=peer_url,
+                expected=expected,
+                actual=actual,
+            )
+        with self._lock:
+            self._verified.add(peer_url)
+
+    def mark_verified(self, peer_url: str) -> None:
+        """Test hook: mark a peer as already verified (bypasses fetch)."""
+        with self._lock:
+            self._verified.add(peer_url)
+
+
 __all__ = [
+    "PinVerifier",
     "SeedPinnedVerifier",
     "build_async_client",
     "build_sync_client",

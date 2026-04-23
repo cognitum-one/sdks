@@ -109,12 +109,35 @@ var MdnsDiscovery = class _MdnsDiscovery {
     const host = hostFromRecordName(recordName) ?? txt.host;
     if (!host) return void 0;
     const url = `${this.scheme}://${host}:${port}`;
-    return {
+    const tlsFingerprint = parseFingerprint(txt.fp);
+    const peer = {
       url,
       deviceId: txt.id
     };
+    if (tlsFingerprint !== void 0) {
+      peer.tlsFingerprint = tlsFingerprint;
+    }
+    return peer;
   }
 };
+function parseFingerprint(raw) {
+  if (raw === void 0 || raw === null) return void 0;
+  if (typeof raw !== "string") return void 0;
+  let s = raw.trim();
+  if (s.length === 0) return void 0;
+  const colonIdx = s.indexOf(":");
+  if (colonIdx > 0 && colonIdx <= 7) {
+    const prefix = s.slice(0, colonIdx).toLowerCase();
+    if (prefix === "sha256" || prefix === "sha-256") {
+      s = s.slice(colonIdx + 1);
+    }
+  }
+  s = s.replace(/:/g, "").toLowerCase();
+  if (s.length === 0) return void 0;
+  if (s.length % 2 !== 0) return void 0;
+  if (!/^[0-9a-f]+$/.test(s)) return void 0;
+  return s;
+}
 function parseTxtRecord(data) {
   const entries = Array.isArray(data) ? data : [data];
   const out = {};
@@ -164,6 +187,7 @@ async function loadMdnsFactory() {
   }
 }
 export {
-  MdnsDiscovery
+  MdnsDiscovery,
+  parseFingerprint
 };
 //# sourceMappingURL=mdns.js.map

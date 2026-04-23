@@ -23,14 +23,22 @@ class DiscoveredPeer:
     """One peer returned by a :class:`DiscoveryProvider`.
 
     ``url`` is the only required field; ``device_id`` / ``latency_ms``
-    are optional metadata surfaced by providers that know them (mDNS TXT
-    records carry ``device_id``; measured providers may populate
+    / ``tls_fingerprint`` are optional metadata surfaced by providers
+    that know them (mDNS TXT records carry ``device_id`` and
+    ``tls_fingerprint``; measured providers may populate
     ``latency_ms``). Consumers MUST NOT rely on these being set.
+
+    ``tls_fingerprint`` is the lowercase hex SHA-256 of the peer's
+    self-signed server certificate (DER). When present, the transport
+    pins the per-peer TLS handshake to this fingerprint — a mismatch
+    raises :class:`cognitum.TlsPinError` and there is no insecure
+    fallback (ADR-0007 §TLS, seed mDNS anti-spoof FINDING-28).
     """
 
     url: str
     device_id: str | None = None
     latency_ms: float | None = None
+    tls_fingerprint: str | None = None
 
 
 @runtime_checkable

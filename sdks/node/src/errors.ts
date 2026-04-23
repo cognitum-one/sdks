@@ -153,6 +153,45 @@ export class UnsupportedError extends CognitumError {
 }
 
 /**
+ * Thrown when a peer's TLS certificate fails fingerprint pinning.
+ *
+ * The Node SDK parses `fp=sha256:<hex>` from the seed's mDNS TXT record
+ * (per `seed/src/cognitum-agent/src/discovery.rs:155-162`, FINDING-28)
+ * and pins the TLS handshake to that certificate. If the peer presents a
+ * cert whose SHA-256 does not match the advertised fingerprint (the
+ * classic mDNS-spoofing signal), the handshake aborts with this error.
+ *
+ * This error is NOT retryable and does NOT fall back to `tls.insecure`
+ * — a fingerprint mismatch is a hard trust failure. The failover state
+ * machine surfaces it verbatim so callers see the spoofing signal.
+ */
+export class TlsPinError extends CognitumError {
+  /** Canonical peer URL that failed pinning. */
+  readonly peerKey: string;
+  /** Fingerprint the peer advertised (hex, lowercase, no colons). */
+  readonly expectedFingerprint: string;
+  /** SHA-256 of the cert the peer actually presented (hex, lowercase). */
+  readonly actualFingerprint: string | undefined;
+
+  constructor(
+    peerKey: string,
+    expectedFingerprint: string,
+    actualFingerprint: string | undefined,
+    message?: string,
+  ) {
+    super(
+      message ??
+        `TLS fingerprint mismatch for ${peerKey}: expected ${expectedFingerprint}, got ${actualFingerprint ?? "<unknown>"}`,
+      "TLS_PIN_ERROR",
+    );
+    this.name = "TlsPinError";
+    this.peerKey = peerKey;
+    this.expectedFingerprint = expectedFingerprint;
+    this.actualFingerprint = actualFingerprint;
+  }
+}
+
+/**
  * Thrown when the SDK aborts a request to protect the seed's trust-score
  * state (ADR-0007 §Trust-score protection, resolves OQ-9).
  *

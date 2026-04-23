@@ -57,6 +57,7 @@ from cognitum.seed._errors import (
     RateLimitError,
     ServiceUnavailableError,
     TimeoutError,  # noqa: A004
+    TlsPinError,
     TrustScoreBlockedError,
     UnsupportedError,
     ValidationError,
@@ -144,6 +145,7 @@ __all__ = [
     "RateLimitError",
     "ServiceUnavailableError",
     "TimeoutError",
+    "TlsPinError",
     "TrustScoreBlockedError",
     "UnsupportedError",
     "ValidationError",

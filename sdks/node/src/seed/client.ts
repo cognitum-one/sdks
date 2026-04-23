@@ -35,8 +35,13 @@ import {
 import type { DiscoveryProvider } from "./discovery/types.js";
 import { classifyErrorResponse, type DispatchOutcome } from "./dispatch.js";
 import { startHealthProbe, type HealthProbeHandle } from "./health.js";
-import { PeerSet, type Peer } from "./peers.js";
-import { buildSeedFetch } from "./transport.js";
+import { PeerSet, type Peer, type PeerOptions } from "./peers.js";
+import {
+  buildSeedFetch,
+  buildPeerDispatcherFactory,
+  classifyPinFailure,
+  type PeerDispatcherFactory,
+} from "./transport.js";
 import { BASE_MS, CAP_MS, DEFAULT_MAX_ELAPSED_MS } from "./retry.js";
 import { SeedSession } from "./session.js";
 import {
@@ -144,6 +149,14 @@ export class SeedClient {
   private readonly tokenBook: TokenBook;
   /** TLS-aware fetch bound to this client. */
   private readonly fetchFn: typeof fetch;
+  /**
+   * Per-peer dispatcher factory (ADR-0015c Phase 3 §fp= cert pinning).
+   * Returns a pinned undici Agent when the peer carries an mDNS
+   * fingerprint; `undefined` otherwise (→ client-wide dispatcher
+   * applies). Memoised inside the factory — one Agent per peer for the
+   * client's lifetime.
+   */
+  private readonly peerDispatcher: PeerDispatcherFactory;
   /** Active health-probe handle; `undefined` when disabled. */
   private readonly healthProbe: HealthProbeHandle | undefined;
   /**
@@ -204,6 +217,11 @@ export class SeedClient {
         ...options,
         endpoints: peers.map((p) => p.url),
         _preResolvedFromDiscovery: provider,
+        _peerOptions: peers.map((p) =>
+          p.tlsFingerprint !== undefined
+            ? { tlsFingerprint: p.tlsFingerprint }
+            : undefined,
+        ),
       };
       return new SeedClient(internal);
     }
@@ -213,8 +231,12 @@ export class SeedClient {
 
   constructor(options: SeedClientOptions) {
     this.config = resolveSeedConfig(options);
-    this.peerSet = new PeerSet(this.config.endpoints);
+    this.peerSet = new PeerSet(
+      this.config.endpoints,
+      this.config.peerOptions,
+    );
     this.discovery = this.config.discovery;
+    this.peerDispatcher = buildPeerDispatcherFactory(this.config.tls);
 
     // Prefer the caller-supplied TokenBook. Fall back to a fresh
     // InMemoryTokenBook seeded from the client-wide `pairingToken`
@@ -362,7 +384,12 @@ export class SeedClient {
     // Swap the underlying peer table. {@link SeedSession} holds a pinned
     // key — when the pin is still in the new set we preserve it;
     // otherwise the session's next call falls through to `pick()`.
-    this.peerSet = new PeerSet(urls);
+    const peerOpts: (PeerOptions | undefined)[] = fresh.map((p) =>
+      p.tlsFingerprint !== undefined
+        ? { tlsFingerprint: p.tlsFingerprint }
+        : undefined,
+    );
+    this.peerSet = new PeerSet(urls, peerOpts);
     // Seed the new TokenBook entries with the client-wide fallback
     // token, mirroring the constructor's behaviour (ADR-0016a §D5).
     if (this.config.pairingToken !== undefined) {
@@ -708,10 +735,27 @@ export class SeedClient {
       headers["X-API-Key"] = this.config.apiKey;
     }
 
-    const init: RequestInit & { duplex?: string } = { method, headers };
+    const init: RequestInit & {
+      duplex?: string;
+      dispatcher?: unknown;
+    } = { method, headers };
     if (bodyStr !== undefined) {
       headers["Content-Type"] = "application/json";
       init.body = bodyStr;
+    }
+
+    // ADR-0015c Phase 3 §fp= cert pinning — when the peer has a
+    // fingerprint, attach a per-peer pinned dispatcher. This OVERRIDES
+    // the client-wide dispatcher that `this.fetchFn` would otherwise
+    // install, so `tls.insecure` no longer applies to a pinned peer —
+    // a fingerprint mismatch must be a hard error with no fallback.
+    // When `cfg.fetchFn !== globalThis.fetch` (injected fetch for
+    // tests), `buildSeedFetch` bypasses the dispatcher path entirely;
+    // setting `init.dispatcher` is still safe — the injected fetch
+    // ignores it.
+    const pinnedDispatcher = this.peerDispatcher(peer);
+    if (pinnedDispatcher !== undefined) {
+      init.dispatcher = pinnedDispatcher;
     }
 
     const controller = new AbortController();
@@ -760,6 +804,19 @@ export class SeedClient {
           disposition: "cycle",
           peerClass: "timeout",
           error: e,
+        };
+      }
+      // ADR-0015c Phase 3 §fp= cert pinning — a pinning failure is a
+      // HARD error. Surface it verbatim; do NOT cycle to another peer
+      // (the mDNS assertion was about THIS peer's cert) and do NOT
+      // fall back to insecure mode. Walk the cause chain looking for
+      // the TLS_PIN_ERROR marker we stamped in `buildPinnedAgent`.
+      const pinErr = classifyPinFailure(err);
+      if (pinErr) {
+        return {
+          kind: "err",
+          disposition: "surface",
+          error: pinErr,
         };
       }
       const e = new NetworkError(

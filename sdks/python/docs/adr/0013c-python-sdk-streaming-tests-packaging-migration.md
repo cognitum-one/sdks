@@ -770,10 +770,9 @@ fallback in `MdnsDiscovery` is exercised by the stubbed path.
 - **Injected `Zeroconf` is not owned.** Apps that already run their
   own `zeroconf.Zeroconf` for other services pass it in; `close()` on
   the provider does not shut it down.
-- **`fp=` cert fingerprint is captured but not yet pinned.** Surface
-  is reserved — FINDING-28 in the seed source calls it out as an
-  anti-spoofing vector. Integration with `SeedPinnedVerifier` is a
-  separate ticket.
+- **`fp=` cert fingerprint is captured AND pinned.** See the
+  `fp= cert pinning (2026-04-23)` subsection below for the wire-up
+  into the per-peer transport verifier.
 
 ### Known gaps beyond Phase 3
 
@@ -781,6 +780,65 @@ fallback in `MdnsDiscovery` is exercised by the stubbed path.
   from Phase 2).
 - No built-in "try mDNS then explicit list" composite provider.
   Callers compose manually today.
+
+### `fp=` cert pinning (2026-04-23)
+
+Completes the anti-spoof path flagged by FINDING-28 in
+`seed/src/cognitum-agent/src/discovery.rs`. The seed's mDNS responder
+advertises `fp=sha256:<hex>` in the TXT record; the SDK now consumes
+that value per-peer and pins the TLS handshake against it.
+
+**Surface changes:**
+
+| File | Change |
+|------|--------|
+| `cognitum/seed/discovery/_types.py` | `DiscoveredPeer` gains `tls_fingerprint: str \| None` (lowercased hex, no colons, no algorithm prefix). |
+| `cognitum/seed/discovery/mdns.py` | New `_parse_fp_txt` normaliser — accepts `sha256:<hex>`, `AA:BB:...` and lowercase variants; returns `None` for wrong length, non-hex, or non-`sha256` algos (malformed values MUST NOT be treated as pins because downstream code removes the insecure fallback once a pin is present). |
+| `cognitum/_errors.py` | New `TlsPinError(CognitumError)` — `retriable=False`, carries `peer_url` / `expected` / `actual`. Re-exported from `cognitum.errors`, `cognitum.seed._errors`, and `cognitum.seed`. |
+| `cognitum/seed/_config.py` | `SeedClientOptions` gains `fingerprints: Mapping[str, str]`; `normalise_options` harvests the map from `DiscoveredPeer.tls_fingerprint` when resolving a provider. |
+| `cognitum/seed/_transport.py` | New `PinVerifier` — per-peer SHA-256 cache keyed by `Endpoint.url`, verified lazily on first use per session lifetime. |
+| `cognitum/seed/_client.py`, `_async_client.py` | Pre-check invocation inserted before the httpx dispatch in each transport's `request()` loop. Async path offloads the blocking `ssl.get_server_certificate` call to the default executor to keep the event loop responsive. |
+
+**Verify strategy:** pre-check via `ssl.get_server_certificate` on a
+raw socket (no chain validation — the seed cert is self-signed by
+design), compare DER SHA-256 to the pinned value, cache the result
+per-peer. Chosen over a custom `httpx.HTTPTransport` subclass because
+httpx does not expose a post-handshake callback that reaches the
+caller's context cleanly. Trade-off: one extra TLS handshake per peer
+at first use, acceptable given peer counts are single-digit
+(ADR-0016a).
+
+**Precedence (hard rules):**
+
+1. Explicit `SeedTLS(ca_pem=...)` / `ca_path=...` → strict chain
+   verification, pin check runs in addition when a fingerprint exists.
+2. Fingerprint present on `DiscoveredPeer` → pin. Pin wins over
+   `insecure=True`; a mismatch ALWAYS raises `TlsPinError` and there
+   is no fallback. Mesh failover MUST NOT cycle to the next peer on
+   this error — it signals active tampering, not a transport failure.
+3. No CA material, no fingerprint → fall through to the existing
+   default-host allowlist / `SeedTLS.insecure` logic in `build_verify`.
+
+**Tests (7 new):**
+
+| File | Count | Coverage |
+|------|-------|----------|
+| `tests/seed/unit/test_discovery_mdns_fp.py` | 3 | Valid `fp=sha256:<hex>` (upper/lower/prefix variants) parses to 64-char lowercased hex; malformed values yield `None`; missing TXT yields `None`. |
+| `tests/seed/unit/test_transport_fp_pin.py` | 4 | In-process HTTPS server with a freshly-generated self-signed cert; matching fp → success; mismatched fp → `TlsPinError` (with `expected` / `actual` populated); no fp + `insecure=True` → legacy path still works; mismatched fp + `insecure=True` → STILL `TlsPinError` (pin wins). |
+
+```
+$ /tmp/swarm-seed-validation/python/venv/bin/pytest sdks/python/tests/seed/ -q
+222 passed, 3 skipped in 17.17s
+```
+
+**Known httpx/ssl limitation:** `httpx` neither surfaces a post-
+handshake callback on its connection objects nor accepts a custom
+verify function. Writing a `httpx.HTTPTransport` subclass that
+inspects `sslobj.getpeercert(binary_form=True)` is possible but
+couples us to httpcore internals (the attribute path varies across
+httpx 0.27/0.28 releases). The pre-check approach sidesteps both
+issues at the cost of one extra handshake per peer — a trade the
+single-digit-peer mesh topology (ADR-0016a) absorbs cleanly.
 
 ---
 

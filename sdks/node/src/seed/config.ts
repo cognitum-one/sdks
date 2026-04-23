@@ -1,6 +1,7 @@
 import { ConfigError } from "../errors.js";
 import type { TokenBook } from "./tokenBook.js";
 import type { DiscoveryProvider } from "./discovery/types.js";
+import type { PeerOptions } from "./peers.js";
 
 /**
  * Seed client configuration.
@@ -154,6 +155,14 @@ export interface ResolvedSeedConfig {
    * {@link SeedClient.rediscover} re-invokes `discover()` when this is set.
    */
   discovery: DiscoveryProvider | undefined;
+  /**
+   * Parallel to `endpoints`: per-peer options (mDNS cert fingerprint,
+   * etc.). `peerOptions[i]` corresponds to `endpoints[i]`. Present only
+   * when {@link SeedClient.create} pre-resolved a {@link DiscoveryProvider}
+   * that reported `tlsFingerprint` on one or more peers. Undefined for
+   * explicit-list callers (no per-peer options available).
+   */
+  peerOptions: readonly (PeerOptions | undefined)[] | undefined;
   fetchFn: typeof fetch;
   logger: { warn?: (msg: string) => void; debug?: (rec: unknown) => void };
 }
@@ -189,9 +198,11 @@ export function resolveSeedConfig(opts: SeedClientOptions): ResolvedSeedConfig {
   // Internal resolution path: SeedClient.create() pre-resolves the
   // provider to a string[] and attaches the provider via the escape
   // hatch below so `rediscover()` can re-query it later.
+  let peerOptions: readonly (PeerOptions | undefined)[] | undefined;
   if ((opts as SeedClientOptionsInternal)._preResolvedFromDiscovery) {
     const internal = opts as SeedClientOptionsInternal;
     discovery = internal._preResolvedFromDiscovery;
+    peerOptions = internal._peerOptions;
   }
 
   const endpointList = Array.isArray(resolvedEndpoints)
@@ -293,6 +304,7 @@ export function resolveSeedConfig(opts: SeedClientOptions): ResolvedSeedConfig {
     tokenBook: opts.tokenBook,
     healthInterval,
     discovery,
+    peerOptions,
     fetchFn: opts.fetch ?? globalThis.fetch,
     logger: opts.logger ?? {},
   };
@@ -316,6 +328,13 @@ function isDiscoveryProvider(x: unknown): x is DiscoveryProvider {
 export interface SeedClientOptionsInternal extends SeedClientOptions {
   /** @internal */
   _preResolvedFromDiscovery?: DiscoveryProvider;
+  /**
+   * Parallel to `endpoints`: per-peer options (fingerprint, etc.)
+   * harvested from the pre-resolved {@link DiscoveredPeer}s so they
+   * survive into {@link PeerSet} construction.
+   * @internal
+   */
+  _peerOptions?: readonly (PeerOptions | undefined)[];
 }
 
 function normaliseBaseUrl(raw: string): string {

@@ -48,7 +48,7 @@ from cognitum.seed._retry import (
     parse_retry_after,
 )
 from cognitum.seed._token_book import InMemoryTokenBook, SecretString, TokenBook
-from cognitum.seed._transport import build_sync_client, safe_json
+from cognitum.seed._transport import PinVerifier, build_sync_client, safe_json
 from cognitum.seed.resources import (
     CustodyResource,
     MeshResource,
@@ -181,6 +181,10 @@ class _SyncTransport:
         self._peers = PeerSet.new(list(options.endpoints))
         self._peers_lock = threading.Lock()
         self._token_book: TokenBook = options.token_book or InMemoryTokenBook()
+        # Per-peer fingerprint pinner (ADR-0007 §TLS, mDNS fp= TXT).
+        # Empty when discovery did not surface any fingerprints — the
+        # verifier then no-ops for every peer.
+        self._pin_verifier = PinVerifier(options.fingerprints)
         self._closed: bool = False
         # Trust-score counter: per-peer consecutive 401/403 count (ADR-0007
         # §Trust-score protection, issue #16 / audit P-D1). Lives on the
@@ -286,6 +290,15 @@ class _SyncTransport:
             tok = self._token_book.get(peer.endpoint.url)
             if tok is not None:
                 headers["X-Pairing-Token"] = tok.as_str()
+
+            # Per-peer TLS fingerprint pin check (ADR-0007 §TLS). Runs
+            # before httpx dispatches so a mismatch never exfiltrates
+            # a pairing token. Cached per session lifetime — first use
+            # per peer costs one handshake; subsequent calls no-op.
+            # NOTE: TlsPinError is never retriable and never triggers
+            # mesh failover — it indicates active tampering.
+            if self._pin_verifier.needs_verification(peer.endpoint.url):
+                self._pin_verifier.verify(peer.endpoint.url)
 
             url = f"{peer.endpoint.url}{path if path.startswith('/api') else '/api/v1' + path}"
             call_started = time.monotonic()

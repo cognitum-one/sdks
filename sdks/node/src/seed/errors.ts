@@ -20,5 +20,6 @@ export {
   TimeoutError,
   ParseError,
   ConfigError,
+  TlsPinError,
   TrustScoreBlockedError,
 } from "../errors.js";

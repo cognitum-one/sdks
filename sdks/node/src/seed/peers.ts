@@ -58,12 +58,31 @@ export interface Peer {
   lastUsedAt: number | undefined;
   /** Consecutive failures — degraded at >=1, unhealthy at >=3. */
   consecutiveFailures: number;
+  /**
+   * Pinned SHA-256 TLS cert fingerprint for this peer (hex, lowercase,
+   * no colons / no `sha256:` prefix). Populated from the mDNS TXT
+   * record's `fp=` field. When set, the transport layer pins the TLS
+   * handshake to this fingerprint (ADR-0015c Phase 3 §fp= cert
+   * pinning). `undefined` means no mDNS-side pin is in effect — the
+   * normal `tls.ca` / `tls.insecure` precedence applies.
+   */
+  readonly tlsFingerprint: string | undefined;
+}
+
+/** Optional per-peer metadata plumbed into the {@link PeerSet} at construction. */
+export interface PeerOptions {
+  /** SHA-256 cert fingerprint (hex, lowercase) — see {@link Peer.tlsFingerprint}. */
+  tlsFingerprint?: string;
 }
 
 /** Internal mutable peer representation. Exported `Peer` is the same shape. */
 type MutablePeer = Peer;
 
-function makePeer(listIndex: number, rawUrl: string): MutablePeer {
+function makePeer(
+  listIndex: number,
+  rawUrl: string,
+  opts: PeerOptions | undefined,
+): MutablePeer {
   const normalised = normaliseBaseUrl(rawUrl);
   return {
     listIndex,
@@ -74,6 +93,7 @@ function makePeer(listIndex: number, rawUrl: string): MutablePeer {
     latencyEmaMs: undefined,
     lastUsedAt: undefined,
     consecutiveFailures: 0,
+    tlsFingerprint: opts?.tlsFingerprint,
   };
 }
 
@@ -101,11 +121,14 @@ function compareSortKeys(
 export class PeerSet {
   private readonly peers: MutablePeer[];
 
-  constructor(endpoints: readonly string[]) {
+  constructor(
+    endpoints: readonly string[],
+    peerOptions?: readonly (PeerOptions | undefined)[],
+  ) {
     if (!Array.isArray(endpoints) || endpoints.length === 0) {
       throw new ConfigError("PeerSet requires at least one endpoint");
     }
-    this.peers = endpoints.map((url, i) => makePeer(i, url));
+    this.peers = endpoints.map((url, i) => makePeer(i, url, peerOptions?.[i]));
   }
 
   /** Total peer count. */
