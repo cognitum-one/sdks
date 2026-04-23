@@ -76,17 +76,42 @@ impl fmt::Debug for SecretString {
 }
 
 impl Serialize for SecretString {
-    /// Serialize the raw token value. Required so wire-type response
-    /// structs that embed `SecretString` (e.g. `PairCreateResponse` per
-    /// [cognitum-one/sdks#15]) satisfy the ADR-0010 "Serialize on all
-    /// wire types" convention and can round-trip through JSON.
+    /// Redacting by default (security audit H1). Emits the literal
+    /// string `"<redacted>"` so any accidental
+    /// `serde_json::to_string(secret)` — directly or via a wire-type
+    /// struct that derives `Serialize` — produces a safe output.
+    /// Matches the Node SDK's `toJSON` contract and closes the parity
+    /// gap flagged in the 0.2.0 QE audit.
     ///
-    /// The Debug impl still redacts — only explicit serde serialization
-    /// reveals the inner value.
+    /// The [`Deserialize`] impl is unchanged: reading a raw string from
+    /// the seed's JSON response into a `SecretString` still works, so
+    /// the wire INGRESS path is untouched. Only EGRESS serialisation
+    /// redacts — which is the correct direction because the SDK never
+    /// sends a `PairCreateResponse` back to the seed.
     ///
-    /// [cognitum-one/sdks#15]: https://github.com/cognitum-one/sdks/issues/15
+    /// If a future call site genuinely needs to emit the raw value
+    /// (e.g. persisting a pairing token to disk), opt in explicitly
+    /// via [`SecretString::serialize_raw`] and
+    /// `#[serde(serialize_with = "SecretString::serialize_raw")]` on
+    /// the specific field. That makes the leak intentional and
+    /// reviewable.
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.inner)
+        serializer.serialize_str("<redacted>")
+    }
+}
+
+impl SecretString {
+    /// Explicit opt-in: serialize as the raw inner string. Intended
+    /// ONLY for `#[serde(serialize_with = ...)]` on fields where the
+    /// raw value genuinely must cross the JSON boundary (token
+    /// persistence, debug dumps behind an audit flag, etc.). The
+    /// default [`Serialize`] impl on `SecretString` redacts; call
+    /// sites using this function must be grep-able and code-reviewed.
+    pub fn serialize_raw<S: Serializer>(
+        this: &Self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&this.inner)
     }
 }
 

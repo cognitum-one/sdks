@@ -542,6 +542,58 @@ fn seed_auth_none_debug_is_not_redacted() {
 // -----------------------------------------------------------------------------
 
 #[test]
+fn secret_string_serialize_redacts() {
+    // Security audit H1 — serde_json::to_string on a SecretString must
+    // NOT emit the raw value. Node's SDK redacts via toJSON; Rust must
+    // do the same so accidental `tracing::info!("{}", json!(resp))` or
+    // cache-serialization paths don't silently exfiltrate the token.
+    use cognitum_rs::seed::SecretString;
+
+    const SENTINEL: &str = "SHOULD_NEVER_APPEAR_FROM_SERIALIZE_e2b1";
+    let secret = SecretString::new(SENTINEL);
+    let json = serde_json::to_string(&secret).expect("serializes");
+    assert!(
+        !json.contains(SENTINEL),
+        "SecretString serialize leaked raw value: {json}"
+    );
+    assert!(
+        json.contains("<redacted>"),
+        "expected redaction marker: {json}"
+    );
+}
+
+#[test]
+fn pair_create_response_serialize_redacts_token() {
+    // Security audit H1 — serializing a PairCreateResponse back to JSON
+    // must redact the token. Anyone who logs or persists a response
+    // struct should get a safe string, not the raw pairing token.
+    const SENTINEL: &str = "SHOULD_NEVER_APPEAR_FROM_PAIR_SERIALIZE_7a3f";
+    let json_in =
+        format!(r#"{{"client_name":"rust-sdk-test","token":"{SENTINEL}","expires_at":null}}"#);
+    let resp: cognitum_rs::seed::PairCreateResponse =
+        serde_json::from_str(&json_in).expect("deserializes");
+
+    // Deserialize still works (wire input path — no change).
+    assert_eq!(resp.token.as_str(), SENTINEL);
+
+    // But re-serialising the struct MUST redact the token.
+    let json_out = serde_json::to_string(&resp).expect("serializes");
+    assert!(
+        !json_out.contains(SENTINEL),
+        "PairCreateResponse serialize leaked token: {json_out}"
+    );
+    assert!(
+        json_out.contains("<redacted>"),
+        "expected redaction marker in output: {json_out}"
+    );
+    // Non-secret fields still round-trip.
+    assert!(
+        json_out.contains("rust-sdk-test"),
+        "client_name should still round-trip: {json_out}"
+    );
+}
+
+#[test]
 fn pair_create_response_debug_does_not_leak_token() {
     // Sentinel value that must never appear in any debug output.
     const SENTINEL: &str = "SHOULD_NEVER_APPEAR_FROM_PAIR_RESPONSE_c4d7";
