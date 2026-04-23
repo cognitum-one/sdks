@@ -58,6 +58,35 @@ describe("transport — fp= TLS pinning (ADR-0015c Phase 3)", () => {
     expect(typeof agent.close).toBe("function");
   });
 
+  it("short `expected` fp (< 16 hex) rejected by defense-in-depth at match layer", () => {
+    // Even if a caller bypasses parseFingerprint() and hands a short
+    // prefix directly to buildPinnedAgent (e.g. a hand-rolled PeerSet),
+    // makePinCheckServerIdentity MUST reject it. Prevents
+    // fp=ab → matches 1/256 of any cert via startsWith. See security
+    // audit C1.
+    const shortCheck = makePinCheckServerIdentity(
+      "https://seed.local:8443",
+      "ab", // would have matched 1/256 of fakeDer's SHA-256
+    );
+    const rejected = shortCheck("seed.local", { raw: fakeDer });
+    expect(rejected).toBeInstanceOf(Error);
+    expect((rejected as Error & { code?: string }).code).toBe("TLS_PIN_ERROR");
+
+    // Odd length (not whole bytes) also rejected.
+    const oddCheck = makePinCheckServerIdentity(
+      "https://seed.local:8443",
+      "abc", // 3 hex chars, odd — cannot be a real byte-prefix
+    );
+    expect(oddCheck("seed.local", { raw: fakeDer })).toBeInstanceOf(Error);
+
+    // Over-long (>64 hex) also rejected — would-be SHA-512 or padded.
+    const longCheck = makePinCheckServerIdentity(
+      "https://seed.local:8443",
+      "a".repeat(66),
+    );
+    expect(longCheck("seed.local", { raw: fakeDer })).toBeInstanceOf(Error);
+  });
+
   it("peer with mismatched fingerprint → Error marked TLS_PIN_ERROR, classifies as TlsPinError", () => {
     const check = makePinCheckServerIdentity(
       "https://seed.local:8443",

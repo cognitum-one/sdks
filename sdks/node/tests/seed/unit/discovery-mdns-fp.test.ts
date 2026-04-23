@@ -135,6 +135,35 @@ describe("mDNS fp= parsing (ADR-0015c Phase 3 §fp= cert pinning)", () => {
     }
   });
 
+  it("rejects fp= below 16 hex chars (seed TXT minimum, 8 bytes of entropy)", () => {
+    // Security: without a length floor, `fp=ab` is accepted by the old
+    // parser and matches 1/256 of ANY self-signed cert because the
+    // transport layer uses startsWith() against the actual SHA-256 hex.
+    // An attacker on the tailnet / local LAN advertising `fp=ab` via
+    // mDNS could brute-force a matching cert offline in seconds.
+    //
+    // The seed firmware truncates to 16 hex chars in its TXT record
+    // (8 bytes → 64 bits of search space). Anything shorter is either
+    // malformed or an adversarial short prefix. Reject.
+    expect(parseFingerprint("ab")).toBeUndefined();
+    expect(parseFingerprint("abcd")).toBeUndefined();
+    expect(parseFingerprint("abcdef01")).toBeUndefined(); // 8 hex = 4 bytes
+    expect(parseFingerprint("abcdef0123456789")).toBe("abcdef0123456789"); // 16 hex = floor
+    expect(parseFingerprint("sha256:ab")).toBeUndefined();
+    expect(parseFingerprint("ab:cd:ef")).toBeUndefined(); // 6 hex after colon-strip
+  });
+
+  it("rejects fp= above 64 hex chars (SHA-256 max, 32 bytes)", () => {
+    // A valid SHA-256 is exactly 32 bytes = 64 lowercase hex chars.
+    // Anything longer is either a padded attacker string or a different
+    // hash algorithm — neither safe to accept as a pin.
+    const sha256Max = "a".repeat(64);
+    const overLong = "a".repeat(66);
+    expect(parseFingerprint(sha256Max)).toBe(sha256Max);
+    expect(parseFingerprint(overLong)).toBeUndefined();
+    expect(parseFingerprint("a".repeat(128))).toBeUndefined(); // would-be SHA-512
+  });
+
   it("missing fp= entry → DiscoveredPeer.tlsFingerprint is undefined", async () => {
     const factory = makeStubFactory([
       {

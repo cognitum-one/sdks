@@ -260,8 +260,29 @@ export class MdnsDiscovery implements DiscoveryProvider {
  * rather than throwing so a malformed TXT doesn't tank the whole
  * `discover()` batch.
  *
+ * Length bounds (security-critical): the seed firmware truncates to
+ * 16 hex chars (8 bytes / 64 bits) in its TXT record; a full SHA-256
+ * is 64 hex chars (32 bytes). Without a floor, `fp=ab` is accepted
+ * and matches 1/256 of ANY cert because the transport layer uses
+ * prefix-match — an attacker advertising a short `fp=` via mDNS
+ * could brute-force a matching self-signed cert in seconds. We
+ * reject anything outside `[16, 64]` hex chars.
+ *
  * Exported for unit testing (`tests/seed/unit/discovery-mdns-fp.test.ts`).
  */
+/**
+ * Minimum `fp=` length in hex chars (8 bytes). Matches the seed
+ * firmware's truncated TXT form. Anything shorter is an adversarial
+ * short prefix — see {@link parseFingerprint}.
+ */
+export const FP_MIN_HEX_LEN = 16;
+
+/**
+ * Maximum `fp=` length in hex chars (32 bytes, full SHA-256).
+ * Anything longer is either padded or a different hash algorithm.
+ */
+export const FP_MAX_HEX_LEN = 64;
+
 export function parseFingerprint(raw: string | undefined): string | undefined {
   if (raw === undefined || raw === null) return undefined;
   if (typeof raw !== "string") return undefined;
@@ -279,6 +300,8 @@ export function parseFingerprint(raw: string | undefined): string | undefined {
   s = s.replace(/:/g, "").toLowerCase();
   if (s.length === 0) return undefined;
   if (s.length % 2 !== 0) return undefined;
+  if (s.length < FP_MIN_HEX_LEN) return undefined;
+  if (s.length > FP_MAX_HEX_LEN) return undefined;
   if (!/^[0-9a-f]+$/.test(s)) return undefined;
   return s;
 }

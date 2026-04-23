@@ -26,6 +26,7 @@ import { Agent } from "undici";
 import type { ResolvedSeedConfig } from "./config.js";
 import { TlsPinError } from "../errors.js";
 import type { Peer } from "./peers.js";
+import { FP_MIN_HEX_LEN, FP_MAX_HEX_LEN } from "./discovery/mdns.js";
 
 let warnedInsecure = false;
 
@@ -257,14 +258,25 @@ function sha256OfCert(cert: unknown): string | undefined {
  * The seed truncates to 16 hex chars (8 bytes) in its TXT record, so
  * we accept any byte-prefix of the actual hash. Both inputs must
  * already be lowercase hex (no colons, no `sha256:`).
+ *
+ * Defense-in-depth: this function ALSO enforces the `[FP_MIN_HEX_LEN,
+ * FP_MAX_HEX_LEN]` bounds that {@link parseFingerprint} applies at
+ * the mDNS layer. Even if a caller ever constructs a pinned dispatcher
+ * without going through the discovery path (e.g. a hand-rolled
+ * `PeerSet` in tests), `fp=ab`-style short prefixes cannot slip through
+ * and match 1/256 of any self-signed cert. An `expected` outside the
+ * bounds is treated as a hard mismatch.
  */
 function matchFingerprint(
   expected: string,
   actual: string | undefined,
 ): boolean {
   if (!actual) return false;
-  if (expected.length === 0) return false;
+  if (expected.length < FP_MIN_HEX_LEN) return false;
+  if (expected.length > FP_MAX_HEX_LEN) return false;
+  if (expected.length % 2 !== 0) return false;
   if (expected.length > actual.length) return false;
+  if (!/^[0-9a-f]+$/.test(expected)) return false;
   // Constant-time compare is overkill here — the fingerprint is public
   // info (broadcast over mDNS), so timing leaks are a non-issue.
   return actual.startsWith(expected);
