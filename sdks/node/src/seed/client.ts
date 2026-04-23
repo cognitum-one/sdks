@@ -167,6 +167,19 @@ export class SeedClient {
    * peer, or explicitly via {@link SeedClient.resetTrustScore}.
    */
   private readonly authFailures: Map<string, number> = new Map();
+  /**
+   * Per-peer in-flight auth-bearing requests — security audit H2.
+   * JavaScript is single-threaded, but async-concurrent: N callers can
+   * all pass the `authFailures < LIMIT` pre-dispatch gate before any of
+   * them gets a 401 back. Under that race, N requests hit the wire even
+   * though only 3 should. This counter is incremented BEFORE dispatch
+   * and decremented (via try/finally) AFTER the response — so the
+   * pre-dispatch check gates on `inFlight + authFailures` together.
+   * An N-request-concurrent burst now gets at most `LIMIT` requests on
+   * the wire; the rest are thrown with {@link TrustScoreBlockedError}
+   * before `fetch` is ever called.
+   */
+  private readonly authInFlight: Map<string, number> = new Map();
   /** Trust-score threshold — 3 consecutive auth failures triggers block. */
   private static readonly TRUST_SCORE_LIMIT = 3;
   /**
@@ -547,15 +560,16 @@ export class SeedClient {
         );
       }
 
-      // -- trust-score gate (ADR-0007, issue #16) -------------------------
-      // If this peer has already hit the threshold, abort before we
-      // send another auth-bearing request that would burn the seed's
-      // trust-score budget. This is checked BEFORE dispatch so that
-      // even the first call after a prior block surfaces the typed
-      // error immediately.
-      if (
-        (this.authFailures.get(peer.key) ?? 0) >= SeedClient.TRUST_SCORE_LIMIT
-      ) {
+      // -- trust-score gate (ADR-0007, issue #16, audit H2) ---------------
+      // If this peer has already consumed the threshold — counting both
+      // confirmed past failures AND requests currently in-flight — abort
+      // before dispatch. The in-flight count closes the concurrency race
+      // where N callers all pass `authFailures < LIMIT` before any 401
+      // arrives; without it, N requests hit the wire and burn the seed's
+      // budget N times over.
+      const confirmed = this.authFailures.get(peer.key) ?? 0;
+      const inFlight = this.authInFlight.get(peer.key) ?? 0;
+      if (confirmed + inFlight >= SeedClient.TRUST_SCORE_LIMIT) {
         throw new TrustScoreBlockedError(peer.key);
       }
 
@@ -565,14 +579,30 @@ export class SeedClient {
         attemptBudgetMs,
       );
 
-      const outcome = await this.dispatchOnce<T>(
-        methodUpper,
-        path,
-        peer,
-        opts,
-        attemptTimeoutMs,
-        bodyStr,
-      );
+      // Reserve an in-flight slot synchronously (before the await) so a
+      // sibling `request()` call on the same peer sees the updated
+      // counter at its own gate check. The try/finally guarantees the
+      // slot is released even on throw paths (network error, timeout,
+      // TlsPinError, anything).
+      this.authInFlight.set(peer.key, inFlight + 1);
+      let outcome: Awaited<ReturnType<typeof this.dispatchOnce<T>>>;
+      try {
+        outcome = await this.dispatchOnce<T>(
+          methodUpper,
+          path,
+          peer,
+          opts,
+          attemptTimeoutMs,
+          bodyStr,
+        );
+      } finally {
+        const cur = this.authInFlight.get(peer.key) ?? 1;
+        if (cur <= 1) {
+          this.authInFlight.delete(peer.key);
+        } else {
+          this.authInFlight.set(peer.key, cur - 1);
+        }
+      }
 
       // -- success --------------------------------------------------------
       if (outcome.kind === "ok") {

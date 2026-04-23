@@ -271,6 +271,103 @@ describe("trust-score protection (issue #16)", () => {
     expect(c.trustScoreFailures("https://peer-b:8443")).toBe(0);
   });
 
+  // ---- concurrency race (security audit H2) --------------------------
+  //
+  // JavaScript is single-threaded, but async-concurrent. The bug: all
+  // in-flight callers pass the pre-dispatch `counter < 3` gate BEFORE
+  // any of them gets a 401 back. So firing 10 concurrent status() calls
+  // with a 401-returning server sends 10 requests on the wire — the
+  // counter only starts climbing after responses arrive. Goal: never
+  // exceed the seed's 3-strike budget regardless of how many concurrent
+  // callers fire against the same peer.
+
+  it("caps concurrent in-flight 401s at 3 (audit H2)", async () => {
+    // Block the fetch until we say "go" so we can fire N concurrent
+    // requests that are ALL in the "waiting for response" state at the
+    // same time — mirroring the race the audit flagged.
+    let resolveGate: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      resolveGate = resolve;
+    });
+    let dispatched = 0;
+    const fetchFn = vi.fn(async () => {
+      dispatched += 1;
+      await gate; // hold until we release
+      return authResponse(401);
+    });
+
+    const c = singleSeed(fetchFn as unknown as typeof fetch);
+
+    // Fire 10 concurrent requests. All of them should pass the
+    // pre-dispatch gate under the old code (counter=0). Under the fix,
+    // only the first 3 make it to the wire; the rest fail fast with
+    // TrustScoreBlockedError without ever calling fetch. We attach a
+    // dummy `.catch` on each so vitest's unhandled-rejection detector
+    // doesn't flag the blocked promises before `allSettled` collects
+    // them — the rejections are expected and deliberate.
+    const inflight = Array.from({ length: 10 }, () => {
+      const p = c.status();
+      p.catch(() => undefined);
+      return p;
+    });
+
+    // Let event-loop settle so all 10 have had a chance to either
+    // dispatch or be blocked.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // At most 3 should have hit the wire.
+    expect(dispatched).toBeLessThanOrEqual(3);
+
+    // Release the gate so the in-flight ones can complete (they'll get
+    // 401 and either AuthError or TrustScoreBlockedError).
+    resolveGate?.();
+
+    const outcomes = await Promise.allSettled(inflight);
+
+    // Count how many were AuthError vs TrustScoreBlockedError. At most
+    // 3 should be AuthError (the ones that hit the wire); the rest must
+    // be TrustScoreBlockedError (blocked at the gate).
+    const authErrors = outcomes.filter(
+      (o) =>
+        o.status === "rejected" && o.reason instanceof AuthError,
+    ).length;
+    const blocked = outcomes.filter(
+      (o) =>
+        o.status === "rejected" &&
+        o.reason instanceof TrustScoreBlockedError,
+    ).length;
+
+    expect(authErrors).toBeLessThanOrEqual(3);
+    expect(blocked).toBeGreaterThanOrEqual(7);
+    expect(authErrors + blocked).toBe(10);
+
+    // The counter should be exactly 3 — the in-flight requests that
+    // actually received 401s, not poisoned by the blocked ones.
+    expect(c.trustScoreFailures("https://seed.test:8443")).toBe(3);
+  });
+
+  it("in-flight 2xx releases the reservation so later 401s count normally", async () => {
+    // Fire 2 concurrent requests. First returns 200, second returns 401.
+    // The 2xx must release its reservation (and clear the counter), so a
+    // later 401 starts from zero — the in-flight bookkeeping must not
+    // leak a permanent "1 strike" from the successful request.
+    const responses: Array<Response> = [okResponse({ ok: true }), authResponse(401)];
+    const fetchFn = vi.fn(async () => {
+      const r = responses.shift();
+      if (r === undefined) throw new Error("unexpected extra dispatch");
+      return r;
+    });
+
+    const c = singleSeed(fetchFn as unknown as typeof fetch);
+    const [a, b] = await Promise.allSettled([c.status(), c.status()]);
+
+    // One succeeded, one failed with AuthError.
+    expect(a.status === "fulfilled" || b.status === "fulfilled").toBe(true);
+    // Counter is 1 (one AuthError), not 0 (not poisoned by the 2xx) and
+    // not higher (in-flight didn't leak).
+    expect(c.trustScoreFailures("https://seed.test:8443")).toBe(1);
+  });
+
   // Silence an unused-import warning from verbose linters — we import
   // ServiceUnavailableError to document the 5xx path in the scenarios
   // above even though we match by status rather than instance in the
