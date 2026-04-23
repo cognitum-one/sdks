@@ -1,6 +1,6 @@
 # ADR 0018: SD-Card Flashing Tool for Cognitum Seed Images
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-04-23
 - **Deciders:** SDK WG + fleet / seed-appliance team
 - **Scope:** cross-cutting — new tool; thin SDK helpers; no changes to
