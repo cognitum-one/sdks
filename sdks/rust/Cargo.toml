@@ -1,14 +1,25 @@
 [package]
 name = "cognitum-rs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Official Cognitum SDK for Rust"
 license = "MIT"
+readme = "README.md"
 keywords = ["cognitum", "ai", "mcp", "sdk", "seed"]
 categories = ["api-bindings", "web-programming::http-client"]
-repository = "https://github.com/ruvnet/cognitum"
+repository = "https://github.com/cognitum-one/sdks"
 homepage = "https://cognitum.one"
-documentation = "https://api.cognitum.one/apiOpenSpec"
+documentation = "https://docs.rs/cognitum-rs"
+include = [
+    "src/**/*",
+    "benches/**/*",
+    "tests/**/*",
+    "docs/**/*",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+]
 
 [features]
 default = ["rustls"]

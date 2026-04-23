@@ -6,19 +6,11 @@ control plane (`api.cognitum.one`).
 
 One surface. Three runtimes.
 
-<!-- final-review-note: the three manifests are currently at 0.1.3 (node),
-     0.1.0 (python), 0.1.0 (rust). Version column below reflects those
-     shipped numbers. Per-SDK ADRs (0015c, 0013c, 0014c) call 0.2.0 the
-     next release that carries the pre-1.0 breaking changes (POST
-     idempotent default flip, Error taxonomy additions). Bump manifests
-     before tagging, or update this table if we cut 0.1.x patches
-     carrying the Phase 2/3 surface. -->
-
 | Language | Package | Version | Install |
 |----------|---------|---------|---------|
-| Node.js / TypeScript | [`@cognitum/sdk`](sdks/node/) | 0.1.3 | `npm install @cognitum/sdk` |
-| Python | [`cognitum`](sdks/python/) | 0.1.0 | `pip install cognitum` |
-| Rust | [`cognitum`](sdks/rust/) | 0.1.0 | `cognitum = "0.1"` |
+| Node.js / TypeScript | [`@cognitum/sdk`](sdks/node/) | 0.2.0 | `npm install @cognitum/sdk` |
+| Python | [`cognitum`](sdks/python/) | 0.2.0 | `pip install cognitum` |
+| Rust | [`cognitum-rs`](sdks/rust/) | 0.2.0 | `cognitum-rs = "0.2"` |
 
 All three SDKs implement the same domain model, the same HTTP contract, and
 the same failover / security / observability invariants — they differ only
@@ -195,5 +187,5 @@ Pairing-token resolution is analogous (`pairingToken` arg, then
 
 ## License
 
-Apache-2.0. Every SDK package carries its own `LICENSE` file; the licence
-applies identically.
+MIT. Every SDK package carries its own `LICENSE` file matching the root
+`LICENSE`; the licence applies identically.
