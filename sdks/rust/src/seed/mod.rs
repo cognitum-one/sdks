@@ -42,6 +42,7 @@
 
 pub mod client;
 pub mod config;
+pub mod discovery;
 pub mod error;
 pub mod health;
 pub mod models;
@@ -55,6 +56,9 @@ pub use client::{SeedClient, SeedClientBuilder};
 pub use config::{
     CallOptions, Consistency, Failover, Prefer, Routing, SeedAuth, SeedTls, Timeouts,
 };
+#[cfg(feature = "mdns")]
+pub use discovery::MdnsDiscovery;
+pub use discovery::{DiscoveredPeer, Discovery, Explicit};
 pub use models::{
     ClusterHealth, CustodyEpoch, Extras, Identity, MeshPeers, MeshStatus, OtaCheckNowAck,
     OtaConfig, PairCreate, PairCreateResponse, PairStatus, Status, StoreIngest, StoreIngestAck,

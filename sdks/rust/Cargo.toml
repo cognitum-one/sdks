@@ -14,10 +14,15 @@ documentation = "https://api.cognitum.one/apiOpenSpec"
 default = ["rustls"]
 rustls = ["reqwest/rustls-tls"]
 native-tls = ["reqwest/native-tls"]
-seed = ["dep:url"]
+seed = ["dep:url", "dep:async-trait"]
 stream = ["seed", "dep:eventsource-stream"]
 blocking = ["reqwest/blocking"]
 live-seed-tests = ["seed"]
+# Opt-in mDNS discovery (ADR-0016a §D6, Phase 3). One-shot `_cognitum._tcp.local`
+# query; parses TXT records into `DiscoveredPeer`. Pulls in `mdns-sd` which
+# uses `flume` + `socket2` but NO async runtime of its own, so it can run
+# from a `tokio::task::spawn_blocking` context.
+mdns = ["seed", "dep:mdns-sd"]
 
 [dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
@@ -27,6 +32,14 @@ thiserror = "2"
 tokio = { version = "1", features = ["time", "macros"] }
 url = { version = "2", optional = true }
 eventsource-stream = { version = "0.2", optional = true }
+# `async-trait` is required for the object-safe `Discovery` trait (§D6).
+# Gated on `seed` so the cloud-only default build doesn't pay the proc-macro
+# compilation cost.
+async-trait = { version = "0.1", optional = true }
+# Phase 3 mDNS discovery (ADR-0016a §D6). `default-features = false` drops
+# the optional `async`/`log` integrations — we drive mdns-sd's sync receiver
+# from `tokio::task::spawn_blocking` ourselves.
+mdns-sd = { version = "0.19", optional = true, default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

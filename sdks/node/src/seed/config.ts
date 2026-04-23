@@ -1,5 +1,6 @@
 import { ConfigError } from "../errors.js";
 import type { TokenBook } from "./tokenBook.js";
+import type { DiscoveryProvider } from "./discovery/types.js";
 
 /**
  * Seed client configuration.
@@ -71,11 +72,16 @@ export interface SeedTimeoutOptions {
 
 export interface SeedClientOptions {
   /**
-   * One endpoint (single-seed mode) or a list (mesh mode, Phase 1.5).
-   * Order is preserved as the peer `listIndex` for tie-breaking in the
-   * closest-first picker.
+   * One endpoint (single-seed mode), a list (mesh mode, Phase 1.5), OR
+   * a {@link DiscoveryProvider} (Phase 1.5 opt-in, e.g. `MdnsDiscovery`
+   * from `@cognitum/sdk/seed/discovery/mdns`).
+   *
+   * For the array form, order is preserved as the peer `listIndex` for
+   * tie-breaking in the closest-first picker. Providers are evaluated
+   * at construction (and again on {@link SeedClient.rediscover}); the
+   * resolved peer list is treated the same as the explicit form.
    */
-  endpoints: SeedEndpoint | SeedEndpoint[];
+  endpoints: SeedEndpoint | SeedEndpoint[] | DiscoveryProvider;
   auth?: SeedAuthOptions;
   tls?: SeedTlsOptions;
   /**
@@ -141,6 +147,13 @@ export interface ResolvedSeedConfig {
   tokenBook: TokenBook | undefined;
   /** Active health-probe interval in ms, or `undefined` when disabled. */
   healthInterval: number | undefined;
+  /**
+   * Discovery provider attached to this client (ADR-0016a §D6). Non-`undefined`
+   * when the caller supplied a {@link DiscoveryProvider} either directly in
+   * `endpoints:` or via the async {@link SeedClient.create} factory.
+   * {@link SeedClient.rediscover} re-invokes `discover()` when this is set.
+   */
+  discovery: DiscoveryProvider | undefined;
   fetchFn: typeof fetch;
   logger: { warn?: (msg: string) => void; debug?: (rec: unknown) => void };
 }
@@ -159,9 +172,31 @@ export function resolveSeedConfig(opts: SeedClientOptions): ResolvedSeedConfig {
     throw new ConfigError("`endpoints` is required");
   }
 
-  const endpointList = Array.isArray(opts.endpoints)
-    ? opts.endpoints
-    : [opts.endpoints];
+  // `DiscoveryProvider` branch — the provider's `discover()` is async,
+  // so callers MUST pre-resolve via {@link SeedClient.create}. The sync
+  // constructor surfaces a typed `ConfigError` pointing at the factory
+  // instead of silently dispatching against an empty peer list.
+  let discovery: DiscoveryProvider | undefined;
+  let resolvedEndpoints: string | string[] = opts.endpoints as
+    | string
+    | string[];
+  if (isDiscoveryProvider(opts.endpoints)) {
+    throw new ConfigError(
+      "`endpoints` is a DiscoveryProvider — use `await SeedClient.create(options)` " +
+        "which resolves discovery before constructing the client.",
+    );
+  }
+  // Internal resolution path: SeedClient.create() pre-resolves the
+  // provider to a string[] and attaches the provider via the escape
+  // hatch below so `rediscover()` can re-query it later.
+  if ((opts as SeedClientOptionsInternal)._preResolvedFromDiscovery) {
+    const internal = opts as SeedClientOptionsInternal;
+    discovery = internal._preResolvedFromDiscovery;
+  }
+
+  const endpointList = Array.isArray(resolvedEndpoints)
+    ? resolvedEndpoints
+    : [resolvedEndpoints];
 
   if (endpointList.length === 0) {
     throw new ConfigError("at least one endpoint is required");
@@ -257,9 +292,30 @@ export function resolveSeedConfig(opts: SeedClientOptions): ResolvedSeedConfig {
     rateLimitRetry: opts.rateLimitRetry ?? true,
     tokenBook: opts.tokenBook,
     healthInterval,
+    discovery,
     fetchFn: opts.fetch ?? globalThis.fetch,
     logger: opts.logger ?? {},
   };
+}
+
+/** Runtime check for the {@link DiscoveryProvider} duck type. */
+function isDiscoveryProvider(x: unknown): x is DiscoveryProvider {
+  return (
+    typeof x === "object" &&
+    x !== null &&
+    typeof (x as DiscoveryProvider).discover === "function"
+  );
+}
+
+/**
+ * Internal escape hatch used by {@link SeedClient.create}. The factory
+ * runs `discovery.discover()`, swaps the endpoints to a `string[]`, and
+ * stashes the original provider here so `rediscover()` can re-query it.
+ * @internal
+ */
+export interface SeedClientOptionsInternal extends SeedClientOptions {
+  /** @internal */
+  _preResolvedFromDiscovery?: DiscoveryProvider;
 }
 
 function normaliseBaseUrl(raw: string): string {

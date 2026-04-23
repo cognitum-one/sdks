@@ -79,8 +79,10 @@ async fn rediscover_resets_unhealthy_peer_to_healthy() {
     assert_eq!(peer_b.state, PeerState::Healthy);
     assert!(peer_b.latency_ema_ms.is_some());
 
-    // Rediscover: both peers revert to clean state.
-    client.rediscover();
+    // Rediscover: both peers revert to clean state. No Discovery
+    // provider is configured, so this is pure SDK-local bookkeeping and
+    // cannot fail.
+    client.rediscover().await.expect("rediscover");
 
     let after = client.peers();
     for p in &after {
@@ -105,9 +107,9 @@ async fn rediscover_is_idempotent_on_fresh_client() {
         .expect("builds");
 
     // First call — should be safe on a clean client.
-    client.rediscover();
+    client.rediscover().await.expect("first rediscover");
     // Second call — still safe.
-    client.rediscover();
+    client.rediscover().await.expect("second rediscover");
 
     for p in client.peers() {
         assert_eq!(p.state, PeerState::Healthy);

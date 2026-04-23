@@ -27,6 +27,7 @@ use serde::Serialize;
 use crate::error::Error;
 
 use super::config::{CallOptions, Consistency, Prefer, Routing, SeedAuth, SeedTls, Timeouts};
+use super::discovery::{DiscoveredPeer, Discovery};
 use super::error as seed_err;
 use super::health::HealthHandle;
 use super::peers::{Endpoint, Peer, PeerErrorClass, PeerSet};
@@ -77,6 +78,12 @@ pub(crate) struct SeedInner {
     ///
     /// [cognitum-one/sdks#16]: https://github.com/cognitum-one/sdks/issues/16
     pub(crate) auth_failure_counts: Mutex<BTreeMap<String, u32>>,
+    /// Optional [`Discovery`] provider for dynamic peer resolution
+    /// (ADR-0016a §D6, Phase 3). When set, [`SeedClient::rediscover`]
+    /// calls the provider and rebuilds the `PeerSet` from the result;
+    /// when `None`, `rediscover()` falls back to the Phase 2 behaviour
+    /// of resetting the existing `PeerSet` to a clean `Healthy` state.
+    pub(crate) discovery: Option<Arc<dyn Discovery>>,
 }
 
 impl SeedClient {
@@ -120,17 +127,70 @@ impl SeedClient {
         MeshResource { client: self }
     }
 
-    /// Reset the per-peer routing state so the next call re-probes freshly
-    /// (Phase 2 — ADR-0016b). Marks every configured peer `Healthy`, zeros
-    /// `consecutive_failures`, clears `latency_ema_ms` and `last_used_at`.
+    /// Reset the per-peer routing state (Phase 2 — ADR-0016b) or re-run
+    /// the configured [`Discovery`] provider (Phase 3 — ADR-0016a §D6).
     ///
-    /// Idempotent. No network I/O — this is purely SDK-local bookkeeping.
-    /// Useful after a long sleep / network change when the EMA no longer
-    /// reflects reality.
-    pub fn rediscover(&self) {
-        if let Ok(mut guard) = self.inner.peers.lock() {
+    /// * When the builder was given a [`Discovery`] via
+    ///   [`SeedClientBuilder::discovery`], this call invokes
+    ///   [`Discovery::discover`] and rebuilds the `PeerSet` from the
+    ///   returned list. Any session pin whose URL is present in the new
+    ///   list survives; pins that drop out become dangling and the next
+    ///   request on that session falls back to the session's resolved
+    ///   peer (ADR-0016a §D9). An empty list fails with
+    ///   `Error::Validation` — the SDK refuses to be left with zero
+    ///   routable peers.
+    /// * When no [`Discovery`] is configured, behaves as before: marks
+    ///   every peer `Healthy`, zeros `consecutive_failures`, and clears
+    ///   `latency_ema_ms` / `last_used_at`. No network I/O.
+    ///
+    /// Idempotent in the provider-less case. With a provider, each call
+    /// performs I/O and may return transient `Error::Api { code: 0, ... }`
+    /// errors; callers SHOULD be prepared to retry or fall back to the
+    /// existing `PeerSet` (which this function leaves unchanged on
+    /// failure).
+    pub async fn rediscover(&self) -> Result<(), Error> {
+        if let Some(ref d) = self.inner.discovery {
+            let new_peers = d.discover().await?;
+            if new_peers.is_empty() {
+                return Err(Error::Validation(
+                    "seed: Discovery returned zero peers; refusing to reset PeerSet".into(),
+                ));
+            }
+            self.rebuild_peer_set(&new_peers)?;
+        } else {
+            let mut guard = self.inner.peers.lock().map_err(|_| Error::Api {
+                code: 0,
+                message: "seed: peers lock poisoned".into(),
+            })?;
             guard.rediscover();
         }
+        Ok(())
+    }
+
+    /// Replace the live `PeerSet` with one built from `discovered`. New
+    /// peers start in `Healthy` with cleared EMAs; peers present in both
+    /// sets retain no state (the caller asked for a fresh probe — see
+    /// `PeerSet::rediscover`). TokenBook entries for dropped peers are
+    /// left in place so a rediscovery race that transiently drops a peer
+    /// doesn't lose its pairing token.
+    fn rebuild_peer_set(&self, discovered: &[DiscoveredPeer]) -> Result<(), Error> {
+        let endpoints = discovered
+            .iter()
+            .map(|p| Endpoint::parse(&p.url))
+            .collect::<Result<Vec<_>, _>>()?;
+        let new_set = PeerSet::new(endpoints)?;
+        let mut guard = self.inner.peers.lock().map_err(|_| Error::Api {
+            code: 0,
+            message: "seed: peers lock poisoned".into(),
+        })?;
+        *guard = new_set;
+        // `SeedSession::pinned_peer` holds a canonical URL string; we
+        // don't touch it here — if the pinned URL is still present in
+        // `guard`, `find_by_key` will resolve it on the next dispatch.
+        // If it dropped out, `SeedClient::pick_peer` falls through to
+        // the closest-first picker (documented behaviour in the type
+        // doc above).
+        Ok(())
     }
 
     /// Open a [`SeedSession`] pinned to the currently closest-first peer.
@@ -710,6 +770,7 @@ pub struct SeedClientBuilder {
     max_retries: Option<u32>,
     token_book: Option<Box<dyn TokenBook>>,
     health_interval: Option<Duration>,
+    discovery: Option<Arc<dyn Discovery>>,
 }
 
 impl std::fmt::Debug for SeedClientBuilder {
@@ -723,6 +784,7 @@ impl std::fmt::Debug for SeedClientBuilder {
             .field("max_retries", &self.max_retries)
             .field("token_book", &self.token_book.is_some())
             .field("health_interval", &self.health_interval)
+            .field("discovery", &self.discovery.is_some())
             .finish()
     }
 }
@@ -785,16 +847,58 @@ impl SeedClientBuilder {
         self
     }
 
+    /// Install a [`Discovery`] provider (ADR-0016a §D6). When set,
+    /// [`SeedClient::rediscover`] invokes the provider and rebuilds the
+    /// `PeerSet` from the returned list.
+    ///
+    /// Mutually exclusive with [`Self::endpoints`] / [`Self::endpoint`]:
+    /// `.discovery(...)` seeds the initial list from the provider's
+    /// first `discover()` call inside `build()`. Calling
+    /// `.endpoints(...)` afterwards is still permitted — the explicit
+    /// list wins for the initial `PeerSet` while the provider remains
+    /// armed for later `rediscover()` calls.
+    pub fn discovery<D: Discovery + 'static>(mut self, discovery: D) -> Self {
+        self.discovery = Some(Arc::new(discovery));
+        self
+    }
+
+    /// Install a pre-boxed [`Discovery`] provider. Useful when the
+    /// provider type is erased at a higher layer (e.g. a plugin).
+    pub fn discovery_arc(mut self, discovery: Arc<dyn Discovery>) -> Self {
+        self.discovery = Some(discovery);
+        self
+    }
+
     /// Build the client.
     pub fn build(self) -> Result<SeedClient, Error> {
-        if self.endpoints.is_empty() {
+        // If the caller went the Phase 3 route (`.discovery(...)` without
+        // an explicit list), seed the initial `PeerSet` from the
+        // provider synchronously. We use `tokio::runtime::Handle::block_on`
+        // when inside a runtime, or a one-shot runtime otherwise — this
+        // keeps `build()` infallibly synchronous the way the rest of the
+        // builder expects, and lets us surface config errors (e.g. empty
+        // mDNS response) at construction time instead of lurking until
+        // the first request.
+        let mut endpoints_str = self.endpoints.clone();
+        if endpoints_str.is_empty() {
+            if let Some(ref d) = self.discovery {
+                let discovered = block_on_discover(d.as_ref())?;
+                if discovered.is_empty() {
+                    return Err(Error::Validation(
+                        "SeedClient: Discovery returned zero peers at build time".into(),
+                    ));
+                }
+                endpoints_str = discovered.into_iter().map(|p| p.url).collect();
+            }
+        }
+
+        if endpoints_str.is_empty() {
             return Err(Error::Validation(
-                "SeedClient: at least one .endpoint(...) is required".into(),
+                "SeedClient: at least one .endpoint(...) or .discovery(...) is required".into(),
             ));
         }
 
-        let endpoints = self
-            .endpoints
+        let endpoints = endpoints_str
             .iter()
             .map(|s| Endpoint::parse(s))
             .collect::<Result<Vec<_>, _>>()?;
@@ -834,9 +938,36 @@ impl SeedClientBuilder {
                 token_book,
                 health,
                 auth_failure_counts: Mutex::new(BTreeMap::new()),
+                discovery: self.discovery,
             }),
         })
     }
+}
+
+/// Drive a `Discovery::discover()` call from the synchronous builder.
+///
+/// Always runs on a freshly-spawned thread with its own current-thread
+/// tokio runtime. This avoids "cannot block the current thread from
+/// within a runtime" panics no matter which runtime flavour (if any) is
+/// active on the caller's thread, and keeps the builder infallibly
+/// synchronous. The thread is short-lived — it lives only for the
+/// duration of the discover call, which mDNS caps at ~2s by default.
+fn block_on_discover(d: &dyn Discovery) -> Result<Vec<DiscoveredPeer>, Error> {
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| Error::Validation(format!("seed: rt build: {e}")))?;
+                rt.block_on(d.discover())
+            })
+            .join()
+            .map_err(|_| Error::Api {
+                code: 0,
+                message: "seed: discovery thread panicked".into(),
+            })?
+    })
 }
 
 fn build_http_client(tls: &SeedTls, timeouts: &Timeouts) -> Result<reqwest::Client, Error> {

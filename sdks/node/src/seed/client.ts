@@ -30,7 +30,9 @@ import {
   resolveSeedConfig,
   type ResolvedSeedConfig,
   type SeedClientOptions,
+  type SeedClientOptionsInternal,
 } from "./config.js";
+import type { DiscoveryProvider } from "./discovery/types.js";
 import { classifyErrorResponse, type DispatchOutcome } from "./dispatch.js";
 import { startHealthProbe, type HealthProbeHandle } from "./health.js";
 import { PeerSet, type Peer } from "./peers.js";
@@ -130,8 +132,14 @@ export class SeedClient {
    */
   readonly mesh: MeshResource;
 
-  /** Peer set — closest-first picker with per-peer health state. */
-  private readonly peerSet: PeerSet;
+  /**
+   * Peer set — closest-first picker with per-peer health state.
+   * Re-assigned (not mutated) by {@link SeedClient.rediscover} when a
+   * discovery provider returns a fresh peer list; the reference-swap
+   * keeps the data structure's internal invariants tidy without needing
+   * a separate "replace" method on {@link PeerSet}.
+   */
+  private peerSet: PeerSet;
   /** Per-peer pairing-token store. */
   private readonly tokenBook: TokenBook;
   /** TLS-aware fetch bound to this client. */
@@ -148,10 +156,65 @@ export class SeedClient {
   private readonly authFailures: Map<string, number> = new Map();
   /** Trust-score threshold — 3 consecutive auth failures triggers block. */
   private static readonly TRUST_SCORE_LIMIT = 3;
+  /**
+   * Attached discovery provider (ADR-0016a §D6). When set,
+   * {@link SeedClient.rediscover} re-invokes `discover()` and rebuilds
+   * the {@link PeerSet} with the fresh entries. `undefined` for
+   * explicit-list clients.
+   */
+  private readonly discovery: DiscoveryProvider | undefined;
+
+  /**
+   * Async factory that resolves a {@link DiscoveryProvider} before
+   * constructing the client. Use this when `options.endpoints` is a
+   * provider (e.g. `MdnsDiscovery`) — the sync constructor rejects
+   * providers because `discover()` is async.
+   *
+   * For explicit-list callers the sync constructor still works; this
+   * factory is only needed for the Phase 1.5 opt-in discovery path.
+   *
+   * @example
+   * ```ts
+   * import { SeedClient } from "@cognitum/sdk/seed";
+   * import { MdnsDiscovery } from "@cognitum/sdk/seed/discovery/mdns";
+   *
+   * const client = await SeedClient.create({
+   *   endpoints: MdnsDiscovery.default(),
+   *   tls: { insecure: true },
+   * });
+   * ```
+   */
+  static async create(options: SeedClientOptions): Promise<SeedClient> {
+    const ep = options.endpoints;
+    if (
+      typeof ep === "object" &&
+      ep !== null &&
+      !Array.isArray(ep) &&
+      typeof (ep as DiscoveryProvider).discover === "function"
+    ) {
+      const provider = ep as DiscoveryProvider;
+      const peers = await provider.discover();
+      if (!peers || peers.length === 0) {
+        throw new ConfigError(
+          "DiscoveryProvider returned no peers; cannot construct SeedClient. " +
+            "Check mDNS / network multicast configuration.",
+        );
+      }
+      const internal: SeedClientOptionsInternal = {
+        ...options,
+        endpoints: peers.map((p) => p.url),
+        _preResolvedFromDiscovery: provider,
+      };
+      return new SeedClient(internal);
+    }
+    // No provider → explicit-list path; plain sync construction.
+    return new SeedClient(options);
+  }
 
   constructor(options: SeedClientOptions) {
     this.config = resolveSeedConfig(options);
     this.peerSet = new PeerSet(this.config.endpoints);
+    this.discovery = this.config.discovery;
 
     // Prefer the caller-supplied TokenBook. Fall back to a fresh
     // InMemoryTokenBook seeded from the client-wide `pairingToken`
@@ -216,14 +279,25 @@ export class SeedClient {
   }
 
   /**
-   * Stop the active health probe (if any) so the Node event loop can
-   * exit cleanly. Idempotent — safe to call more than once.
+   * Stop the active health probe (if any) and close the attached
+   * discovery provider (if any) so the Node event loop can exit
+   * cleanly. Idempotent — safe to call more than once.
+   *
+   * The discovery provider's `close()` is awaited only when the caller
+   * awaits the returned value; sync callers still get a best-effort
+   * teardown (mDNS sockets are set to `unref` on the wire layer).
    *
    * Does NOT revoke pairing or wipe the TokenBook; callers own token
    * lifetimes per ADR-0007.
    */
-  close(): void {
+  close(): void | Promise<void> {
     this.healthProbe?.stop();
+    if (this.discovery?.close) {
+      const r = this.discovery.close();
+      if (r && typeof (r as Promise<void>).then === "function") {
+        return r as Promise<void>;
+      }
+    }
   }
 
   /**
@@ -237,12 +311,68 @@ export class SeedClient {
    * recovered out-of-band from a brown-out). Idempotent — calling it
    * multiple times in a row is a no-op beyond the first.
    *
-   * Phase 2 placeholder: when mDNS discovery lands (ADR-0016a §D6),
-   * this method will also re-run discovery; for now it only resets the
-   * in-memory peer state.
+   * No discovery provider: returns `void` synchronously (reset only).
+   * With a discovery provider attached (ADR-0016a §D6): returns a
+   * `Promise<void>` that resolves after the provider has been
+   * re-queried and the {@link PeerSet} rebuilt with the fresh entries.
+   * Providers that return zero peers are treated as a no-op — the
+   * previous peer set is preserved so the client never becomes
+   * un-routable as a side-effect of a transient multicast drop.
    */
-  rediscover(): void {
-    this.peerSet.resetAll();
+  rediscover(): void | Promise<void> {
+    if (this.discovery === undefined) {
+      this.peerSet.resetAll();
+      this.authFailures.clear();
+      return;
+    }
+    return this.rediscoverFromProvider(this.discovery);
+  }
+
+  /**
+   * Re-query the attached discovery provider, normalise results, and
+   * splice them into the peer table. Preserves tokens for URLs that
+   * are still present; ejects tokens for URLs that have dropped out.
+   * @internal
+   */
+  private async rediscoverFromProvider(
+    provider: DiscoveryProvider,
+  ): Promise<void> {
+    const fresh = await provider.discover();
+    if (!fresh || fresh.length === 0) {
+      // Don't strand the client on an empty multicast response — just
+      // reset local bookkeeping so the next request picks a healthy peer.
+      this.peerSet.resetAll();
+      this.authFailures.clear();
+      return;
+    }
+    const urls = fresh.map((p) => p.url);
+    const freshSet = new Set(urls);
+
+    // Preserve the session-level token fallback: if the client was built
+    // with a shared pairingToken, new peers inherit it through the
+    // TokenBook seeding below. Existing per-peer tokens survive because
+    // we keep the TokenBook instance; just evict entries for peers that
+    // dropped out of the mesh to bound memory growth.
+    for (const peer of this.peerSet.iter()) {
+      if (!freshSet.has(peer.key)) {
+        this.tokenBook.delete?.(peer.key);
+      }
+    }
+
+    // Swap the underlying peer table. {@link SeedSession} holds a pinned
+    // key — when the pin is still in the new set we preserve it;
+    // otherwise the session's next call falls through to `pick()`.
+    this.peerSet = new PeerSet(urls);
+    // Seed the new TokenBook entries with the client-wide fallback
+    // token, mirroring the constructor's behaviour (ADR-0016a §D5).
+    if (this.config.pairingToken !== undefined) {
+      const shared = new SecretString(this.config.pairingToken);
+      for (const peer of this.peerSet.iter()) {
+        if (this.tokenBook.get(peer.key) === undefined) {
+          this.tokenBook.set(peer.key, shared);
+        }
+      }
+    }
     this.authFailures.clear();
   }
 

@@ -296,13 +296,145 @@ fence) continues to compile without edits.
 Not yet landed (explicitly out of Phase 1.5 scope, tracked for Phase 2):
 
 - mDNS discovery (`Discovery::Mdns` — ADR-0016a §D6, Phase 1.5 opt-in
-  upgrade path).
+  upgrade path). **Landed 2026-04-23 — see "Phase 3 — mDNS discovery"
+  below.**
 - Mesh-observability resource (`client.mesh().status/peers/swarm/health`
   — ADR-0016a §D8 Phase 1 surface addendum). **Landed 2026-04-23.**
 - Per-call override args (`peer:` / `prefer:` / `consistency:`) —
   requires a per-call options bag and is tracked against ADR-0016b
   §"Per-call knobs". **Landed 2026-04-23.**
 - `client.rediscover()` explicit re-resolve helper. **Landed 2026-04-23.**
+
+### Phase 3 — mDNS discovery (2026-04-23)
+
+Closes the ADR-0016a §D6 "Phase 1.5 opt-in upgrade path" that was
+deferred through Phase 2. Wires the language-agnostic `Discovery`
+provider surface from ADR-0016b §"Discovery providers" into the Rust
+SDK and ships an mDNS implementation behind a new `mdns` Cargo feature.
+
+**Crate dependency:** `mdns-sd = "0.19"` (MSRV 1.71 — well under the
+SDK's 1.78), `default-features = false` so the optional `async` /
+`log` integrations stay out of the default build. `mdns-sd` has no
+async runtime of its own — it runs a blocking background thread and
+delivers `ServiceEvent`s through a `flume::Receiver`; the SDK drives
+that receiver from `tokio::task::spawn_blocking` so the whole browse
+composes with the crate's existing `tokio` runtime. `mdns-sd 0.19`
+was chosen over the older `0.11` line referenced by the task brief
+because the current crate surface is materially cleaner (`ResolvedService`
+replaces the earlier `ServiceInfo`, with explicit `get_addresses()` /
+`get_property_val_str()` accessors) and upstream has been actively
+maintained through 2026. `simple-mdns` was considered as a fallback
+but pulls in `async-std` by default, which would drag a second
+runtime into the SDK's dep tree — rejected.
+
+**Files added:**
+
+- `src/seed/discovery/mod.rs` — `Discovery` async trait (object-safe via
+  `async_trait`), `DiscoveredPeer` value struct, and the zero-dep
+  `Explicit` provider that wraps `Vec<String>`. `Discovery` is
+  re-exported from `src/seed/mod.rs` as part of the public surface so
+  consumers can write custom providers without depending on an internal
+  path.
+- `src/seed/discovery/mdns.rs` — `#[cfg(feature = "mdns")] MdnsDiscovery`
+  + `MdnsDiscoveryBuilder`. Fluent `service_type(...)` /
+  `browse_duration(...)` / `scheme(...)` / `default_port(...)`
+  overrides; defaults match the seed's advertisement
+  (`_cognitum._tcp.local.`, 2 s budget, `https`, port 8443). TXT-record
+  parsing consumes the `id` / `port` keys emitted by
+  `seed/src/cognitum-agent/src/discovery.rs:137-180`; unknown keys are
+  ignored so v0.21+ fields don't break the SDK. IPv6 addresses are
+  URL-bracketed before joining scheme + port.
+- `tests/seed_discovery.rs` — 6 integration tests (see below).
+
+**Files edited:**
+
+- `Cargo.toml` — new optional dep `async-trait = "0.1"` gated on the
+  existing `seed` feature; new optional dep
+  `mdns-sd = { version = "0.19", default-features = false }` gated on
+  the new `mdns = ["seed", "dep:mdns-sd"]` feature. No new default
+  features.
+- `src/seed/mod.rs` — exports `Discovery`, `DiscoveredPeer`, `Explicit`,
+  and (feature-gated) `MdnsDiscovery`. New `pub mod discovery;`.
+- `src/seed/client.rs` — `SeedInner` gained
+  `discovery: Option<Arc<dyn Discovery>>`. `SeedClientBuilder` grew
+  `.discovery(impl Discovery + 'static)` and `.discovery_arc(Arc<dyn
+  Discovery>)`. `SeedClientBuilder::build()` seeds the initial peer
+  list from the provider when `.endpoints(...)` is absent — an empty
+  provider result becomes an `Error::Validation` at build time rather
+  than lurking until the first request. `SeedClient::rediscover()` is
+  now `async fn -> Result<(), Error>`: with a provider installed it
+  calls `discover()` and rebuilds the `PeerSet`; without one it falls
+  back to the pure-SDK-local Phase 2 reset. An empty rebuild is
+  rejected and the existing `PeerSet` is left untouched. Session pins
+  that are still present in the new list survive the rebuild; pins
+  that drop out quietly become dangling and the next request resolves
+  through the closest-first picker (per ADR-0016a §D9). The synchronous
+  builder drives the provider via a scope-spawned thread with its own
+  current-thread `tokio` runtime so callers from any runtime flavour
+  (including none) can `build()` without deadlock.
+- `tests/seed_rediscover.rs` — migrated to the new `async` signature
+  (`client.rediscover().await.expect(...)`).
+
+**Tests added (+6 in `tests/seed_discovery.rs`):**
+
+- `explicit_discovery_through_builder_seeds_peer_set` — `.discovery(
+  Explicit::new(&[...]))` replaces `.endpoints(&[...])` and produces a
+  two-peer PeerSet.
+- `explicit_discovery_with_zero_peers_is_rejected_at_build` — empty list
+  surfaces as `Error::Validation` with a `"zero peers"` sentinel.
+- `stub_discovery_runs_on_build_and_again_on_rediscover` — asserts the
+  provider's `discover()` is called exactly twice (once at build, once
+  at `rediscover()`) and that the second call's result replaces the
+  PeerSet.
+- `stub_discovery_empty_rebuild_is_rejected_and_leaves_peers_intact` —
+  empty-list rebuild via rediscovery must NOT zero out the live PeerSet.
+- `stub_discovery_preserves_session_pin_when_url_still_present` — a
+  `SeedSession` pinned to peer A keeps resolving when rediscovery
+  returns a superset that still contains A.
+- `discovery_rebuild_replaces_peer_set_entirely` — rediscovery that
+  yields a disjoint list (`{A}` → `{B, C}`) fully swaps the PeerSet;
+  every new peer starts `Healthy` with cleared EMA / `last_used_at`.
+
+The mDNS-specific smoke test (`discover_on_empty_network_returns_empty_fast`)
+lives inside `src/seed/discovery/mdns.rs` so it can run as a lib unit
+test on a tight budget (150 ms) without requiring an integration-test
+feature gate. 3 `mdns.rs` unit tests total (defaults, overrides, empty
+network).
+
+**Checks:**
+
+- `cargo fmt --all --check` — clean.
+- `cargo clippy --features seed --tests -- -D warnings` — clean.
+- `cargo clippy --features seed,mdns --tests -- -D warnings` — clean.
+- `cargo test --features seed --no-fail-fast` per-binary:
+  seed_discovery 6/6 new, seed_rediscover 2/2 (migrated to async),
+  seed_mesh 7/7, seed_mesh_resource 5/5, seed_call_options 8/8,
+  seed_trust_score 5/5, seed_unit 24/24, lib 71/72 (same pre-existing
+  `invalid_pem_is_surfaced_as_validation_error` failure outside scope
+  per the #11 note above). Net delta: **+6 integration tests, +3 lib
+  unit tests**.
+- `cargo test --features seed,mdns --no-fail-fast` adds the 3 mdns unit
+  tests (74/75 lib, others unchanged). The `mdns` feature build is
+  verified on Linux via `cargo build --features seed,mdns`; CI matrix
+  addition is tracked in §11.1.
+
+**Signature impact:** **breaking** —
+`SeedClient::rediscover()` gained an `async` qualifier and a
+`Result<(), Error>` return so Phase 3 network I/O surfaces cleanly.
+Every existing call site (tests + docs) was migrated in the same
+change. Since the SDK is still pre-1.0 (0.2.0), this lands under the
+ADR-0006 "pre-1.0 MINOR-break" clause.
+
+**Platform notes:** `mdns-sd 0.19` has Linux / macOS / Windows support
+out of the box. Build verified on Linux x86_64. On networks where
+multicast is blocked (typical Docker bridge, corporate Wi-Fi) the
+discover call returns `Ok(vec![])` within the configured budget — the
+SDK refuses to rebuild the PeerSet from an empty response, preserving
+the last-known good list. Callers that want stricter behaviour can
+match on `Error::Validation` and fall back to `SeedClient::builder()
+.endpoints(...)`.
+
+#D6 is closable for the Rust SDK.
 
 ### Phase 2 delivery (2026-04-23)
 

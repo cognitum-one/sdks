@@ -722,9 +722,65 @@ the latter returns a `MeshPeers` wire model from the seed's
   today the picker is unconditionally closest-first. Matches Rust. The
   SDK accepts the knob so callers can pin it now without re-compiling
   when Phase 3 lands.
-- `rediscover()` does no DNS / mDNS re-resolution; it only resets
-  bookkeeping. Callers rotating tailnet IPs still need to construct a
-  fresh client. Tracked in ADR-0017 Phase 3 deferred.
+- ~~`rediscover()` does no DNS / mDNS re-resolution~~ — closed by the
+  Phase 3 mDNS work below. `rediscover()` now re-queries a configured
+  :class:`DiscoveryProvider`.
+
+## Phase 3 — mDNS discovery (2026-04-23)
+
+Executes ADR-0016a §D6 and ADR-0016b §"Discovery providers" — the
+"Phase 1.5 opt-in upgrade path" that was deferred at the Phase 2 cut.
+
+### What landed
+
+| File | Purpose |
+|------|---------|
+| `cognitum/seed/discovery/_types.py` | `DiscoveryProvider` (runtime-checkable Protocol) + `DiscoveredPeer` (slots+frozen dataclass). Stable public interface — third-party providers are a supported extension point per ADR-0016a §D6. |
+| `cognitum/seed/discovery/_explicit.py` | `ExplicitDiscovery` — wraps `str` / `list[str]` so internal plumbing can treat all endpoint shapes uniformly. Also the building block for future fallback chains. |
+| `cognitum/seed/discovery/mdns.py` | `MdnsDiscovery` — one-shot browse against `_cognitum._tcp.local.` using the `zeroconf` PyPI library. Parses `id=` (device_id) and `fp=` (cert fingerprint reserved for future pinning) from TXT records per `seed/src/cognitum-agent/src/discovery.rs:137-180`. Configurable `service_type=` / `timeout_s=` / `scheme=`; accepts an injected `Zeroconf` for apps that already run one. |
+| `cognitum/seed/discovery/__init__.py` | PEP-562 lazy `__getattr__` so `MdnsDiscovery` only triggers the `zeroconf` import on attribute access — `ExplicitDiscovery` / `DiscoveredPeer` / `DiscoveryProvider` work without the extra. |
+| `cognitum/seed/_config.py` | `EndpointsInput = str \| Sequence[str] \| DiscoveryProvider`; `normalise_options` resolves a provider to a peer list at construction time. Empty result → `ConfigError` (fail-fast, ADR-0007 §"Fail-fast rule"). |
+| `cognitum/seed/_client.py`, `_async_client.py` | Constructors accept `EndpointsInput`; store the provider on `self._discovery` so `rediscover()` can re-query it and `close()` can release it. New `AsyncSeedClient.arediscover()` calls the native async `adiscover()` path. |
+| `cognitum/seed/__init__.py` | Exports `DiscoveredPeer`, `DiscoveryProvider`, `ExplicitDiscovery`. `MdnsDiscovery` remains under `cognitum.seed.discovery` behind the extra. |
+| `pyproject.toml` | New `mdns = ["zeroconf>=0.131"]` optional dependency. Install with `pip install cognitum[mdns]` to enable. |
+| `tests/seed/unit/test_discovery_types.py` | 2 tests — `DiscoveredPeer` frozen-dataclass semantics, `DiscoveryProvider` structural-protocol matching. |
+| `tests/seed/unit/test_discovery_explicit.py` | 2 tests — returns configured list, rejects empty/bad input. |
+| `tests/seed/unit/test_discovery_mdns.py` | 5 tests — fake `zeroconf` injected via `sys.modules` so the file runs in both `[dev]` and `[dev, mdns]` environments. Covers: single-seed discovery, empty-result config error, end-to-end `SeedClient(endpoints=MdnsDiscovery(...))` wiring, `rediscover()` re-query, import-error when the extra is missing. |
+
+### Test results (2026-04-23)
+
+```
+$ /tmp/swarm-seed-validation/python/venv/bin/pytest sdks/python/tests/seed/ -q
+215 passed, 3 skipped in 14.38s     # with zeroconf installed
+215 passed, 3 skipped in 14.65s     # without zeroconf installed (fake-module path)
+```
+
+Same suite, same count, in both environments — the import-guard
+fallback in `MdnsDiscovery` is exercised by the stubbed path.
+
+### Design decisions carried forward
+
+- **Opt-in only.** Default is still explicit-list (ADR-0016a §D6).
+  Multicast is blocked on many corporate and Docker networks; making
+  mDNS the default would regress the Phase 1 happy path.
+- **One-shot at construction, re-query on `rediscover()`.** We do NOT
+  schedule background re-discovery (ADR-0016b §"Open" / §"Rebalance").
+  A caller that wants continuous re-discovery can call `rediscover()`
+  on their own timer.
+- **Injected `Zeroconf` is not owned.** Apps that already run their
+  own `zeroconf.Zeroconf` for other services pass it in; `close()` on
+  the provider does not shut it down.
+- **`fp=` cert fingerprint is captured but not yet pinned.** Surface
+  is reserved — FINDING-28 in the seed source calls it out as an
+  anti-spoofing vector. Integration with `SeedPinnedVerifier` is a
+  separate ticket.
+
+### Known gaps beyond Phase 3
+
+- `CallOptions.prefer` is still not wired into the picker (carried
+  from Phase 2).
+- No built-in "try mDNS then explicit list" composite provider.
+  Callers compose manually today.
 
 ---
 

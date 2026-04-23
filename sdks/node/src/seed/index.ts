@@ -32,6 +32,11 @@ export {
   type TokenBook,
 } from "./tokenBook.js";
 export { startHealthProbe, type HealthProbeHandle } from "./health.js";
+export {
+  ExplicitDiscovery,
+  type DiscoveryProvider,
+  type DiscoveredPeer,
+} from "./discovery/index.js";
 
 export type { StatusResource, SeedStatus } from "./resources/status.js";
 export type { IdentityResource, SeedIdentity } from "./resources/identity.js";

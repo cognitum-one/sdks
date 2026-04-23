@@ -32,6 +32,11 @@ from cognitum.seed._config import (
 )
 from cognitum.seed._peers import Peer, PeerErrorClass, PeerSet, PeerState
 from cognitum.seed._session import AsyncSeedSession, SeedSession
+from cognitum.seed.discovery import (
+    DiscoveredPeer,
+    DiscoveryProvider,
+    ExplicitDiscovery,
+)
 from cognitum.seed._token_book import (
     InMemoryTokenBook,
     SecretString,
@@ -108,6 +113,10 @@ __all__ = [
     "InMemoryTokenBook",
     "SecretString",
     "pair_all",
+    # Discovery (Phase 1.5 opt-in, ADR-0016a §D6)
+    "DiscoveredPeer",
+    "DiscoveryProvider",
+    "ExplicitDiscovery",
     # Per-call knobs (Phase 2)
     "CallOptions",
     "Consistency",

@@ -24,6 +24,7 @@ __export(seed_exports, {
   CognitumError: () => CognitumError,
   ConfigError: () => ConfigError,
   ConflictError: () => ConflictError,
+  ExplicitDiscovery: () => ExplicitDiscovery,
   InMemoryTokenBook: () => InMemoryTokenBook,
   NetworkError: () => NetworkError,
   NotFoundError: () => NotFoundError,
@@ -186,7 +187,18 @@ function resolveSeedConfig(opts) {
   if (opts.endpoints === void 0 || opts.endpoints === null) {
     throw new ConfigError("`endpoints` is required");
   }
-  const endpointList = Array.isArray(opts.endpoints) ? opts.endpoints : [opts.endpoints];
+  let discovery;
+  let resolvedEndpoints = opts.endpoints;
+  if (isDiscoveryProvider(opts.endpoints)) {
+    throw new ConfigError(
+      "`endpoints` is a DiscoveryProvider \u2014 use `await SeedClient.create(options)` which resolves discovery before constructing the client."
+    );
+  }
+  if (opts._preResolvedFromDiscovery) {
+    const internal = opts;
+    discovery = internal._preResolvedFromDiscovery;
+  }
+  const endpointList = Array.isArray(resolvedEndpoints) ? resolvedEndpoints : [resolvedEndpoints];
   if (endpointList.length === 0) {
     throw new ConfigError("at least one endpoint is required");
   }
@@ -255,9 +267,13 @@ function resolveSeedConfig(opts) {
     rateLimitRetry: opts.rateLimitRetry ?? true,
     tokenBook: opts.tokenBook,
     healthInterval,
+    discovery,
     fetchFn: opts.fetch ?? globalThis.fetch,
     logger: opts.logger ?? {}
   };
+}
+function isDiscoveryProvider(x) {
+  return typeof x === "object" && x !== null && typeof x.discover === "function";
 }
 function normaliseBaseUrl(raw) {
   let url;
@@ -1050,7 +1066,13 @@ var SeedClient = class _SeedClient {
    * seed's WiFi-read allowlist so no pairing token is needed.
    */
   mesh;
-  /** Peer set — closest-first picker with per-peer health state. */
+  /**
+   * Peer set — closest-first picker with per-peer health state.
+   * Re-assigned (not mutated) by {@link SeedClient.rediscover} when a
+   * discovery provider returns a fresh peer list; the reference-swap
+   * keeps the data structure's internal invariants tidy without needing
+   * a separate "replace" method on {@link PeerSet}.
+   */
   peerSet;
   /** Per-peer pairing-token store. */
   tokenBook;
@@ -1068,9 +1090,56 @@ var SeedClient = class _SeedClient {
   authFailures = /* @__PURE__ */ new Map();
   /** Trust-score threshold — 3 consecutive auth failures triggers block. */
   static TRUST_SCORE_LIMIT = 3;
+  /**
+   * Attached discovery provider (ADR-0016a §D6). When set,
+   * {@link SeedClient.rediscover} re-invokes `discover()` and rebuilds
+   * the {@link PeerSet} with the fresh entries. `undefined` for
+   * explicit-list clients.
+   */
+  discovery;
+  /**
+   * Async factory that resolves a {@link DiscoveryProvider} before
+   * constructing the client. Use this when `options.endpoints` is a
+   * provider (e.g. `MdnsDiscovery`) — the sync constructor rejects
+   * providers because `discover()` is async.
+   *
+   * For explicit-list callers the sync constructor still works; this
+   * factory is only needed for the Phase 1.5 opt-in discovery path.
+   *
+   * @example
+   * ```ts
+   * import { SeedClient } from "@cognitum/sdk/seed";
+   * import { MdnsDiscovery } from "@cognitum/sdk/seed/discovery/mdns";
+   *
+   * const client = await SeedClient.create({
+   *   endpoints: MdnsDiscovery.default(),
+   *   tls: { insecure: true },
+   * });
+   * ```
+   */
+  static async create(options) {
+    const ep = options.endpoints;
+    if (typeof ep === "object" && ep !== null && !Array.isArray(ep) && typeof ep.discover === "function") {
+      const provider = ep;
+      const peers = await provider.discover();
+      if (!peers || peers.length === 0) {
+        throw new ConfigError(
+          "DiscoveryProvider returned no peers; cannot construct SeedClient. Check mDNS / network multicast configuration."
+        );
+      }
+      const internal = {
+        ...options,
+        endpoints: peers.map((p) => p.url),
+        _preResolvedFromDiscovery: provider
+      };
+      return new _SeedClient(internal);
+    }
+    return new _SeedClient(options);
+  }
   constructor(options) {
     this.config = resolveSeedConfig(options);
     this.peerSet = new PeerSet(this.config.endpoints);
+    this.discovery = this.config.discovery;
     this.tokenBook = this.config.tokenBook ?? new InMemoryTokenBook();
     if (this.config.pairingToken !== void 0) {
       const shared = new SecretString(this.config.pairingToken);
@@ -1120,14 +1189,25 @@ var SeedClient = class _SeedClient {
     return new SeedSession(this, this.peerSet.pick().key);
   }
   /**
-   * Stop the active health probe (if any) so the Node event loop can
-   * exit cleanly. Idempotent — safe to call more than once.
+   * Stop the active health probe (if any) and close the attached
+   * discovery provider (if any) so the Node event loop can exit
+   * cleanly. Idempotent — safe to call more than once.
+   *
+   * The discovery provider's `close()` is awaited only when the caller
+   * awaits the returned value; sync callers still get a best-effort
+   * teardown (mDNS sockets are set to `unref` on the wire layer).
    *
    * Does NOT revoke pairing or wipe the TokenBook; callers own token
    * lifetimes per ADR-0007.
    */
   close() {
     this.healthProbe?.stop();
+    if (this.discovery?.close) {
+      const r = this.discovery.close();
+      if (r && typeof r.then === "function") {
+        return r;
+      }
+    }
   }
   /**
    * Rebuild the per-peer routing state from scratch (ADR-0016a §D7
@@ -1140,12 +1220,51 @@ var SeedClient = class _SeedClient {
    * recovered out-of-band from a brown-out). Idempotent — calling it
    * multiple times in a row is a no-op beyond the first.
    *
-   * Phase 2 placeholder: when mDNS discovery lands (ADR-0016a §D6),
-   * this method will also re-run discovery; for now it only resets the
-   * in-memory peer state.
+   * No discovery provider: returns `void` synchronously (reset only).
+   * With a discovery provider attached (ADR-0016a §D6): returns a
+   * `Promise<void>` that resolves after the provider has been
+   * re-queried and the {@link PeerSet} rebuilt with the fresh entries.
+   * Providers that return zero peers are treated as a no-op — the
+   * previous peer set is preserved so the client never becomes
+   * un-routable as a side-effect of a transient multicast drop.
    */
   rediscover() {
-    this.peerSet.resetAll();
+    if (this.discovery === void 0) {
+      this.peerSet.resetAll();
+      this.authFailures.clear();
+      return;
+    }
+    return this.rediscoverFromProvider(this.discovery);
+  }
+  /**
+   * Re-query the attached discovery provider, normalise results, and
+   * splice them into the peer table. Preserves tokens for URLs that
+   * are still present; ejects tokens for URLs that have dropped out.
+   * @internal
+   */
+  async rediscoverFromProvider(provider) {
+    const fresh = await provider.discover();
+    if (!fresh || fresh.length === 0) {
+      this.peerSet.resetAll();
+      this.authFailures.clear();
+      return;
+    }
+    const urls = fresh.map((p) => p.url);
+    const freshSet = new Set(urls);
+    for (const peer of this.peerSet.iter()) {
+      if (!freshSet.has(peer.key)) {
+        this.tokenBook.delete?.(peer.key);
+      }
+    }
+    this.peerSet = new PeerSet(urls);
+    if (this.config.pairingToken !== void 0) {
+      const shared = new SecretString(this.config.pairingToken);
+      for (const peer of this.peerSet.iter()) {
+        if (this.tokenBook.get(peer.key) === void 0) {
+          this.tokenBook.set(peer.key, shared);
+        }
+      }
+    }
     this.authFailures.clear();
   }
   /**
@@ -1472,12 +1591,35 @@ function isAbortError(err) {
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, Math.max(0, ms)));
 }
+
+// src/seed/discovery/explicit.ts
+var ExplicitDiscovery = class {
+  peers;
+  constructor(endpoints) {
+    const list = Array.isArray(endpoints) ? endpoints : [endpoints];
+    if (list.length === 0) {
+      throw new ConfigError("ExplicitDiscovery requires at least one endpoint");
+    }
+    this.peers = list.map((url, idx) => {
+      if (typeof url !== "string" || !url.trim()) {
+        throw new ConfigError(
+          `endpoints[${idx}] must be a non-empty URL string`
+        );
+      }
+      return { url: normaliseBaseUrl2(url) };
+    });
+  }
+  async discover() {
+    return this.peers.map((p) => ({ ...p }));
+  }
+};
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   AuthError,
   CognitumError,
   ConfigError,
   ConflictError,
+  ExplicitDiscovery,
   InMemoryTokenBook,
   NetworkError,
   NotFoundError,

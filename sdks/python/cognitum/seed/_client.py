@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from dataclasses import replace as dataclass_replace
 from typing import Any, Mapping, Sequence
 from types import TracebackType
 
@@ -29,6 +30,7 @@ from cognitum._errors import (
 )
 from cognitum.seed._call_options import CallOptions, resolve_call_options
 from cognitum.seed._config import (
+    EndpointsInput,
     SeedAuth,
     SeedClientOptions,
     SeedFailover,
@@ -36,6 +38,7 @@ from cognitum.seed._config import (
     normalise_options,
 )
 from cognitum.seed._health import HealthProbe
+from cognitum.seed.discovery._types import DiscoveryProvider
 from cognitum.seed._models import Identity, PairCreateResponse, Status
 from cognitum.seed._peers import Peer, PeerErrorClass, PeerSet
 from cognitum.seed._retry import (
@@ -460,7 +463,7 @@ class SeedClient:
 
     def __init__(
         self,
-        endpoints: str | Sequence[str],
+        endpoints: EndpointsInput,
         *,
         auth: SeedAuth | None = None,
         tls: SeedTLS | None = None,
@@ -473,6 +476,14 @@ class SeedClient:
         health_interval: float | None = None,
         token_book: TokenBook | None = None,
     ) -> None:
+        # Preserve the provider so :meth:`rediscover` can re-query it.
+        # ADR-0016a §D6: explicit list remains the required primitive;
+        # discovery is an opt-in Phase 1.5 upgrade path.
+        self._discovery: DiscoveryProvider | None = (
+            endpoints if isinstance(endpoints, DiscoveryProvider)
+            and not isinstance(endpoints, (str, list, tuple))
+            else None
+        )
         self._options = normalise_options(
             endpoints,
             auth=auth,
@@ -539,11 +550,24 @@ class SeedClient:
     def rediscover(self) -> None:
         """Reset SDK-local peer state (ADR-0016b §"rediscover").
 
-        Re-initialises the :class:`PeerSet` from the configured endpoint
-        list, clearing latency EMAs, state flags, and per-peer trust
-        counters. Idempotent. Makes no network calls — future Phase 2
-        work may add an mDNS / DNS resolver step here.
+        Re-initialises the :class:`PeerSet`, clearing latency EMAs,
+        state flags, and per-peer trust counters. Idempotent. When the
+        client was constructed with a :class:`DiscoveryProvider` the
+        provider is re-queried and the new list replaces the old one;
+        otherwise the original explicit list is re-used (bookkeeping
+        reset only).
         """
+        from cognitum.seed._config import Endpoint
+
+        if self._discovery is not None:
+            discovered = self._discovery.discover()
+            if discovered:
+                new_endpoints = tuple(Endpoint.parse(p.url) for p in discovered)
+                # Mutate the options so subsequent rediscover() passes
+                # that don't hit the provider still see the latest list.
+                self._options = dataclass_replace(
+                    self._options, endpoints=new_endpoints,
+                )
         with self._transport._peers_lock:
             self._transport._peers = PeerSet.new(list(self._options.endpoints))
         self._transport._trust_reset_all()
@@ -610,6 +634,11 @@ class SeedClient:
                 self._health.close()
             finally:
                 self._health = None
+        if self._discovery is not None:
+            try:
+                self._discovery.close()
+            finally:
+                self._discovery = None
         self._transport.close()
 
     @property

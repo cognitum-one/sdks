@@ -6,6 +6,7 @@ import asyncio
 import threading
 import time
 import uuid
+from dataclasses import replace as dataclass_replace
 from typing import Any, Sequence
 from types import TracebackType
 
@@ -24,12 +25,14 @@ from cognitum._errors import (
 from cognitum.seed._call_options import CallOptions, resolve_call_options
 from cognitum.seed._client import map_error
 from cognitum.seed._config import (
+    EndpointsInput,
     SeedAuth,
     SeedClientOptions,
     SeedFailover,
     SeedTLS,
     normalise_options,
 )
+from cognitum.seed.discovery._types import DiscoveryProvider
 from cognitum.seed._health import AsyncHealthProbe
 from cognitum.seed._models import Identity, PairCreateResponse, Status
 from cognitum.seed._peers import Peer, PeerErrorClass, PeerSet
@@ -350,7 +353,7 @@ class AsyncSeedClient:
 
     def __init__(
         self,
-        endpoints: str | Sequence[str],
+        endpoints: EndpointsInput,
         *,
         auth: SeedAuth | None = None,
         tls: SeedTLS | None = None,
@@ -363,6 +366,12 @@ class AsyncSeedClient:
         health_interval: float | None = None,
         token_book: TokenBook | None = None,
     ) -> None:
+        # Preserve the provider so :meth:`rediscover` can re-query.
+        self._discovery: DiscoveryProvider | None = (
+            endpoints if isinstance(endpoints, DiscoveryProvider)
+            and not isinstance(endpoints, (str, list, tuple))
+            else None
+        )
         self._options = normalise_options(
             endpoints,
             auth=auth,
@@ -422,8 +431,41 @@ class AsyncSeedClient:
     def rediscover(self) -> None:
         """Reset SDK-local peer state (ADR-0016b).
 
-        Idempotent; no network calls. Mirrors :meth:`SeedClient.rediscover`.
+        Idempotent. When the client was constructed with a
+        :class:`DiscoveryProvider` the provider's SYNC ``discover()`` is
+        re-queried (we cannot block on an awaitable from a sync method).
+        Async callers who want the native async path should call
+        :meth:`arediscover` instead.
+
+        Mirrors :meth:`SeedClient.rediscover`.
         """
+        from cognitum.seed._config import Endpoint
+
+        if self._discovery is not None:
+            discovered = self._discovery.discover()
+            if discovered:
+                new_endpoints = tuple(Endpoint.parse(p.url) for p in discovered)
+                self._options = dataclass_replace(
+                    self._options, endpoints=new_endpoints,
+                )
+        with self._transport._peers_lock:
+            self._transport._peers = PeerSet.new(list(self._options.endpoints))
+        self._transport._trust_reset_all()
+
+    async def arediscover(self) -> None:
+        """Async rediscover — calls :meth:`DiscoveryProvider.adiscover`.
+
+        Falls back to the sync path when no provider is configured.
+        """
+        from cognitum.seed._config import Endpoint
+
+        if self._discovery is not None:
+            discovered = await self._discovery.adiscover()
+            if discovered:
+                new_endpoints = tuple(Endpoint.parse(p.url) for p in discovered)
+                self._options = dataclass_replace(
+                    self._options, endpoints=new_endpoints,
+                )
         with self._transport._peers_lock:
             self._transport._peers = PeerSet.new(list(self._options.endpoints))
         self._transport._trust_reset_all()
@@ -491,6 +533,11 @@ class AsyncSeedClient:
                 await self._health.close()
             finally:
                 self._health = None
+        if self._discovery is not None:
+            try:
+                self._discovery.close()
+            finally:
+                self._discovery = None
         await self._transport.close()
 
     # Alias to match httpx's ``aclose`` naming. Both spellings work.

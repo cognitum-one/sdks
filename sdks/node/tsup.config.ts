@@ -21,6 +21,19 @@ export default defineConfig([
     outDir: "dist",
   },
   {
+    // Opt-in mDNS discovery subpath — @cognitum/sdk/seed/discovery/mdns.
+    // Kept out of the main seed bundle so `multicast-dns` stays a
+    // peerDependency that only mDNS users install.
+    entry: { "seed/discovery/mdns": "src/seed/discovery/mdns.ts" },
+    format: ["esm", "cjs"],
+    dts: true,
+    clean: false,
+    sourcemap: true,
+    target: "es2022",
+    outDir: "dist",
+    external: ["multicast-dns"],
+  },
+  {
     entry: ["src/cli.ts"],
     format: ["esm"],
     outExtension: () => ({ js: ".mjs" }),

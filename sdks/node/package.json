@@ -16,6 +16,11 @@
       "types": "./dist/seed/index.d.ts",
       "import": "./dist/seed/index.js",
       "require": "./dist/seed/index.cjs"
+    },
+    "./seed/discovery/mdns": {
+      "types": "./dist/seed/discovery/mdns.d.ts",
+      "import": "./dist/seed/discovery/mdns.js",
+      "require": "./dist/seed/discovery/mdns.cjs"
     }
   },
   "bin": {
@@ -43,6 +48,14 @@
   },
   "dependencies": {
     "undici": "^6.0.0"
+  },
+  "peerDependencies": {
+    "multicast-dns": "^7.2.5"
+  },
+  "peerDependenciesMeta": {
+    "multicast-dns": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "tsup": "^8.0.0",

@@ -112,10 +112,6 @@ without a code change.
 
 ### Not yet landed (explicit deferrals, tracked for Phase 3)
 
-- mDNS discovery — ADR-0016a §D6. `rediscover()` is a local-state
-  reset today; when mDNS lands, it will additionally re-run the
-  `_cognitum._tcp.local` lookup before the state reset. Signature is
-  stable.
 - Coherence / thermal read endpoints (§D8 "nice-to-have in 1.5").
   Seed-side surface is stable; adding them to the SDK is a mechanical
   follow-up that the current `mesh.*` shape already accommodates.
@@ -123,6 +119,56 @@ without a code change.
   suite (`tests/seed/integration/live-seed.test.ts`) covers the Phase
   1 endpoints; extending it to mesh is a one-line addition but gated
   on the USB gadget being reliably present in CI.
+
+## Phase 3 — mDNS discovery (2026-04-23)
+
+ADR-0016a §D6 Phase 1.5 opt-in discovery landed against the Node tree
+alongside Phase 2. Deliverables:
+
+- `src/seed/discovery/types.ts` — `DiscoveryProvider` +
+  `DiscoveredPeer` interfaces. `discover()` returns the current
+  candidate endpoints; `close()` releases long-running resources.
+  Stable public surface so callers can ship their own tailnet-aware
+  / cloud-fleet providers without forking the SDK.
+- `src/seed/discovery/explicit.ts` — `ExplicitDiscovery` wraps the
+  legacy `string | string[]` form for internal uniformity.
+- `src/seed/discovery/mdns.ts` — `MdnsDiscovery` (opt-in subpath).
+  One-shot PTR query against `_cognitum._tcp.local` (configurable via
+  `serviceType`), 500ms collection window by default, TXT-record
+  parse into `{url, deviceId}`. Wire library (`multicast-dns@^7.2.5`)
+  is declared as a **peerDependency** + `peerDependenciesMeta.optional`
+  so the core install stays lean — callers opt in by importing
+  `@cognitum/sdk/seed/discovery/mdns`.
+- `src/seed/client.ts` — new async factory
+  `SeedClient.create(options)` resolves a provider before
+  construction; `SeedClient.rediscover()` now returns
+  `void | Promise<void>` (sync state-reset when no provider is
+  attached, async re-query + `PeerSet` rebuild when one is).
+- `src/seed/index.ts` — re-exports `ExplicitDiscovery`,
+  `DiscoveryProvider`, `DiscoveredPeer` from `./discovery/index.js`.
+- `package.json` — adds the `"./seed/discovery/mdns"` subpath export
+  and declares `multicast-dns` as an optional peer dependency.
+- `tsup.config.ts` — new bundle entry for the mDNS subpath with
+  `external: ["multicast-dns"]` so the wire lib isn't inlined.
+- Tests: `tests/seed/unit/discovery-explicit.test.ts` (2 tests —
+  single string, array + invalid input), `tests/seed/unit/discovery-mdns.test.ts`
+  (3 tests — happy-path TXT parse, `SeedClient.create` + `rediscover`
+  end-to-end, close/teardown + non-matching-record filtering). Stubbed
+  `mdnsFactory` injected via the ctor option; no real multicast.
+
+Punted to a future pass (tracked in ADR-0016a §D6 footnotes):
+
+- Full DNS-SD PTR → SRV → A/AAAA chain lookup. Today we parse the
+  TXT record attached to the instance name and synthesise the host
+  from the DNS-SD label. Sufficient for the seed's emitter
+  (`seed/src/cognitum-agent/src/discovery.rs:137-180`); more strict
+  mDNS responders may need the chain walk.
+- Surfacing the `fp=` cert-fingerprint field on `DiscoveredPeer`.
+  Parsed but unused — ADR-040 FINDING-28 wants it wired into the TLS
+  handshake path; that will be a separate PR to `transport.ts`.
+- Python + Rust ports. This Phase 3 subsection is Node-only — the
+  `DiscoveryProvider` interface is deliberately portable and the
+  Python/Rust ADRs (0018c/0019c) will mirror it verbatim.
 
 ## Phase 1.5 delivery (2026-04-23)
 

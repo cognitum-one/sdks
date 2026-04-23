@@ -16,10 +16,15 @@ from urllib.parse import urlparse
 
 from cognitum._errors import ConfigError
 from cognitum.seed._token_book import InMemoryTokenBook, TokenBook
+from cognitum.seed.discovery._types import DiscoveryProvider
 
 
 Routing = Literal["session", "pinned", "round-robin", "read-any-write-one"]
 VerifyInput = Union[bool, str, Path, ssl.SSLContext, "object"]
+# Accepted input shapes for ``endpoints=`` on the client constructors.
+# ADR-0016a §D6: explicit list is required; ``DiscoveryProvider`` is the
+# opt-in Phase 1.5 pluggable surface (mDNS today, more to come).
+EndpointsInput = Union[str, Sequence[str], DiscoveryProvider]
 
 
 @dataclass(slots=True, frozen=True)
@@ -146,7 +151,7 @@ class SeedClientOptions:
 
 
 def normalise_options(
-    endpoints: str | Sequence[str],
+    endpoints: EndpointsInput,
     *,
     auth: SeedAuth | None = None,
     tls: SeedTLS | None = None,
@@ -159,21 +164,40 @@ def normalise_options(
     health_interval: float | None = None,
     token_book: TokenBook | None = None,
 ) -> SeedClientOptions:
-    """Phase 1.5 validation: accept 1..N endpoints.
+    """Phase 1.5 validation: accept 1..N endpoints or a DiscoveryProvider.
 
     N==1 degenerates to Phase 1 single-mode semantics. For N>1 the caller
     should also provide a :class:`TokenBook` if peers need distinct
     pairing tokens — a single ``auth.pairing_token`` will be propagated
     to every peer via the book at client-build time.
+
+    When ``endpoints`` is a :class:`DiscoveryProvider` (ADR-0016a §D6),
+    ``discover()`` is called once here so the resulting
+    :class:`SeedClientOptions` carries a resolved explicit list. The
+    provider itself is not stored on the options object — the client
+    keeps the reference so :meth:`rediscover` can re-query.
     """
 
     if isinstance(endpoints, str):
         raw_list: list[str] = [endpoints]
     elif isinstance(endpoints, (list, tuple)):
         raw_list = list(endpoints)
+    elif isinstance(endpoints, DiscoveryProvider):
+        # One-shot resolve at construction. ADR-0016b §"Open" — the
+        # constructor RESOLVES discovery to a peer list. A provider
+        # returning zero peers is a config error (we have nothing to
+        # talk to); fail fast here rather than at first call.
+        discovered = endpoints.discover()
+        if not discovered:
+            raise ConfigError(
+                "discovery provider returned no peers",
+                field="endpoints",
+            )
+        raw_list = [p.url for p in discovered]
     else:
         raise ConfigError(
-            "endpoints must be str or list[str]", field="endpoints"
+            "endpoints must be str, list[str], or DiscoveryProvider",
+            field="endpoints",
         )
 
     if len(raw_list) == 0:
