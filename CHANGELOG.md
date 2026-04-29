@@ -10,6 +10,25 @@ For per-SDK detail, see:
 - [`sdks/python/CHANGELOG.md`](sdks/python/CHANGELOG.md)
 - [`sdks/rust/CHANGELOG.md`](sdks/rust/CHANGELOG.md)
 
+
+## [0.2.1] — 2026-04-29
+
+### Changed
+
+- **Renamed npm package** from `@cognitum/sdk` to `@cognitum-one/sdk` to
+  align with the GitHub org. The `@cognitum/sdk` entries on npm (≤0.1.3)
+  are abandoned but left in place for any existing consumers.
+- **Renamed Rust crate** from `cognitum-rs` to `cognitum-one`. Old crate
+  on crates.io (≤0.1.0) is left in place.
+- No API changes — drop-in for anyone migrating; just update the package
+  name in your manifests.
+
+### Published
+
+- npm: `@cognitum-one/sdk@0.2.1` — https://www.npmjs.com/package/@cognitum-one/sdk
+- crates.io: `cognitum-one@0.2.1` — https://crates.io/crates/cognitum-one (docs: https://docs.rs/cognitum-one)
+- PyPI: still on `cognitum@0.0.1.dev2` — release pending PyPI token in GCP Secret Manager
+
 ## [0.2.0] — 2026-04-23
 
 First aligned release across all three SDKs. Ships the full seed-client
