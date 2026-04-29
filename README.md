@@ -8,9 +8,9 @@ One surface. Three runtimes.
 
 | Language | Package | Version | Install |
 |----------|---------|---------|---------|
-| Node.js / TypeScript | [`@cognitum/sdk`](sdks/node/) | 0.2.0 | `npm install @cognitum/sdk` |
+| Node.js / TypeScript | [`@cognitum-one/sdk`](sdks/node/) | 0.2.0 | `npm install @cognitum-one/sdk` |
 | Python | [`cognitum`](sdks/python/) | 0.2.0 | `pip install cognitum` |
-| Rust | [`cognitum-rs`](sdks/rust/) | 0.2.0 | `cognitum-rs = "0.2"` |
+| Rust | [`cognitum-one`](sdks/rust/) | 0.2.0 | `cognitum-one = "0.2"` |
 
 All three SDKs implement the same domain model, the same HTTP contract, and
 the same failover / security / observability invariants — they differ only
@@ -21,7 +21,7 @@ where the host runtime makes a different idiom natural.
 ### Node
 
 ```ts
-import { SeedClient } from "@cognitum/sdk/seed";
+import { SeedClient } from "@cognitum-one/sdk/seed";
 
 const client = new SeedClient({
   endpoints: "https://cognitum.local:8443",
@@ -91,7 +91,7 @@ Every SDK ships — with parity tests:
 - **Health probing** — opt-in background probe that marks slow peers
   `Degraded` and failed peers `Unhealthy`.
 - **Discovery providers** — explicit list (default), **mDNS** (opt-in:
-  `@cognitum/sdk/seed/discovery/mdns` · `pip install cognitum[mdns]` ·
+  `@cognitum-one/sdk/seed/discovery/mdns` · `pip install cognitum[mdns]` ·
   `cargo --features seed,mdns`), **Tailscale** (any tailnet peer matching
   `cognitum-*`).
 - **TLS pinning** — three modes: explicit CA (`tls.ca` / `SeedTLS(ca_pem=...)` /
@@ -117,7 +117,7 @@ Every SDK ships — with parity tests:
 
 | You want to… | Use |
 |--------------|-----|
-| Hit a seed from a browser, edge worker, or Node service | `@cognitum/sdk` |
+| Hit a seed from a browser, edge worker, or Node service | `@cognitum-one/sdk` |
 | Glue Cognitum into a notebook, data pipeline, or research stack | `cognitum` (Python) |
 | Ship a binary that talks to seeds — embedded, CLI tool, service | `cognitum` (Rust) |
 

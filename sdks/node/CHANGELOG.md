@@ -1,4 +1,4 @@
-# Changelog — @cognitum/sdk
+# Changelog — @cognitum-one/sdk
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/en/1.1.0/).
 This package follows [Semantic Versioning](https://semver.org/).
@@ -24,7 +24,7 @@ Aligned release across the Cognitum SDK monorepo. See the
   `client.rediscover()`.
   See [ADR-0015c §"Phase 2 delivery (2026-04-23)"](docs/adr/0015c-node-sdk-implementation.md).
 - **Phase 3 discovery** — `ExplicitDiscovery`, `MdnsDiscovery`
-  (subpath export `@cognitum/sdk/seed/discovery/mdns`, peer dep on
+  (subpath export `@cognitum-one/sdk/seed/discovery/mdns`, peer dep on
   `multicast-dns`), `TailscaleDiscovery`. Per-peer
   `fp=sha256:<hex>` TLS cert pinning.
   See [ADR-0015c §"Phase 3 — mDNS discovery (2026-04-23)"](docs/adr/0015c-node-sdk-implementation.md).

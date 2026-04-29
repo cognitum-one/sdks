@@ -16,6 +16,7 @@
  */
 
 import type { SeedClient } from "./client.js";
+import type { CallOptions } from "./callOptions.js";
 import { makeCustodyResource, type CustodyResource } from "./resources/custody.js";
 import {
   makeIdentityResource,
@@ -66,10 +67,13 @@ export class SeedSession {
     // spread of `opts` forwards any per-call `CallOptions` unchanged so
     // callers can still override `peer:` / `prefer:` / `consistency:`
     // etc. on individual session calls.
+    // Type matches the per-resource RequestFn signature. CallOptions covers
+    // all per-call knobs the resources may pass (peer/prefer/consistency/etc.);
+    // idempotent is a transport hint added by the resource layer.
     const req: <T>(
       method: string,
       path: string,
-      opts?: Record<string, unknown>,
+      opts?: CallOptions & { idempotent?: boolean },
     ) => Promise<T> = (method, path, opts) =>
       client.request(method, path, {
         ...(opts ?? {}),
