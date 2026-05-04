@@ -1,4 +1,4 @@
-# cognitum-rs
+# cognitum-one
 
 Official [Cognitum](https://cognitum.one) SDK for Rust.
 
@@ -9,9 +9,9 @@ or the **Cognitum Cloud** control plane (`api.cognitum.one`).
 
 ```toml
 [dependencies]
-cognitum-rs = { version = "0.2", features = ["seed"] }
+cognitum-one = { version = "0.2", features = ["seed"] }
 # mesh + mDNS discovery
-cognitum-rs = { version = "0.2", features = ["seed", "mdns"] }
+cognitum-one = { version = "0.2", features = ["seed", "mdns"] }
 ```
 
 ## Quick start — talking to a Seed

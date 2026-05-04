@@ -1,6 +1,6 @@
 [package]
-name = "cognitum-rs"
-version = "0.2.0"
+name = "cognitum-one"
+version = "0.2.1"
 edition = "2021"
 description = "Official Cognitum SDK for Rust"
 license = "MIT"
@@ -9,7 +9,7 @@ keywords = ["cognitum", "ai", "mcp", "sdk", "seed"]
 categories = ["api-bindings", "web-programming::http-client"]
 repository = "https://github.com/cognitum-one/sdks"
 homepage = "https://cognitum.one"
-documentation = "https://docs.rs/cognitum-rs"
+documentation = "https://docs.rs/cognitum-one"
 include = [
     "src/**/*",
     "benches/**/*",

@@ -38,7 +38,7 @@ Aligned release across the Cognitum SDK monorepo. See the
 ### Changed
 
 - **`repository`** pointer moved to `cognitum-one/sdks` (canonical).
-- **`documentation`** pointer moved to `docs.rs/cognitum-rs`.
+- **`documentation`** pointer moved to `docs.rs/cognitum-one`.
 - **Auth** — `X-API-Key` is canonical; `Bearer` continues to forward
   behind a 2-minor-release deprecation window per
   [#10](https://github.com/cognitum-one/sdks/issues/10) and

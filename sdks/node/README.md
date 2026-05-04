@@ -1,4 +1,4 @@
-# @cognitum/sdk
+# @cognitum-one/sdk
 
 Official [Cognitum](https://cognitum.one) SDK for Node.js and TypeScript.
 
@@ -8,7 +8,7 @@ or the **Cognitum Cloud** control plane (`api.cognitum.one`).
 ## Install
 
 ```bash
-npm install @cognitum/sdk
+npm install @cognitum-one/sdk
 # optional: mDNS discovery
 npm install multicast-dns
 ```
@@ -18,7 +18,7 @@ Requires Node.js `>=18`.
 ## Quick start — talking to a Seed
 
 ```ts
-import { SeedClient } from "@cognitum/sdk/seed";
+import { SeedClient } from "@cognitum-one/sdk/seed";
 
 const client = new SeedClient({
   endpoints: "https://cognitum.local:8443",

@@ -1,6 +1,6 @@
 {
-  "name": "@cognitum/sdk",
-  "version": "0.2.0",
+  "name": "@cognitum-one/sdk",
+  "version": "0.2.1",
   "description": "Official Cognitum SDK for Node.js and TypeScript",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -61,6 +61,7 @@
     }
   },
   "devDependencies": {
+    "@types/node": "^25.6.0",
     "tsup": "^8.0.0",
     "typescript": "^5.4.0",
     "vitest": "^2.0.0"
