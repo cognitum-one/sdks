@@ -74,7 +74,7 @@ describe("Cognitum SDK", () => {
 
       const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
       const url = call[0] as string;
-      expect(url).toContain("/listTemplates");
+      expect(url).toContain("/apiCatalog");
     });
 
     it("should pass category as query parameter", async () => {
