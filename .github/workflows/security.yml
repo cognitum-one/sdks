@@ -1,0 +1,11 @@
+name: security
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+jobs:
+  scan:
+    uses: cognitum-one/.github/.github/workflows/security-scan.yml@main
