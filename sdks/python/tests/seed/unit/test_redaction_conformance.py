@@ -30,7 +30,6 @@ from cognitum.seed import (
 from cognitum.seed._models import PairCreateResponse
 from cognitum.seed._token_book import SecretString
 
-
 BASE = "https://localhost:18443"
 SENTINEL = "redact-me-9f3a2bc81d7e4fa65ceb0f12-SENTINEL"
 

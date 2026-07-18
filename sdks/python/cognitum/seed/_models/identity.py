@@ -14,7 +14,7 @@ class Identity:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_wire(cls, data: Mapping[str, Any]) -> "Identity":
+    def from_wire(cls, data: Mapping[str, Any]) -> Identity:
         known = {"device_id", "public_key"}
         kwargs: dict[str, Any] = {}
         extra: dict[str, Any] = {}

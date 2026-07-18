@@ -7,8 +7,8 @@ import threading
 import time
 import uuid
 from dataclasses import replace as dataclass_replace
-from typing import Any, Sequence
 from types import TracebackType
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -16,11 +16,12 @@ from cognitum._errors import (
     ApiError,
     AuthError,
     CognitumError,
-    ConfigError,
     NetworkError,
     ParseError,
-    TimeoutError as SeedTimeoutError,
     TrustScoreBlockedError,
+)
+from cognitum._errors import (
+    TimeoutError as SeedTimeoutError,
 )
 from cognitum.seed._call_options import CallOptions, resolve_call_options
 from cognitum.seed._client import map_error
@@ -32,7 +33,6 @@ from cognitum.seed._config import (
     SeedTLS,
     normalise_options,
 )
-from cognitum.seed.discovery._types import DiscoveryProvider
 from cognitum.seed._health import AsyncHealthProbe
 from cognitum.seed._models import Identity, PairCreateResponse, Status
 from cognitum.seed._peers import Peer, PeerErrorClass, PeerSet
@@ -44,6 +44,7 @@ from cognitum.seed._retry import (
 )
 from cognitum.seed._token_book import InMemoryTokenBook, SecretString, TokenBook
 from cognitum.seed._transport import PinVerifier, build_async_client, safe_json
+from cognitum.seed.discovery._types import DiscoveryProvider
 from cognitum.seed.resources import (
     AsyncCustodyResource,
     AsyncMeshResource,
@@ -52,6 +53,9 @@ from cognitum.seed.resources import (
     AsyncStoreResource,
     AsyncWitnessResource,
 )
+
+if TYPE_CHECKING:
+    from cognitum.seed._session import AsyncSeedSession
 
 
 def _timeout_phase(exc: httpx.TimeoutException) -> str:
@@ -481,7 +485,7 @@ class AsyncSeedClient:
             self._transport._peers = PeerSet.new(list(self._options.endpoints))
         self._transport._trust_reset_all()
 
-    def session(self) -> "AsyncSeedSession":
+    def session(self) -> AsyncSeedSession:
         """Open a peer-pinned :class:`AsyncSeedSession`."""
         from cognitum.seed._session import AsyncSeedSession
 
@@ -559,7 +563,7 @@ class AsyncSeedClient:
     def closed(self) -> bool:
         return self._closed
 
-    async def __aenter__(self) -> "AsyncSeedClient":
+    async def __aenter__(self) -> AsyncSeedClient:
         self._ensure_health_probe()
         return self
 

@@ -18,8 +18,28 @@ keywords = ["cognitum", "ai", "mcp", "sdk", "seed"]
 # to pull in the `zeroconf` dependency; without it,
 # `cognitum.seed.discovery.MdnsDiscovery` raises a helpful ImportError.
 mdns = ["zeroconf>=0.131"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "respx>=0.21"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+    "ruff>=0.15",
+    "mypy>=1.13",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["cognitum*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+packages = ["cognitum"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true

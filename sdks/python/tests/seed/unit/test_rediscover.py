@@ -5,7 +5,6 @@ from __future__ import annotations
 from cognitum.seed import PeerState, SeedClient, SeedTLS
 from cognitum.seed._peers import PeerErrorClass
 
-
 BASE_A = "https://a:8443"
 BASE_B = "https://b:8443"
 

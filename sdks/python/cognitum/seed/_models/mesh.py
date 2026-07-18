@@ -62,7 +62,7 @@ class MeshPeer:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_wire(cls, data: Mapping[str, Any]) -> "MeshPeer":
+    def from_wire(cls, data: Mapping[str, Any]) -> MeshPeer:
         known = {"device_id", "endpoint", "status", "last_seen"}
         kwargs, extra = _split_extra(data, known)
         return cls(**kwargs, extra=extra)
@@ -82,7 +82,7 @@ class MeshStatus:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_wire(cls, data: Mapping[str, Any]) -> "MeshStatus":
+    def from_wire(cls, data: Mapping[str, Any]) -> MeshStatus:
         known = {
             "device_id",
             "ap_active",
@@ -111,7 +111,7 @@ class MeshPeers:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_wire(cls, data: Mapping[str, Any]) -> "MeshPeers":
+    def from_wire(cls, data: Mapping[str, Any]) -> MeshPeers:
         known = {"count", "discovery_active", "peers"}
         kwargs, extra = _split_extra(data, known)
         peers_raw = kwargs.pop("peers", [])
@@ -135,7 +135,7 @@ class SwarmStatus:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_wire(cls, data: Mapping[str, Any]) -> "SwarmStatus":
+    def from_wire(cls, data: Mapping[str, Any]) -> SwarmStatus:
         known = {
             "device_id",
             "discovery_active",
@@ -161,7 +161,7 @@ class ClusterHealth:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_wire(cls, data: Mapping[str, Any]) -> "ClusterHealth":
+    def from_wire(cls, data: Mapping[str, Any]) -> ClusterHealth:
         known = {
             "auto_sync_interval_secs",
             "cluster_enabled",

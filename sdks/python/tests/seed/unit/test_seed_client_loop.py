@@ -14,12 +14,12 @@ from cognitum._errors import (
     AuthError,
     AuthReason,
     NotFoundError,
-    NotImplementedError as SeedNotImplementedError,
-    RateLimitError,
     ValidationError,
 )
+from cognitum._errors import (
+    NotImplementedError as SeedNotImplementedError,
+)
 from cognitum.seed import SeedClient, SeedTLS, VectorUpsert
-
 
 BASE = "https://localhost:18443"
 

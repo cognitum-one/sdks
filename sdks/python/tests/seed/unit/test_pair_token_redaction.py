@@ -10,7 +10,6 @@ from __future__ import annotations
 from cognitum.seed._models import PairCreateResponse
 from cognitum.seed._token_book import SecretString
 
-
 SENTINEL = "super-secret-token-9f3a2bc81d7e4fa65ceb0f12"
 
 
@@ -91,6 +90,8 @@ def test_logging_format_does_not_leak() -> None:
     resp = PairCreateResponse.from_wire(
         {"paired": True, "token": SENTINEL, "client_name": "c"}
     )
-    # Simulate the formatter
-    simulated = "%s / %r" % (resp, resp)
+    # Simulate the formatter — intentionally %-style (mirrors
+    # `logger.info("%s", resp)`), not a stylistic choice, so it's exempt
+    # from the f-string modernization rule.
+    simulated = "%s / %r" % (resp, resp)  # noqa: UP031
     assert SENTINEL not in simulated

@@ -23,7 +23,7 @@ class OtaConfig:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_wire(cls, data: Mapping[str, Any]) -> "OtaConfig":
+    def from_wire(cls, data: Mapping[str, Any]) -> OtaConfig:
         kwargs, extra = _split(data, {"enabled", "channel", "check_interval_secs"})
         return cls(**kwargs, extra=extra)
 
@@ -37,7 +37,7 @@ class OtaCheckNowResponse:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_wire(cls, data: Mapping[str, Any]) -> "OtaCheckNowResponse":
+    def from_wire(cls, data: Mapping[str, Any]) -> OtaCheckNowResponse:
         kwargs, extra = _split(
             data, {"triggered", "message", "check_interval_secs", "channel"}
         )

@@ -16,7 +16,6 @@ from unittest.mock import patch
 
 import pytest
 
-
 # ---- zeroconf stub -------------------------------------------------------
 
 
@@ -195,7 +194,11 @@ def test_mdns_import_error_without_extra() -> None:
     sys.modules.pop("zeroconf", None)
     sys.modules.pop("cognitum.seed.discovery.mdns", None)
 
-    real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
+    real_import = (
+        __builtins__["__import__"]
+        if isinstance(__builtins__, dict)
+        else __builtins__.__import__
+    )
 
     def _blocked(name: str, *args: Any, **kwargs: Any) -> Any:
         if name == "zeroconf" or name.startswith("zeroconf."):

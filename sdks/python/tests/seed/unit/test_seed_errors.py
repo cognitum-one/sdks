@@ -16,12 +16,16 @@ from cognitum._errors import (
     ConflictError,
     NetworkError,
     NotFoundError,
-    NotImplementedError as SeedNotImplementedError,
     ParseError,
     RateLimitError,
     ServiceUnavailableError,
-    TimeoutError as SeedTimeoutError,
     ValidationError,
+)
+from cognitum._errors import (
+    NotImplementedError as SeedNotImplementedError,
+)
+from cognitum._errors import (
+    TimeoutError as SeedTimeoutError,
 )
 from cognitum.seed._client import map_error
 

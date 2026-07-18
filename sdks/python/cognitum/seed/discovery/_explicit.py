@@ -9,7 +9,7 @@ composition (e.g. a fallback chain: try mDNS, then explicit list).
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 from cognitum._errors import ConfigError
 from cognitum.seed.discovery._types import DiscoveredPeer

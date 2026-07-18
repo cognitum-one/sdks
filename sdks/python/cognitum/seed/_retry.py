@@ -9,9 +9,9 @@ from __future__ import annotations
 import random
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
-from typing import Mapping
 
 _RETRIABLE_STATUS: frozenset[int] = frozenset({429, 500, 502, 503, 504})
 _IDEMPOTENT_METHODS: frozenset[str] = frozenset({"GET", "HEAD", "DELETE", "PUT"})

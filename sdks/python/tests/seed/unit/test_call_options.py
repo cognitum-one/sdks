@@ -10,13 +10,12 @@ import respx
 
 from cognitum._errors import ConfigError, UnsupportedError
 from cognitum.seed import (
+    DISABLE_RETRY,
     AsyncSeedClient,
     CallOptions,
-    DISABLE_RETRY,
     SeedClient,
     SeedTLS,
 )
-
 
 BASE_A = "https://seed-a:8443"
 BASE_B = "https://seed-b:8443"
@@ -111,7 +110,7 @@ def test_retries_disable_caps_loop_at_one_attempt() -> None:
     # mesh failover (peer cycling on 5xx) is separate. To isolate the
     # retry cap, use a single-peer client so mesh cycling is a no-op
     # and the only way to hit it twice is via ADR-0005 retry.
-    route = respx.get(f"https://solo:8443/api/v1/status").mock(
+    route = respx.get("https://solo:8443/api/v1/status").mock(
         side_effect=[
             httpx.Response(502, json={"error": "bad gw"}),
             httpx.Response(200, json=_status_json()),

@@ -51,8 +51,8 @@ impl StdioTransport {
 /// Fluent builder for a [`StdioTransport`].
 ///
 /// ```rust,no_run
-/// # async fn demo() -> Result<(), cognitum_rs::mcp::McpError> {
-/// use cognitum_rs::mcp::StdioTransport;
+/// # async fn demo() -> Result<(), cognitum_one::mcp::McpError> {
+/// use cognitum_one::mcp::StdioTransport;
 /// let transport = StdioTransport::builder()
 ///     .command("npx")
 ///     .args(["-y", "@some/mcp-server"])

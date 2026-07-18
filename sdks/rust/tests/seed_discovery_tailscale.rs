@@ -19,8 +19,8 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
-use cognitum_rs::error::Error;
-use cognitum_rs::seed::{Discovery, TailscaleDiscovery};
+use cognitum_one::error::Error;
+use cognitum_one::seed::{Discovery, TailscaleDiscovery};
 
 const FIXTURE_STATUS: &str = r#"{
     "Self": {

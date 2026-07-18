@@ -6,7 +6,6 @@ import pytest
 
 from cognitum.seed import (
     Endpoint,
-    Peer,
     PeerErrorClass,
     PeerSet,
     PeerState,

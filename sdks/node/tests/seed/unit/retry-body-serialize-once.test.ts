@@ -156,7 +156,6 @@ describe("retry body serialise-once (issue #23)", () => {
       // a stringify call, because request() skips JSON.stringify for
       // GET/HEAD entirely.
       await client.request("GET", "/api/v1/status", {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         body: { [marker]: true } as any,
       });
     } finally {

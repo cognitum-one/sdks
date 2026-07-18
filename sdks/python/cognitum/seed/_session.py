@@ -74,7 +74,7 @@ class _PinnedTransport:
 
 
 class _AsyncPinnedTransport(_PinnedTransport):
-    async def request(  # type: ignore[override]
+    async def request(
         self,
         method: str,
         path: str,
@@ -113,7 +113,7 @@ class SeedSession:
     ota: OtaResource
     mesh: MeshResource
 
-    def __init__(self, client: "SeedClient", peer_key: str) -> None:
+    def __init__(self, client: SeedClient, peer_key: str) -> None:
         self._client = client
         self._peer_key = peer_key
         # Each session owns its own pinned transport adapter; the underlying
@@ -146,7 +146,7 @@ class SeedSession:
         # Pin is advisory; nothing to tear down.
         return None
 
-    def __enter__(self) -> "SeedSession":
+    def __enter__(self) -> SeedSession:
         return self
 
     def __exit__(
@@ -168,7 +168,7 @@ class AsyncSeedSession:
     ota: AsyncOtaResource
     mesh: AsyncMeshResource
 
-    def __init__(self, client: "AsyncSeedClient", peer_key: str) -> None:
+    def __init__(self, client: AsyncSeedClient, peer_key: str) -> None:
         self._client = client
         self._peer_key = peer_key
         adapter = _AsyncPinnedTransport(client._transport, peer_key)
@@ -195,7 +195,7 @@ class AsyncSeedSession:
     async def close(self) -> None:
         return None
 
-    async def __aenter__(self) -> "AsyncSeedSession":
+    async def __aenter__(self) -> AsyncSeedSession:
         return self
 
     async def __aexit__(

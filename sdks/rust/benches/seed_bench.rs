@@ -22,7 +22,7 @@
 
 use std::time::{Duration, Instant};
 
-use cognitum_rs::seed::{SeedAuth, SeedClient, SeedTls};
+use cognitum_one::seed::{SeedAuth, SeedClient, SeedTls};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

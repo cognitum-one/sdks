@@ -6,7 +6,7 @@
 
 #![cfg(feature = "seed")]
 
-use cognitum_rs::seed::{SeedClient, SeedTls};
+use cognitum_one::seed::{SeedClient, SeedTls};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

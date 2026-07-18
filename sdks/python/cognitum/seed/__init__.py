@@ -15,9 +15,9 @@ from __future__ import annotations
 
 from cognitum.seed._async_client import AsyncSeedClient
 from cognitum.seed._call_options import (
+    DISABLE_RETRY,
     CallOptions,
     Consistency,
-    DISABLE_RETRY,
     Prefer,
 )
 from cognitum.seed._client import SeedClient, map_error
@@ -29,20 +29,6 @@ from cognitum.seed._config import (
     SeedFailover,
     SeedTLS,
     normalise_options,
-)
-from cognitum.seed._peers import Peer, PeerErrorClass, PeerSet, PeerState
-from cognitum.seed._session import AsyncSeedSession, SeedSession
-from cognitum.seed.discovery import (
-    DiscoveredPeer,
-    DiscoveryProvider,
-    ExplicitDiscovery,
-    TailscaleDiscovery,
-)
-from cognitum.seed._token_book import (
-    InMemoryTokenBook,
-    SecretString,
-    TokenBook,
-    pair_all,
 )
 from cognitum.seed._errors import (
     ApiError,
@@ -83,6 +69,7 @@ from cognitum.seed._models import (
     VectorUpsert,
     WitnessChain,
 )
+from cognitum.seed._peers import Peer, PeerErrorClass, PeerSet, PeerState
 from cognitum.seed._retry import (
     RetryPolicy,
     compute_delay,
@@ -90,7 +77,20 @@ from cognitum.seed._retry import (
     is_retriable,
     parse_retry_after,
 )
+from cognitum.seed._session import AsyncSeedSession, SeedSession
+from cognitum.seed._token_book import (
+    InMemoryTokenBook,
+    SecretString,
+    TokenBook,
+    pair_all,
+)
 from cognitum.seed._transport import SeedPinnedVerifier
+from cognitum.seed.discovery import (
+    DiscoveredPeer,
+    DiscoveryProvider,
+    ExplicitDiscovery,
+    TailscaleDiscovery,
+)
 
 __all__ = [
     # Clients

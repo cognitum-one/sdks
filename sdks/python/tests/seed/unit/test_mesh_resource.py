@@ -21,7 +21,6 @@ from cognitum.seed import (
     SwarmStatus,
 )
 
-
 BASE = "https://localhost:18443"
 
 

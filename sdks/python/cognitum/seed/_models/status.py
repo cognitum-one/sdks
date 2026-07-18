@@ -20,7 +20,7 @@ class Status:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_wire(cls, data: Mapping[str, Any]) -> "Status":
+    def from_wire(cls, data: Mapping[str, Any]) -> Status:
         known = {
             "device_id",
             "uptime_secs",

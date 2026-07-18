@@ -1,4 +1,4 @@
-use cognitum_rs::{Client, ClientConfig};
+use cognitum_one::{Client, ClientConfig};
 use serde_json::json;
 use wiremock::matchers::{header, header_exists, method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -201,7 +201,7 @@ async fn not_found_returns_error() {
     let client = test_client(&server.uri());
     let err = client.health().await.unwrap_err();
     assert!(
-        matches!(err, cognitum_rs::Error::NotFound(_)),
+        matches!(err, cognitum_one::Error::NotFound(_)),
         "expected NotFound, got: {err:?}"
     );
 }
@@ -219,7 +219,7 @@ async fn unauthorized_returns_auth_error() {
     let client = test_client(&server.uri());
     let err = client.health().await.unwrap_err();
     assert!(
-        matches!(err, cognitum_rs::Error::Auth(_)),
+        matches!(err, cognitum_one::Error::Auth(_)),
         "expected Auth, got: {err:?}"
     );
 }
@@ -371,7 +371,7 @@ xmxGxmxGxmxGxgIgZqR5S9ItRrGTe9u3zXKO+v5o4cPjA9E2x9f2B1FQ6zA=\n\
             assert!(client.config().trust_root_pem.is_some());
             assert!(!client.config().insecure);
         }
-        Err(cognitum_rs::Error::Validation(msg)) => {
+        Err(cognitum_one::Error::Validation(msg)) => {
             assert!(msg.contains("trust_root_pem"), "got: {msg}");
         }
         Err(other) => panic!("unexpected error: {other:?}"),
@@ -387,7 +387,7 @@ async fn builder_rejects_both_insecure_and_trust_root_pem() {
         .build()
         .expect_err("mutually exclusive modes must fail");
     match err {
-        cognitum_rs::Error::Validation(msg) => {
+        cognitum_one::Error::Validation(msg) => {
             assert!(msg.contains("mutually exclusive"), "got: {msg}");
         }
         other => panic!("expected Validation, got {other:?}"),
@@ -447,7 +447,7 @@ async fn assert_rate_limit_hint(
     let client = retry_test_client(&server.uri(), 0);
     let err = client.health().await.unwrap_err();
     match err {
-        cognitum_rs::Error::RateLimit { retry_after_ms } => {
+        cognitum_one::Error::RateLimit { retry_after_ms } => {
             assert!(
                 (lower_ms..=upper_ms).contains(&retry_after_ms),
                 "retry_after_ms={retry_after_ms} outside [{lower_ms}, {upper_ms}]"

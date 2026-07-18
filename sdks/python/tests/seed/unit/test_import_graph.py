@@ -18,7 +18,6 @@ import subprocess
 import sys
 import textwrap
 
-
 # Concrete list of cloud modules that used to be pulled in eagerly. If
 # any of these appears in sys.modules after ``from cognitum.seed import
 # SeedClient``, we've regressed.
