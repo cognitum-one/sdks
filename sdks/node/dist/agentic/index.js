@@ -350,6 +350,275 @@ var SentinelSecretRedactor = class {
     return result;
   }
 };
+
+// src/agentic/receipt-verification.ts
+import { createHash as createHash2, createHmac, timingSafeEqual } from "crypto";
+var CANONICALIZATION_VERSION = "cognitum-canonical-json-v1";
+var LEVEL_ORDER = [
+  "none",
+  "shape",
+  "digest",
+  "cryptographic",
+  "anchored"
+];
+var COST_FINALITIES = /* @__PURE__ */ new Set([
+  "estimate",
+  "reserved",
+  "committed",
+  "provider_reported",
+  "invoiced"
+]);
+function levelIndex(level) {
+  return LEVEL_ORDER.indexOf(level);
+}
+function sortKeysDeep(value) {
+  if (Array.isArray(value)) return value.map(sortKeysDeep);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const key of Object.keys(value).sort()) {
+      out[key] = sortKeysDeep(value[key]);
+    }
+    return out;
+  }
+  return value;
+}
+function canonicalJson(value) {
+  return JSON.stringify(sortKeysDeep(value));
+}
+function sha256Hex(bytes) {
+  return createHash2("sha256").update(bytes, "utf8").digest("hex");
+}
+function hmacSha256Hex(key, bytes) {
+  return createHmac("sha256", Buffer.from(key)).update(bytes, "utf8").digest("hex");
+}
+function constantTimeHexEqual(a, b) {
+  const bufA = Buffer.from(a, "hex");
+  const bufB = Buffer.from(b, "hex");
+  if (bufA.length === 0 || bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+function receiptSignablePayload(r) {
+  const { signature: _signature, verification: _verification, ...rest } = r;
+  return rest;
+}
+function lineageSignablePayload(l) {
+  const { signature: _signature, verification: _verification, ...rest } = l;
+  return rest;
+}
+function buildExecutionReceipt(input) {
+  const checkedAt = input.now ? input.now() : (/* @__PURE__ */ new Date()).toISOString();
+  const base = {
+    schema: "cognitum.execution-receipt.v1",
+    receiptId: input.receiptId,
+    product: input.product,
+    contractVersion: input.contractVersion,
+    subject: {
+      requestId: input.requestId,
+      operationId: input.operationId,
+      tenantHash: input.tenantHash
+    },
+    startedAt: input.startedAt,
+    completedAt: input.completedAt,
+    usage: input.usage,
+    costs: input.costs ?? [],
+    outcome: input.outcome,
+    artifactDigests: input.artifactDigests,
+    lineageRoot: input.lineageRoot,
+    canonicalization: CANONICALIZATION_VERSION,
+    issuer: input.issuer,
+    keyId: input.keyId
+  };
+  const signature = input.sign ? input.sign(canonicalJson(base)) : void 0;
+  const receipt = {
+    ...base,
+    signature,
+    verification: { level: "none", valid: false, checkedAt }
+  };
+  const shapeFailure = shapeCheckExecutionReceipt(receipt);
+  receipt.verification = shapeFailure ? { level: "none", valid: false, checkedAt, failure: shapeFailure } : { level: "shape", valid: true, checkedAt };
+  return receipt;
+}
+function shapeCheckExecutionReceipt(r) {
+  if (r.schema !== "cognitum.execution-receipt.v1") return "unexpected schema tag";
+  if (!r.receiptId) return "receiptId is required";
+  if (!r.product) return "product is required";
+  if (!r.contractVersion) return "contractVersion is required";
+  if (!r.subject?.requestId) return "subject.requestId is required";
+  if (!r.startedAt || Number.isNaN(Date.parse(r.startedAt))) {
+    return "startedAt must be a parseable timestamp";
+  }
+  if (r.completedAt) {
+    const completed = Date.parse(r.completedAt);
+    if (Number.isNaN(completed)) return "completedAt must be a parseable timestamp";
+    if (completed < Date.parse(r.startedAt)) return "completedAt precedes startedAt";
+  }
+  if (!r.outcome) return "outcome is required";
+  for (const cost of r.costs ?? []) {
+    if (!cost.source) return "cost.source is required";
+    if (!Number.isFinite(cost.amount)) return "cost.amount must be a finite number";
+    if (!cost.currency) return "cost.currency is required";
+    if (!COST_FINALITIES.has(cost.finality)) return `unknown cost.finality: ${cost.finality}`;
+  }
+  return void 0;
+}
+function shapeCheckLineageReference(l) {
+  if (l.schema !== "cognitum.lineage-reference.v1") return "unexpected schema tag";
+  if (!l.subject?.requestId) return "subject.requestId is required";
+  if (l.sequence !== void 0 && (!Number.isInteger(l.sequence) || l.sequence < 0)) {
+    return "sequence must be a non-negative integer";
+  }
+  return void 0;
+}
+function verifyExecutionReceipt(receipt, opts) {
+  const checkedAt = opts.now ? opts.now() : (/* @__PURE__ */ new Date()).toISOString();
+  const warnings = [];
+  const shapeFailure = shapeCheckExecutionReceipt(receipt);
+  if (shapeFailure) {
+    return { level: "none", valid: false, checkedAt, failure: shapeFailure };
+  }
+  let achieved = "shape";
+  const canonicalBytes = canonicalJson(receiptSignablePayload(receipt));
+  const subjectDigest = sha256Hex(canonicalBytes);
+  let algorithm;
+  if (opts.expectedDigest) {
+    if (opts.expectedDigest === subjectDigest) {
+      achieved = "digest";
+    } else {
+      warnings.push("expected digest mismatch");
+    }
+  }
+  if (receipt.signature && receipt.issuer && receipt.keyId) {
+    if (!opts.resolveKey) {
+      warnings.push("no key resolver supplied; cannot verify signature");
+    } else {
+      const key = opts.resolveKey(receipt.issuer, receipt.keyId);
+      if (!key) {
+        warnings.push(`unknown key '${receipt.keyId}' for issuer '${receipt.issuer}'`);
+      } else {
+        const expectedSig = hmacSha256Hex(key, canonicalBytes);
+        if (constantTimeHexEqual(expectedSig, receipt.signature)) {
+          achieved = "cryptographic";
+          algorithm = "hmac-sha256";
+        } else {
+          const failure = "signature does not match canonical bytes";
+          return { level: "none", valid: false, checkedAt, subjectDigest, failure };
+        }
+      }
+    }
+  } else if (levelIndex(opts.minLevel) >= levelIndex("cryptographic")) {
+    warnings.push("receipt carries no signature/issuer/keyId claim");
+  }
+  if (achieved === "cryptographic" && receipt.lineageRoot && opts.checkAnchor) {
+    if (opts.checkAnchor(receipt.lineageRoot)) {
+      achieved = "anchored";
+    } else {
+      warnings.push("anchor check did not confirm durable checkpoint");
+    }
+  }
+  const valid = levelIndex(achieved) >= levelIndex(opts.minLevel);
+  return {
+    level: achieved,
+    valid,
+    algorithm,
+    keyId: receipt.keyId,
+    checkedAt,
+    subjectDigest,
+    warnings: warnings.length ? warnings : void 0,
+    failure: valid ? void 0 : `minimum level '${opts.minLevel}' not reached (achieved '${achieved}')`
+  };
+}
+function verifyLineageChain(chain, opts) {
+  const checkedAt = opts.now ? opts.now() : (/* @__PURE__ */ new Date()).toISOString();
+  const results = [];
+  if (chain.length === 0) {
+    return { valid: false, level: "none", results, failure: "lineage chain is empty" };
+  }
+  const seenRoots = /* @__PURE__ */ new Set();
+  let minAchieved = "anchored";
+  let genesisAchieved;
+  for (let i = 0; i < chain.length; i++) {
+    const entry = chain[i];
+    const shapeFailure = shapeCheckLineageReference(entry);
+    if (shapeFailure) {
+      results.push({ level: "none", valid: false, checkedAt, failure: shapeFailure });
+      return { valid: false, level: "none", brokenAtIndex: i, results, failure: shapeFailure };
+    }
+    if (entry.root) {
+      if (seenRoots.has(entry.root)) {
+        const failure = `cycle detected at index ${i} (root already seen)`;
+        results.push({ level: "none", valid: false, checkedAt, failure });
+        return { valid: false, level: "none", brokenAtIndex: i, results, failure };
+      }
+      seenRoots.add(entry.root);
+    }
+    let achieved = "shape";
+    const warnings = [];
+    if (i > 0) {
+      const prev = chain[i - 1];
+      if (!entry.previousCheckpoint || entry.previousCheckpoint !== prev.root) {
+        const failure = `entry ${i} previousCheckpoint does not resolve to entry ${i - 1} root`;
+        results.push({ level: "none", valid: false, checkedAt, failure });
+        return { valid: false, level: "none", brokenAtIndex: i, results, failure };
+      }
+      if (entry.sequence !== void 0 && prev.sequence !== void 0 && entry.sequence <= prev.sequence) {
+        const failure = `entry ${i} sequence (${entry.sequence}) is not strictly increasing`;
+        results.push({ level: "none", valid: false, checkedAt, failure });
+        return { valid: false, level: "none", brokenAtIndex: i, results, failure };
+      }
+      achieved = "digest";
+    }
+    if (entry.checkpointTime) {
+      const ts = Date.parse(entry.checkpointTime);
+      if (Number.isNaN(ts)) {
+        warnings.push("checkpointTime not parseable");
+      } else if (opts.maxCheckpointAgeMs !== void 0 && Date.now() - ts > opts.maxCheckpointAgeMs) {
+        warnings.push("checkpoint is stale");
+      }
+    }
+    if (entry.signature && entry.issuer && entry.keyId) {
+      if (!opts.resolveKey) {
+        warnings.push("no key resolver supplied; cannot verify signature");
+      } else {
+        const key = opts.resolveKey(entry.issuer, entry.keyId);
+        if (!key) {
+          warnings.push(`unknown key '${entry.keyId}'`);
+        } else {
+          const payload = canonicalJson(lineageSignablePayload(entry));
+          const expected = hmacSha256Hex(key, payload);
+          if (constantTimeHexEqual(expected, entry.signature)) {
+            achieved = "cryptographic";
+          } else {
+            const failure = `entry ${i} signature does not match canonical bytes`;
+            results.push({ level: "none", valid: false, checkedAt, failure });
+            return { valid: false, level: "none", brokenAtIndex: i, results, failure };
+          }
+        }
+      }
+    }
+    results.push({
+      level: achieved,
+      valid: true,
+      checkedAt,
+      keyId: entry.keyId,
+      warnings: warnings.length ? warnings : void 0
+    });
+    if (i === 0) {
+      genesisAchieved = achieved;
+    } else if (levelIndex(achieved) < levelIndex(minAchieved)) {
+      minAchieved = achieved;
+    }
+  }
+  if (chain.length === 1) {
+    minAchieved = genesisAchieved ?? "shape";
+  }
+  const valid = levelIndex(minAchieved) >= levelIndex(opts.minLevel);
+  return {
+    valid,
+    level: minAchieved,
+    results,
+    failure: valid ? void 0 : `minimum level '${opts.minLevel}' not reached across chain (achieved '${minAchieved}')`
+  };
+}
 export {
   AgenticError,
   DEFAULT_API_KEY_ENV_VAR,
@@ -358,6 +627,13 @@ export {
   SentinelSecretRedactor,
   StaticApiKeyCredentialProvider,
   UnsupportedCapabilityError,
-  equalJitterDelayMs
+  buildExecutionReceipt,
+  canonicalJson,
+  equalJitterDelayMs,
+  sha256Hex,
+  shapeCheckExecutionReceipt,
+  shapeCheckLineageReference,
+  verifyExecutionReceipt,
+  verifyLineageChain
 };
 //# sourceMappingURL=index.js.map

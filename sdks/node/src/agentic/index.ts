@@ -84,3 +84,19 @@ export type {
   ExecutionReceipt,
   LineageReference,
 } from "./receipts.js";
+
+export type {
+  BuildExecutionReceiptInput,
+  VerifyReceiptOptions,
+  VerifyLineageChainOptions,
+  LineageChainVerification,
+} from "./receipt-verification.js";
+export {
+  buildExecutionReceipt,
+  verifyExecutionReceipt,
+  verifyLineageChain,
+  shapeCheckExecutionReceipt,
+  shapeCheckLineageReference,
+  canonicalJson,
+  sha256Hex,
+} from "./receipt-verification.js";

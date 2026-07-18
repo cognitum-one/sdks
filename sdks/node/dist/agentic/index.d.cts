@@ -499,4 +499,80 @@ interface LineageReference {
     verification: VerificationResult;
 }
 
-export { AgenticError, type AgenticErrorKind, type BudgetPolicy, type CancellationReason, type CancellationToken, type CapabilitySet, type CapabilitySource, type CostFinality, type CostObservation, type Credential, type CredentialAuthority, type CredentialProvider, type CredentialRequest, type D12Category, DEFAULT_API_KEY_ENV_VAR, DEFAULT_RETRY_POLICY, type EventStreamOptions, type ExecutionReceipt, type IdempotencyBindingV1, type LineageReference, type OnUnknownEstimate, type OperationEvent, type OperationHandle, type OperationRetryClass, type OperationSnapshot, type OperationState, type Page, type PageRequest, RedactedSecret, type RequestContext, type RetryPolicy, type SecretClassification, type SecretRedactor, SentinelSecretRedactor, StaticApiKeyCredentialProvider, type StaticApiKeyCredentialProviderOptions, type TenantContext, type TimeBudget, UnsupportedCapabilityError, type VerificationLevel, type VerificationResult, type WaitOptions, equalJitterDelayMs };
+/**
+ * ExecutionReceipt / LineageReference construction + verification (issue #56,
+ * building out the ADR-0028 §D7-§D9 type-only stubs from PR #79).
+ *
+ * Deliberate scope limits (documented rather than silently skipped):
+ * - Signatures are HMAC-SHA256 (symmetric, caller-supplied key resolver),
+ *   not asymmetric Ed25519. ADR-0028 §D7 asks for "a discoverable, rotatable
+ *   verification key" without mandating an algorithm; a full asymmetric PKI
+ *   (key discovery/rotation service) is out of scope for this pass.
+ * - `anchored` (§D8) requires an externally durable checkpoint/proof. This
+ *   module only calls an optional caller-supplied `checkAnchor` callback; it
+ *   does not implement or assume any specific anchor/ledger service.
+ * - Checkpoint "freshness" (§D9) is a parseable-timestamp + optional
+ *   max-age check, not a live clock-skew/NTP protocol.
+ */
+
+/** Deterministic JSON: recursively sorted object keys, no whitespace. */
+declare function canonicalJson(value: unknown): string;
+declare function sha256Hex(bytes: string): string;
+interface BuildExecutionReceiptInput {
+    receiptId: string;
+    product: string;
+    contractVersion: string;
+    requestId: string;
+    operationId?: string;
+    tenantHash?: string;
+    startedAt: string;
+    completedAt?: string;
+    usage?: Record<string, unknown>;
+    costs?: CostObservation[];
+    outcome: string;
+    artifactDigests?: string[];
+    lineageRoot?: string;
+    issuer?: string;
+    keyId?: string;
+    /** Optional signer; if supplied, signs the canonical (unsigned) payload. */
+    sign?: (canonicalBytes: string) => string;
+    now?: () => string;
+}
+/** Builds an ExecutionReceiptV1 from operation metadata, usage/cost, and timestamps. */
+declare function buildExecutionReceipt(input: BuildExecutionReceiptInput): ExecutionReceipt;
+declare function shapeCheckExecutionReceipt(r: ExecutionReceipt): string | undefined;
+declare function shapeCheckLineageReference(l: LineageReference): string | undefined;
+interface VerifyReceiptOptions {
+    minLevel: VerificationLevel;
+    /** Independently obtained expected digest, for `digest`-level checks. */
+    expectedDigest?: string;
+    /** Resolves a trusted key for (issuer, keyId); absence means "no proof possible". */
+    resolveKey?: (issuer: string, keyId: string) => Uint8Array | undefined;
+    /** Optional external durability/anchor check for `anchored`. */
+    checkAnchor?: (lineageRoot: string) => boolean;
+    now?: () => string;
+}
+/** Verifies a receipt against a minimum required VerificationLevel (fail-closed). */
+declare function verifyExecutionReceipt(receipt: ExecutionReceipt, opts: VerifyReceiptOptions): VerificationResult;
+interface VerifyLineageChainOptions {
+    minLevel: VerificationLevel;
+    resolveKey?: (issuer: string, keyId: string) => Uint8Array | undefined;
+    maxCheckpointAgeMs?: number;
+    now?: () => string;
+}
+interface LineageChainVerification {
+    valid: boolean;
+    level: VerificationLevel;
+    brokenAtIndex?: number;
+    results: VerificationResult[];
+    failure?: string;
+}
+/**
+ * Verifies a LineageReference chain is well-formed: each entry's
+ * `previousCheckpoint` resolves to the prior entry's `root`, sequence numbers
+ * strictly increase, and no `root` digest repeats (cycle detection). This is
+ * a structural check (§D9), not a full Merkle/anchored proof.
+ */
+declare function verifyLineageChain(chain: LineageReference[], opts: VerifyLineageChainOptions): LineageChainVerification;
+
+export { AgenticError, type AgenticErrorKind, type BudgetPolicy, type BuildExecutionReceiptInput, type CancellationReason, type CancellationToken, type CapabilitySet, type CapabilitySource, type CostFinality, type CostObservation, type Credential, type CredentialAuthority, type CredentialProvider, type CredentialRequest, type D12Category, DEFAULT_API_KEY_ENV_VAR, DEFAULT_RETRY_POLICY, type EventStreamOptions, type ExecutionReceipt, type IdempotencyBindingV1, type LineageChainVerification, type LineageReference, type OnUnknownEstimate, type OperationEvent, type OperationHandle, type OperationRetryClass, type OperationSnapshot, type OperationState, type Page, type PageRequest, RedactedSecret, type RequestContext, type RetryPolicy, type SecretClassification, type SecretRedactor, SentinelSecretRedactor, StaticApiKeyCredentialProvider, type StaticApiKeyCredentialProviderOptions, type TenantContext, type TimeBudget, UnsupportedCapabilityError, type VerificationLevel, type VerificationResult, type VerifyLineageChainOptions, type VerifyReceiptOptions, type WaitOptions, buildExecutionReceipt, canonicalJson, equalJitterDelayMs, sha256Hex, shapeCheckExecutionReceipt, shapeCheckLineageReference, verifyExecutionReceipt, verifyLineageChain };
