@@ -208,7 +208,7 @@ function resolveSeedConfig(opts) {
     throw new ConfigError("`endpoints` is required");
   }
   let discovery;
-  let resolvedEndpoints = opts.endpoints;
+  const resolvedEndpoints = opts.endpoints;
   if (isDiscoveryProvider(opts.endpoints)) {
     throw new ConfigError(
       "`endpoints` is a DiscoveryProvider \u2014 use `await SeedClient.create(options)` which resolves discovery before constructing the client."

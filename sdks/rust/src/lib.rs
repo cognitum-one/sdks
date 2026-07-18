@@ -9,7 +9,7 @@
 //! ## Quick start
 //!
 //! ```rust,no_run
-//! use cognitum_rs::{Client, Error};
+//! use cognitum_one::{Client, Error};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Error> {

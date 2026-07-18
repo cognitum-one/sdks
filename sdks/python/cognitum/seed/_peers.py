@@ -15,9 +15,9 @@ chosen :class:`Peer` so the caller never holds the lock across an
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Iterator
 
 from cognitum.seed._config import Endpoint
 from cognitum.seed._errors import ConfigError

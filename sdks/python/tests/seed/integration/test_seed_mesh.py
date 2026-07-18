@@ -14,7 +14,6 @@ import time
 from typing import Any
 
 import httpx
-import pytest
 import respx
 
 from cognitum.seed import (
@@ -24,9 +23,7 @@ from cognitum.seed import (
     SeedAuth,
     SeedClient,
     SeedTLS,
-    SecretString,
 )
-
 
 PEER_A = "https://a:8443"
 PEER_B = "https://b:8443"

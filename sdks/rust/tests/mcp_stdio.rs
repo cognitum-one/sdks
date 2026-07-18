@@ -11,7 +11,7 @@
 
 use std::time::Duration;
 
-use cognitum_rs::mcp::{JsonRpcMessage, McpClient, McpError, StdioTransport, Transport};
+use cognitum_one::mcp::{JsonRpcMessage, McpClient, McpError, StdioTransport, Transport};
 use serde_json::{json, Value};
 use tokio::time::timeout;
 

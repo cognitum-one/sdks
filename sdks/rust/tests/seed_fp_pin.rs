@@ -28,9 +28,9 @@ use rustls::client::danger::ServerCertVerifier;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::RootCertStore;
 
-use cognitum_rs::error::Error;
-use cognitum_rs::seed::tls_pin::{build_pin_map, parse_hex_sha256, FingerprintPinVerifier, PinMap};
-use cognitum_rs::seed::{DiscoveredPeer, Discovery, SeedClient, SeedTls};
+use cognitum_one::error::Error;
+use cognitum_one::seed::tls_pin::{build_pin_map, parse_hex_sha256, FingerprintPinVerifier, PinMap};
+use cognitum_one::seed::{DiscoveredPeer, Discovery, SeedClient, SeedTls};
 
 // ---------- Helpers --------------------------------------------------------
 
@@ -111,7 +111,7 @@ fn mismatched_fingerprint_errors_without_fallback() {
 
     // And the seed_err::tls_pin helper produces the canonical
     // validation shape that callers surface to users.
-    let surfaced = cognitum_rs::seed::error::tls_pin("seed-a.local");
+    let surfaced = cognitum_one::seed::error::tls_pin("seed-a.local");
     match surfaced {
         Error::Validation(ref m) => {
             assert!(m.starts_with("tls_pin:"));

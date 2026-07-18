@@ -16,7 +16,6 @@ import types
 
 import pytest
 
-
 # ---- zeroconf stub (mirrors test_discovery_mdns, kept local to avoid
 # cross-test ``sys.modules`` coupling) -------------------------------
 

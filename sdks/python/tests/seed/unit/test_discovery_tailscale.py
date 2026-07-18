@@ -14,9 +14,8 @@ from typing import Any
 
 import pytest
 
-from cognitum.seed.discovery.tailscale import TailscaleDiscovery
 from cognitum._errors import ConfigError
-
+from cognitum.seed.discovery.tailscale import TailscaleDiscovery
 
 FIXTURE_STATUS: dict[str, Any] = {
     "Self": {

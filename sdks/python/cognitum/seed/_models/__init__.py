@@ -40,29 +40,33 @@ class WireModel:
         for f in fields(cls):
             if f.name not in kwargs and f.default is not MISSING:
                 kwargs[f.name] = f.default
-        return cls(**kwargs)  # type: ignore[arg-type]
+        return cls(**kwargs)
 
 
-from cognitum.seed._models.custody import Epoch
-from cognitum.seed._models.identity import Identity
-from cognitum.seed._models.mesh import (
+# These imports must come after `WireModel` above: each submodule's
+# dataclasses subclass it via `from cognitum.seed._models import WireModel`,
+# so importing them before the class body finishes executing would be a
+# circular import.
+from cognitum.seed._models.custody import Epoch  # noqa: E402
+from cognitum.seed._models.identity import Identity  # noqa: E402
+from cognitum.seed._models.mesh import (  # noqa: E402
     ClusterHealth,
     MeshPeer,
     MeshPeers,
     MeshStatus,
     SwarmStatus,
 )
-from cognitum.seed._models.ota import OtaCheckNowResponse, OtaConfig
-from cognitum.seed._models.pair import PairCreateResponse, PairStatus
-from cognitum.seed._models.status import Status
-from cognitum.seed._models.store import (
+from cognitum.seed._models.ota import OtaCheckNowResponse, OtaConfig  # noqa: E402
+from cognitum.seed._models.pair import PairCreateResponse, PairStatus  # noqa: E402
+from cognitum.seed._models.status import Status  # noqa: E402
+from cognitum.seed._models.store import (  # noqa: E402
     QueryMatch,
     StoreIngestRequest,
     StoreQueryResult,
     StoreStatus,
     VectorUpsert,
 )
-from cognitum.seed._models.witness import WitnessChain
+from cognitum.seed._models.witness import WitnessChain  # noqa: E402
 
 __all__ = [
     "ClusterHealth",

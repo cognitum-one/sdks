@@ -11,15 +11,15 @@ import hashlib
 import ssl
 import threading
 import warnings
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
 from cognitum._errors import ConfigError, TlsPinError
-from cognitum.seed._config import Endpoint, SeedAuth, SeedClientOptions, SeedTLS
-
+from cognitum.seed._config import SeedAuth, SeedClientOptions, SeedTLS
 
 # ADR-0007 §TLS physical-cable seed paths. Self-signed acceptance here is
 # only the fallback when the caller supplied NO tls config at all.

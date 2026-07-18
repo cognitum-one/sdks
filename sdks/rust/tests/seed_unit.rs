@@ -5,7 +5,7 @@
 
 #![cfg(feature = "seed")]
 
-use cognitum_rs::seed::{
+use cognitum_one::seed::{
     PairCreate, SeedAuth, SeedClient, SeedTls, StoreIngest, StoreIngestEntry, StoreQuery,
 };
 use serde_json::json;
@@ -348,7 +348,7 @@ async fn unauthorized_maps_to_auth_error_with_reason() {
 
     let err = client_for(&server).pair().status().await.unwrap_err();
     match err {
-        cognitum_rs::Error::Auth(msg) => {
+        cognitum_one::Error::Auth(msg) => {
             assert!(msg.contains("invalid_credentials"), "got: {msg}");
         }
         other => panic!("expected Auth, got {other:?}"),
@@ -371,7 +371,7 @@ async fn forbidden_not_paired_surfaces_reason() {
         .await
         .unwrap_err();
     match err {
-        cognitum_rs::Error::Auth(msg) => assert!(msg.contains("not_paired"), "got: {msg}"),
+        cognitum_one::Error::Auth(msg) => assert!(msg.contains("not_paired"), "got: {msg}"),
         other => panic!("expected Auth(not_paired), got {other:?}"),
     }
 }
@@ -388,7 +388,7 @@ async fn not_found_carries_endpoint_path() {
 
     let err = client_for(&server).status().await.unwrap_err();
     match err {
-        cognitum_rs::Error::NotFound(m) => assert!(m.contains("/status")),
+        cognitum_one::Error::NotFound(m) => assert!(m.contains("/status")),
         other => panic!("expected NotFound, got {other:?}"),
     }
 }
@@ -547,7 +547,7 @@ fn pair_create_response_debug_does_not_leak_token() {
     const SENTINEL: &str = "SHOULD_NEVER_APPEAR_FROM_PAIR_RESPONSE_c4d7";
     let json =
         format!(r#"{{"client_name":"rust-sdk-test","token":"{SENTINEL}","expires_at":null}}"#);
-    let resp: cognitum_rs::seed::PairCreateResponse =
+    let resp: cognitum_one::seed::PairCreateResponse =
         serde_json::from_str(&json).expect("PairCreateResponse deserializes");
 
     // Token must still round-trip to the caller.
@@ -643,7 +643,7 @@ fn pair_create_response_json_round_trip() {
     // Deserialize → re-serialize must preserve the token (wire compat).
     let json =
         r#"{"client_name":"rust-sdk-test","token":"abc","expires_at":"2026-05-01T00:00:00Z"}"#;
-    let resp: cognitum_rs::seed::PairCreateResponse =
+    let resp: cognitum_one::seed::PairCreateResponse =
         serde_json::from_str(json).expect("deserializes");
     assert_eq!(resp.client_name, "rust-sdk-test");
     assert_eq!(resp.token.as_str(), "abc");

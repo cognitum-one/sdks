@@ -21,7 +21,6 @@ from cognitum.seed import (
     WitnessChain,
 )
 
-
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "seed"
 
 

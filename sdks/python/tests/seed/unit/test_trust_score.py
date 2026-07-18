@@ -22,7 +22,6 @@ from cognitum._errors import (
 )
 from cognitum.seed import AsyncSeedClient, SeedClient, SeedTLS
 
-
 BASE = "https://localhost:18443"
 BASE2 = "https://localhost:18444"
 
@@ -133,7 +132,13 @@ def test_per_peer_counters_are_independent() -> None:
         tr = client._transport
         # Peer A: two 401s.
         with pytest.raises(AuthError):
-            tr.request("GET", "/api/v1/status", peer_key=f"{BASE}:18443".replace(":18443:18443", ":18443").replace("18443:18443", "18443"))
+            tr.request(
+                "GET",
+                "/api/v1/status",
+                peer_key=f"{BASE}:18443".replace(":18443:18443", ":18443").replace(
+                    "18443:18443", "18443"
+                ),
+            )
         # Use the real normalised url — fetch from the peer snapshot.
         snap = client.peers_snapshot()
         peer_keys = [p.endpoint.url for p in snap]

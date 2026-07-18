@@ -1,0 +1,123 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: node (build, test, typecheck, lint)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: sdks/node/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+        env:
+          # The seed-integration suite only runs when it can reach a real
+          # device over an SSH tunnel (see tests/seed/integration/live-seed.test.ts);
+          # it self-skips without one. We still pin this explicitly so CI
+          # never depends on whatever happens to be listening on the tunnel
+          # port on the runner.
+          SKIP_SEED_INTEGRATION: "1"
+      - run: npm run typecheck
+      - run: npm run lint
+
+  python:
+    name: python (pytest, ruff, mypy)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: pytest
+        env:
+          # Same rationale as the Node job: the live-seed test module
+          # self-skips without a reachable tunnel, but we pin this so CI
+          # never depends on runner-local port state.
+          SKIP_SEED_INTEGRATION: "1"
+      - run: ruff check .
+      - run: mypy
+
+  rust:
+    name: rust (build, test, clippy)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sdks/rust
+      # `live-seed-tests` is intentionally excluded from `--all-features`
+      # here: per its own doc comment (tests/seed_live.rs) it dials a real
+      # seed over an SSH tunnel and self-skips without one, but CI
+      # shouldn't depend on runner-local port state to get that skip
+      # (same reasoning as the Node/Python SKIP_SEED_INTEGRATION env var).
+      - name: build (all features except live-seed-tests)
+        run: cargo build --features "native-tls,seed,stream,blocking,mdns"
+      - name: test (all features except live-seed-tests)
+        run: cargo test --features "native-tls,seed,stream,blocking,mdns"
+      - name: clippy (all features except live-seed-tests)
+        run: cargo clippy --all-targets --features "native-tls,seed,stream,blocking,mdns" -- -D warnings
+
+  rust-feature-matrix:
+    name: rust feature matrix (build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/rust
+    strategy:
+      fail-fast: false
+      matrix:
+        # `cognitum-one` always needs a TLS backend from reqwest (rustls or
+        # native-tls), so a literal `--no-default-features` build can't
+        # compile — "default" here (`rustls`, via Cargo.toml's
+        # `default = ["rustls"]`) is the closest meaningful baseline.
+        # Each remaining feature is then built individually on top of it.
+        # `live-seed-tests` is excluded — see the comment on the `rust` job.
+        feature: [default, native-tls, seed, stream, blocking, mdns]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sdks/rust
+      # Build-only (not `cargo test`): with `seed`/`default` alone (no
+      # `native-tls`), reqwest's rustls-only backend defers PEM validation
+      # instead of doing it eagerly, so
+      # `client::tests::invalid_pem_is_surfaced_as_validation_error` and
+      # `builder_trust_root_pem_round_trips` fail there — a pre-existing,
+      # already-tracked gap (see docs/adr/0014c-rust-sdk-implementation-release.md
+      # §"Do NOT touch src/client.rs or src/error.rs"), not something this
+      # CI skeleton is trying to fix. The full test suite runs, green, in
+      # the `rust` job above where `native-tls` is always enabled alongside
+      # every other feature.
+      - name: build (feature = ${{ matrix.feature }})
+        run: |
+          if [ "${{ matrix.feature }}" = "default" ]; then
+            cargo build
+          else
+            cargo build --features "${{ matrix.feature }}"
+          fi

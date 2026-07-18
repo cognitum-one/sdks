@@ -13,7 +13,7 @@ class Epoch:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_wire(cls, data: Mapping[str, Any]) -> "Epoch":
+    def from_wire(cls, data: Mapping[str, Any]) -> Epoch:
         known = {"epoch"}
         kwargs: dict[str, Any] = {}
         extra: dict[str, Any] = {}

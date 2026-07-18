@@ -20,12 +20,12 @@ import pytest
 
 from cognitum.seed import (
     AuthError,
-    NotImplementedError as SeedNotImplementedError,
     SeedClient,
     SeedTLS,
-    VectorUpsert,
 )
-
+from cognitum.seed import (
+    NotImplementedError as SeedNotImplementedError,
+)
 
 INTEGRATION_HOST = "localhost"
 INTEGRATION_PORT = 18443
@@ -77,7 +77,10 @@ def _integration_enabled() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _integration_enabled(),
-    reason="seed not reachable on localhost:18443 (set COGNITUM_OPEN_TUNNEL=1 or open tunnel manually)",
+    reason=(
+        "seed not reachable on localhost:18443 "
+        "(set COGNITUM_OPEN_TUNNEL=1 or open tunnel manually)"
+    ),
 )
 
 

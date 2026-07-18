@@ -11,7 +11,7 @@
 
 #![cfg(feature = "seed")]
 
-use cognitum_rs::seed::{SeedAuth, SeedClient, SeedTls};
+use cognitum_one::seed::{SeedAuth, SeedClient, SeedTls};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -44,7 +44,7 @@ async fn auth_fail_3_consecutive_same_peer_trips_trust_score() {
     for _ in 0..2 {
         let err = client.pair().status().await.unwrap_err();
         match err {
-            cognitum_rs::Error::Auth(m) => {
+            cognitum_one::Error::Auth(m) => {
                 assert!(
                     m.starts_with("invalid_credentials"),
                     "expected invalid_credentials, got: {m}"
@@ -58,7 +58,7 @@ async fn auth_fail_3_consecutive_same_peer_trips_trust_score() {
     // Third call trips the circuit: `trust_score_blocked`, no retry, no cycle.
     let err = client.pair().status().await.unwrap_err();
     match err {
-        cognitum_rs::Error::Auth(m) => {
+        cognitum_one::Error::Auth(m) => {
             assert!(
                 m.starts_with("trust_score_blocked"),
                 "expected trust_score_blocked, got: {m}"
@@ -118,13 +118,13 @@ async fn auth_fail_then_success_resets_counter() {
         .await;
     let err = client
         .pair()
-        .create(cognitum_rs::seed::PairCreate {
+        .create(cognitum_one::seed::PairCreate {
             client_name: "x".into(),
         })
         .await
         .unwrap_err();
     match err {
-        cognitum_rs::Error::Auth(m) => {
+        cognitum_one::Error::Auth(m) => {
             assert!(
                 m.starts_with("invalid_credentials"),
                 "must NOT be trust_score_blocked yet: {m}"
@@ -185,7 +185,7 @@ async fn per_peer_counters_independent() {
     // 3rd call trips A's circuit.
     let err = session.pair().status().await.unwrap_err();
     match err {
-        cognitum_rs::Error::Auth(m) => assert!(m.starts_with("trust_score_blocked"), "got: {m}"),
+        cognitum_one::Error::Auth(m) => assert!(m.starts_with("trust_score_blocked"), "got: {m}"),
         other => panic!("expected trust_score_blocked, got {other:?}"),
     }
     assert_eq!(client.trust_score_failures(&key_a), 3);
@@ -229,7 +229,7 @@ async fn trust_score_blocked_is_not_retryable() {
     let err = client.pair().status().await.unwrap_err();
     assert!(matches!(
         err,
-        cognitum_rs::Error::Auth(ref m) if m.starts_with("trust_score_blocked")
+        cognitum_one::Error::Auth(ref m) if m.starts_with("trust_score_blocked")
     ));
     // 3 wire calls, not 3 + retries.
     assert_eq!(server.received_requests().await.unwrap().len(), 3);

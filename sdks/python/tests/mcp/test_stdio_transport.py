@@ -182,7 +182,11 @@ for line in sys.stdin:
             "result": {"content": [{"type": "text", "text": json.dumps(params)}], "isError": False},
         }
     else:
-        resp = {"jsonrpc": "2.0", "id": req.get("id"), "error": {"code": -32601, "message": "method not found"}}
+        resp = {
+            "jsonrpc": "2.0",
+            "id": req.get("id"),
+            "error": {"code": -32601, "message": "method not found"},
+        }
     sys.stdout.write(json.dumps(resp) + "\n")
     sys.stdout.flush()
 """
