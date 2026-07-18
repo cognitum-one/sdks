@@ -4,18 +4,16 @@
 //! sentinel. Any recognized-but-not-decoded shape falls back to
 //! [`OpenAiStreamEvent::Unknown`] rather than panicking.
 //!
-//! `receipt` is typed [`MetaLlmReceipt`] (an alias for `serde_json::Value`,
-//! per `super::super::envelope`) rather than the concrete `ExecutionReceipt`
-//! struct: ADR-0024b has not yet landed the wire shape for
-//! `cognitum_receipt`, and a fallible `serde_json::from_value::<ExecutionReceipt>`
-//! here would turn one malformed/incomplete receipt field into a decode
-//! failure for the entire event — contradicting "Unknown valid events
-//! become `UnknownStreamEvent`" and "missing metadata remains missing".
-//! Node and Python type this as `ExecutionReceipt` too, but neither
-//! language validates the shape at that assignment point either (TS
-//! structural typing / Python's non-enforced annotations) — so all three
-//! languages are equivalently permissive here; `MetaLlmReceipt` is simply
-//! the Rust-idiomatic way to say the same thing without a fallible parse.
+//! `receipt` is now the concrete ADR-0024b §D3 [`MetaLlmReceipt`] struct
+//! (issue #59, D11 migration step 1) rather than the earlier
+//! `serde_json::Value` alias -- this is the "receipt field ... already
+//! anticipated" slot the streaming pass (PR #88) reserved for it.
+//! [`crate::meta_llm::types::parse_meta_llm_receipt`] never fails the
+//! whole event on a malformed/incomplete receipt field (a missing
+//! `request_id` defaults to `""` rather than rejecting the receipt --
+//! see that function's docs), preserving "Unknown valid events become
+//! `UnknownStreamEvent`" / "missing metadata remains missing" -- the same
+//! guarantee the earlier `Value`-typed design existed to provide.
 //!
 //! One raw SSE `data:` payload can decode into *multiple* facets (e.g. one
 //! chunk carrying both a content delta and, on the last chunk, a finish
@@ -26,8 +24,7 @@
 
 use serde_json::Value;
 
-use crate::meta_llm::envelope::MetaLlmReceipt;
-use crate::meta_llm::types::ChatCompletionUsage;
+use crate::meta_llm::types::{parse_meta_llm_receipt, ChatCompletionUsage, MetaLlmReceipt};
 use crate::sse::SseEvent;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +38,13 @@ pub struct OpenAiStreamErrorPayload {
 /// A single decoded facet of one OpenAI `chat.completions` streaming chunk
 /// (ADR-0024a §D5). `Unknown` is the typed catch-all for a syntactically
 /// valid SSE event whose payload this decoder does not recognize.
+// `MetaLlmReceipt` (issue #59, D11 migration step 1) is a genuinely large,
+// detailed struct now that it carries the concrete ADR-0024b §D3 shape
+// instead of an opaque `serde_json::Value` -- at most one `Receipt` event
+// occurs per stream, so the size cost of the enum is accepted rather than
+// boxing (which would push `.clone()`/pattern-match friction onto every
+// other variant's much smaller, much more frequent call sites).
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum OpenAiStreamEvent {
     Role {
@@ -221,10 +225,10 @@ pub fn decode_openai_sse_event(raw: &SseEvent) -> DecodedOpenAiSseEvent {
         });
     }
 
-    if let Some(receipt) = obj.get("cognitum_receipt") {
-        events.push(OpenAiStreamEvent::Receipt {
-            receipt: receipt.clone(),
-        });
+    if let Some(receipt_raw) = obj.get("cognitum_receipt") {
+        if let Some(receipt) = parse_meta_llm_receipt(receipt_raw) {
+            events.push(OpenAiStreamEvent::Receipt { receipt });
+        }
     }
 
     if events.is_empty() {

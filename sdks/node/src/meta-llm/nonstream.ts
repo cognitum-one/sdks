@@ -30,6 +30,8 @@ import type { MetaLlmTelemetryHooks, MetaLlmTransport } from "./config.js";
 import type { MetaLlmResponseMeta, MetaLlmResult } from "./envelope.js";
 import { mapMetaLlmHttpError } from "./http-errors.js";
 import { buildIdempotencyBinding, canonicalRequestSha256 } from "./idempotency.js";
+import { parseMetaLlmReceipt } from "./types/receipt.js";
+import { assertSendableRoutingControls, type MetaLlmRoutingControls } from "./types/routing.js";
 
 const PRODUCT = "meta-llm";
 /**
@@ -157,13 +159,22 @@ async function sendPostOnce<T>(
     throw err;
   }
 
-  const data = (await response.json()) as T;
+  const rawJson: unknown = await response.json();
+  const data = rawJson as T;
+  // ADR-0024b §D3/§D11 step 1: decode a `cognitum_receipt` field embedded in
+  // the response body, if present, into the typed `MetaLlmReceipt` — same
+  // wire key the SSE path already recognizes (`./stream/openai-events.ts`).
+  const receipt =
+    rawJson !== null && typeof rawJson === "object" && !Array.isArray(rawJson)
+      ? parseMetaLlmReceipt((rawJson as Record<string, unknown>).cognitum_receipt)
+      : undefined;
   const meta: MetaLlmResponseMeta = {
     requestId: response.headers.get("x-cognitum-request-id") ?? requestId,
     httpStatus: response.status,
     protocolVersion: response.headers.get("x-cognitum-protocol-version") ?? undefined,
     retryAfterMs,
     idempotentReplay,
+    receipt,
   };
   return { data, meta };
 }
@@ -179,6 +190,26 @@ export async function postJsonIdempotent<T>(
   operation: string,
   body: unknown,
 ): Promise<MetaLlmResult<T>> {
+  // ADR-0024b §D2: fail locally, before any network I/O or credential
+  // acquisition, rather than sending an unrecognized enum member or a raw
+  // provider model ID the resolver would reject anyway. `routingControls`
+  // is an optional field on the request body itself (§D2: "Body controls
+  // win over `X-Cognitum-*` headers" — there is no separate header path to
+  // validate), so every operation that might carry one is covered here in
+  // one place rather than duplicated per call site in `./client.ts`.
+  const bodyRoutingControls = (body as { routingControls?: MetaLlmRoutingControls } | null | undefined)
+    ?.routingControls;
+  try {
+    assertSendableRoutingControls(bodyRoutingControls);
+  } catch (cause) {
+    throw new AgenticError("validation", `${operation} routingControls rejected: ${(cause as Error).message}`, {
+      product: PRODUCT,
+      operation,
+      retryable: false,
+      cause,
+    });
+  }
+
   let credential = await requireCredential(deps, operation);
   const idempotencyKey =
     typeof crypto !== "undefined" && "randomUUID" in crypto

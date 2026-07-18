@@ -3,8 +3,16 @@ whose accepted contract declares safe replay" named in ADR-0024a §D7:
 ``chat.completions`` and ``messages.create``. Issue #58 / M2 continuation.
 
 Deliberately out of scope here (see the tracking issue): streaming/SSE
-parsing (§D5), the other three protocol operations (``completions``,
-``responses``, ``embeddings``), and ADR-0024b routing controls.
+parsing (§D5) and the other three protocol operations (``completions``,
+``responses``, ``embeddings``) -- both since folded into ``client.py``/this
+module in later passes.
+
+ADR-0024b D11 migration step 1 (issue #59): this module now also decodes a
+``MetaLlmReceipt`` from the response body when the server includes one
+(``cognitum_receipt``). ``routing_controls`` validation happens in
+``client.py`` before this module's ``asdict``-produced ``body`` is even
+constructed, not here -- this module only sees the plain dict, not the
+original dataclass.
 
 Retry (ADR-0023 §D3/§D4, ADR-0024a §D6):
 
@@ -32,6 +40,7 @@ from cognitum.agentic import DEFAULT_RETRY_POLICY, AgenticError, equal_jitter_de
 from cognitum.meta_llm.envelope import MetaLlmResponseMeta
 from cognitum.meta_llm.http_errors import map_meta_llm_http_error
 from cognitum.meta_llm.idempotency import build_idempotency_binding, canonical_request_sha256
+from cognitum.meta_llm.types.receipt import parse_meta_llm_receipt
 
 if TYPE_CHECKING:
     from cognitum.agentic import Credential
@@ -148,12 +157,18 @@ async def _send_post_once(
         raise err
 
     data: dict[str, Any] = response.json()
+    # ADR-0024b §D3/§D11 step 1: decode a `cognitum_receipt` field embedded
+    # in the response body, if present, into the typed `MetaLlmReceipt` --
+    # same wire key the SSE path already recognizes
+    # (`stream/openai_events.py`).
+    receipt = parse_meta_llm_receipt(data.get("cognitum_receipt"))
     meta = MetaLlmResponseMeta(
         request_id=response.headers.get("x-cognitum-request-id", request_id),
         http_status=response.status_code,
         protocol_version=response.headers.get("x-cognitum-protocol-version"),
         retry_after_ms=retry_after_ms,
         idempotent_replay=idempotent_replay,
+        receipt=receipt,
     )
     return data, meta
 

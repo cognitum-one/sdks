@@ -1,10 +1,15 @@
 /**
  * OpenAI `chat.completions` streaming event types (ADR-0024a §D5): role,
  * content delta, tool-call fragments, finish reason, trailing usage, the
- * Cognitum receipt (reusing the frozen `ExecutionReceipt` type from
- * `../../agentic/index.js`), a terminal wire-level error event, and the
- * `[DONE]` sentinel. Any recognized-but-not-decoded shape falls back to
+ * Cognitum receipt, a terminal wire-level error event, and the `[DONE]`
+ * sentinel. Any recognized-but-not-decoded shape falls back to
  * {@link UnknownStreamEvent} rather than throwing.
+ *
+ * The receipt facet (`OpenAiReceiptEvent`) now carries the concrete
+ * ADR-0024b §D3 `MetaLlmReceipt` shape (issue #59, D11 migration step 1)
+ * rather than the earlier generic ADR-0028 `ExecutionReceipt` stub — this
+ * is the "receipt field ... already anticipated" slot the streaming pass
+ * (PR #88) reserved for it.
  *
  * One raw SSE `data:` payload can decode into *multiple* facets (e.g. one
  * chunk carrying both a content delta and, on the last chunk, a finish
@@ -14,9 +19,9 @@
  * than flattening a chunk into one opaque event.
  */
 
-import type { ExecutionReceipt } from "../../agentic/index.js";
 import type { SseEvent } from "../../sse/parser.js";
 import type { ChatCompletionUsage } from "../types/openai.js";
+import { parseMetaLlmReceipt, type MetaLlmReceipt } from "../types/receipt.js";
 
 export interface OpenAiRoleEvent {
   type: "role";
@@ -52,7 +57,7 @@ export interface OpenAiUsageEvent {
 
 export interface OpenAiReceiptEvent {
   type: "receipt";
-  receipt: ExecutionReceipt;
+  receipt: MetaLlmReceipt;
 }
 
 export interface OpenAiStreamErrorPayload {
@@ -194,7 +199,8 @@ export function decodeOpenAiSseEvent(raw: SseEvent): DecodedOpenAiSseEvent {
   }
 
   if (parsed.cognitum_receipt !== undefined) {
-    events.push({ type: "receipt", receipt: parsed.cognitum_receipt as ExecutionReceipt });
+    const receipt = parseMetaLlmReceipt(parsed.cognitum_receipt);
+    if (receipt) events.push({ type: "receipt", receipt });
   }
 
   if (events.length === 0) {

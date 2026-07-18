@@ -61,6 +61,36 @@ export type {
   CountTokensResult,
 } from "./types/anthropic.js";
 
+// ADR-0024b D11 migration step 1 (issue #59): routing controls, money,
+// receipt, and usage/budget types.
+export type {
+  CacheMode,
+  EscalationStrategy,
+  FallbackPolicy,
+  ModelSelector,
+  ModelTier,
+  SafetyMode,
+  SubTenantAttribution,
+} from "./types/routing.js";
+export { assertSendableRoutingControls, UnsendableRoutingControlsError } from "./types/routing.js";
+
+export type { Money } from "./types/money.js";
+export { parseMoney } from "./types/money.js";
+
+export type { ReceiptCacheResult, ReceiptModelTier, SafetySummary } from "./types/receipt.js";
+export { parseMetaLlmReceipt } from "./types/receipt.js";
+
+export type {
+  BudgetView,
+  CacheStats,
+  UsageBreakdownEntry,
+  UsagePeriodEntry,
+  UsageQuery,
+  UsageSummary,
+  UsageTotals,
+} from "./types/usage.js";
+export { assertValidUsageQuery, InvalidUsageQueryError, parseUsageSummary } from "./types/usage.js";
+
 export type { MetaLlmCallOptions } from "./client.js";
 export { MetaLlmClient } from "./client.js";
 

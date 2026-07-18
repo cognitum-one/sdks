@@ -70,6 +70,7 @@ fn chat_request() -> ChatCompletionRequest {
         tool_choice: None,
         response_format: None,
         seed: None,
+        routing_controls: None,
     }
 }
 
@@ -90,6 +91,7 @@ fn messages_request() -> AnthropicMessageRequest {
         tools: None,
         tool_choice: None,
         metadata: None,
+        routing_controls: None,
     }
 }
 

@@ -2,9 +2,14 @@
 //! whose accepted contract declares safe replay" named in ADR-0024a §D7:
 //! `chat.completions` and `messages.create`. Issue #58 / M2 continuation.
 //!
-//! Deliberately out of scope here (see the tracking issue): streaming/SSE
-//! parsing (§D5), the other three protocol operations (`completions`,
-//! `responses`, `embeddings`), and ADR-0024b routing controls.
+//! Deliberately out of scope here: streaming/SSE parsing (§D5) -- folded
+//! into `client.rs`/this module in later passes.
+//!
+//! ADR-0024b D11 migration step 1 (issue #59): this module now also
+//! decodes a `MetaLlmReceipt` from the response body when the server
+//! includes one (`cognitum_receipt`). `routing_controls` validation
+//! happens in `client.rs` before `serde_json::to_value` even runs, not
+//! here -- this module only sees the already-serialized `Value` body.
 //!
 //! Retry (ADR-0023 §D3/§D4, ADR-0024a §D6):
 //! - 401: at most one credential refresh after a verified challenge (the
@@ -30,6 +35,7 @@ use super::client::MetaLlmClient;
 use super::config::MetaLlmTelemetryEvent;
 use super::envelope::MetaLlmResponseMeta;
 use super::idempotency::{build_idempotency_binding, canonical_request_sha256};
+use super::types::parse_meta_llm_receipt;
 use super::PRODUCT;
 
 /// Required scope for the two inference-serving operations in this pass.
@@ -280,13 +286,22 @@ impl MetaLlmClient {
             )
         })?;
 
+        // ADR-0024b §D3/§D11 step 1: decode a `cognitum_receipt` field
+        // embedded in the response body, if present, into the typed
+        // `MetaLlmReceipt` -- same wire key the SSE path already
+        // recognizes (`stream/openai_events.rs`).
+        let receipt = data
+            .as_object()
+            .and_then(|obj| obj.get("cognitum_receipt"))
+            .and_then(parse_meta_llm_receipt);
+
         let meta = MetaLlmResponseMeta {
             request_id: response_request_id,
             http_status: status.as_u16(),
             protocol_version,
             retry_after_ms: retry_after_header_ms,
             idempotent_replay,
-            receipt: None,
+            receipt,
             warnings: None,
             unknown_headers: None,
         };

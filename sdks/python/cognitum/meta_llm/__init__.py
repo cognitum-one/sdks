@@ -2,9 +2,12 @@
 ``cognitum.meta_llm``.
 
 Issue #58 / M2 start: ``MetaLlmClient`` construction, wire types, and real
-``health()`` / ``whoami()`` / ``models()`` implementations. Streaming
-(§D5), the five protocol operations' HTTP logic, and ADR-0024b routing
-controls are deliberately out of scope -- see follow-up issues.
+``health()`` / ``whoami()`` / ``models()`` implementations.
+
+ADR-0024b D11 migration step 1 (issue #59): routing controls, receipt, and
+read-only usage support. Still out of scope: batches, pods, bench,
+webhooks, guidance, collaboration, evolution, MicroLoRA, flywheel, genome,
+brain, vectors, and conditional hosts (§D5-§D8) -- separate future issues.
 
 Per ADR-0019 §D4, this package depends on ``cognitum.agentic`` and MUST NOT
 be imported by any other product module (``cognitum.meta_proxy``,
@@ -85,6 +88,34 @@ from cognitum.meta_llm.types import (
     ResponsesRequest,
     ResponsesResponse,
 )
+from cognitum.meta_llm.types.money import Money, parse_money
+from cognitum.meta_llm.types.receipt import SafetySummary, parse_meta_llm_receipt
+from cognitum.meta_llm.types.routing import (
+    CacheMode,
+    EscalationStrategy,
+    FallbackPolicy,
+    ModelSelector,
+    ModelSelectorAlias,
+    ModelSelectorAuto,
+    ModelSelectorTier,
+    ModelTier,
+    SafetyMode,
+    SubTenantAttribution,
+    UnsendableRoutingControlsError,
+    assert_sendable_routing_controls,
+)
+from cognitum.meta_llm.types.usage import (
+    BudgetView,
+    CacheStats,
+    InvalidUsageQueryError,
+    UsageBreakdownEntry,
+    UsagePeriodEntry,
+    UsageQuery,
+    UsageSummary,
+    UsageTotals,
+    assert_valid_usage_query,
+    parse_usage_summary,
+)
 
 __all__ = [
     "MetaLlmClient",
@@ -151,4 +182,31 @@ __all__ = [
     "AnthropicMessage",
     "CountTokensRequest",
     "CountTokensResult",
+    # ADR-0024b D11 migration step 1 (issue #59): routing, money, receipt, usage
+    "ModelTier",
+    "ModelSelectorAuto",
+    "ModelSelectorTier",
+    "ModelSelectorAlias",
+    "ModelSelector",
+    "FallbackPolicy",
+    "EscalationStrategy",
+    "CacheMode",
+    "SafetyMode",
+    "SubTenantAttribution",
+    "UnsendableRoutingControlsError",
+    "assert_sendable_routing_controls",
+    "Money",
+    "parse_money",
+    "SafetySummary",
+    "parse_meta_llm_receipt",
+    "CacheStats",
+    "UsageTotals",
+    "BudgetView",
+    "UsageBreakdownEntry",
+    "UsagePeriodEntry",
+    "UsageSummary",
+    "UsageQuery",
+    "InvalidUsageQueryError",
+    "assert_valid_usage_query",
+    "parse_usage_summary",
 ]

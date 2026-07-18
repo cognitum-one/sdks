@@ -5,8 +5,8 @@
  * accumulator over that stream").
  */
 
-import type { ExecutionReceipt } from "../../agentic/index.js";
 import type { ChatCompletionUsage } from "../types/openai.js";
+import type { MetaLlmReceipt } from "../types/receipt.js";
 import type { OpenAiStreamEvent } from "./openai-events.js";
 
 /**
@@ -41,7 +41,7 @@ export class ChatCompletionsStreamAccumulator {
   private toolCallsByIndex = new Map<number, Map<number, { id?: string; name?: string; arguments: string }>>();
   private finishReasonByIndex = new Map<number, string>();
   private usage: ChatCompletionUsage | undefined;
-  private receipt: ExecutionReceipt | undefined;
+  private receipt: MetaLlmReceipt | undefined;
   private done = false;
 
   absorb(envelope: MetaLlmStreamEnvelope<OpenAiStreamEvent>): void {
@@ -89,7 +89,7 @@ export class ChatCompletionsStreamAccumulator {
     toolCallsByChoice: Record<number, Array<{ id?: string; name?: string; arguments: string }>>;
     finishReasonByChoice: Record<number, string>;
     usage?: ChatCompletionUsage;
-    receipt?: ExecutionReceipt;
+    receipt?: MetaLlmReceipt;
     completed: boolean;
   } {
     const contentByChoice: Record<number, string> = {};

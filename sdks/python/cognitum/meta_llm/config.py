@@ -14,6 +14,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
 
+# ADR-0024b §D2's concrete `MetaLlmRoutingControls` shape (issue #59, D11
+# migration step 1). Re-exported here (rather than duplicated) so existing
+# imports of `MetaLlmRoutingControls` from `cognitum.meta_llm.config` keep
+# working unchanged now that the placeholder has a real shape.
+from cognitum.meta_llm.types.routing import MetaLlmRoutingControls
+
 if TYPE_CHECKING:
     import httpx
 
@@ -56,18 +62,13 @@ def _warn_insecure_http_once(base_url: str) -> None:
     )
 
 
-class MetaLlmRoutingControls(dict[str, Any]):
-    """ADR-0024b product-specific routing controls.
-
-    Frozen as an opaque placeholder here -- the concrete shape lands with
-    issue #59 (ADR-0024b: Meta LLM platform resources, routing, and usage).
-    """
-
-
 class MetaLlmSafetyControl(dict[str, Any]):
     """ADR-0024b product-specific safety control.
 
-    See :class:`MetaLlmRoutingControls` for the same issue #59 deferral note.
+    Frozen as an opaque placeholder -- this stays a separate, still-deferred
+    surface from ``MetaLlmRoutingControls`` (whose ``safety: SafetyMode``
+    field is now concrete): richer safety configuration (detector-class
+    selection, thresholds) is out of this pass's scope.
     """
 
 

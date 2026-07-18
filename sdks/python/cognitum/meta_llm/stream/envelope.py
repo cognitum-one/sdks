@@ -11,6 +11,7 @@ from typing import Any, Generic, TypeVar
 
 from cognitum.meta_llm.stream.openai_events import OpenAiStreamEvent
 from cognitum.meta_llm.types.openai import ChatCompletionUsage
+from cognitum.meta_llm.types.receipt import MetaLlmReceipt
 
 E = TypeVar("E")
 
@@ -43,7 +44,7 @@ class ChatCompletionsStreamSnapshot:
     tool_calls_by_choice: dict[int, list[dict[str, str | None]]] = field(default_factory=dict)
     finish_reason_by_choice: dict[int, str] = field(default_factory=dict)
     usage: ChatCompletionUsage | None = None
-    receipt: Any = None
+    receipt: MetaLlmReceipt | None = None
     completed: bool = False
 
 
@@ -63,7 +64,7 @@ class ChatCompletionsStreamAccumulator:
         self._tool_calls_by_index: dict[int, dict[int, dict[str, str | None]]] = {}
         self._finish_reason_by_index: dict[int, str] = {}
         self._usage: ChatCompletionUsage | None = None
-        self._receipt: Any = None
+        self._receipt: MetaLlmReceipt | None = None
         self._done = False
 
     def absorb(self, envelope: MetaLlmStreamEnvelope[OpenAiStreamEvent]) -> None:

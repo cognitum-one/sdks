@@ -1,20 +1,19 @@
 """Result and metadata envelope (ADR-0024a §D4).
 
-Type-only this pass -- the receipt/drift-comparison logic described in
-§D4's "body and headers duplicate receipt fields" paragraph is deferred to
-the follow-up issue that lands ADR-0024b's ``MetaLlmReceipt``.
+The receipt/drift-comparison logic described in §D4's "body and headers
+duplicate receipt fields" paragraph remains deferred (still not implemented
+this pass -- only decoding a receipt already present on the response, not
+comparing it against header/body duplicates), but ``MetaLlmReceipt`` itself
+is now the concrete ADR-0024b §D3 shape (issue #59, D11 migration step 1)
+rather than the earlier ``Any`` placeholder.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar
+from typing import Generic, TypeVar
 
-#: Placeholder for ADR-0024b's ``MetaLlmReceipt``. Kept as ``object`` rather
-#: than a shaped type so callers cannot accidentally treat an absent receipt
-#: as a shaped, empty value (ADR-0024a §D4: "Missing metadata remains
-#: missing").
-MetaLlmReceipt = Any
+from cognitum.meta_llm.types.receipt import MetaLlmReceipt
 
 T = TypeVar("T")
 
