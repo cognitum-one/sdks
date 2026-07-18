@@ -31,6 +31,11 @@
       "types": "./dist/meta-llm/index.d.ts",
       "import": "./dist/meta-llm/index.js",
       "require": "./dist/meta-llm/index.cjs"
+    },
+    "./sse": {
+      "types": "./dist/sse/index.d.ts",
+      "import": "./dist/sse/index.js",
+      "require": "./dist/sse/index.cjs"
     }
   },
   "bin": {

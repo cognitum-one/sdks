@@ -63,3 +63,22 @@ export type {
 
 export type { MetaLlmCallOptions } from "./client.js";
 export { MetaLlmClient } from "./client.js";
+
+export type { MetaLlmStreamEnvelope } from "./stream/envelope.js";
+export { ChatCompletionsStreamAccumulator } from "./stream/envelope.js";
+
+export type {
+  DecodedOpenAiSseEvent,
+  OpenAiContentDeltaEvent,
+  OpenAiDoneEvent,
+  OpenAiFinishReasonEvent,
+  OpenAiReceiptEvent,
+  OpenAiRoleEvent,
+  OpenAiStreamErrorEvent,
+  OpenAiStreamErrorPayload,
+  OpenAiStreamEvent,
+  OpenAiToolCallDeltaEvent,
+  OpenAiUsageEvent,
+  UnknownStreamEvent,
+} from "./stream/openai-events.js";
+export { decodeOpenAiSseEvent } from "./stream/openai-events.js";

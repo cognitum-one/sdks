@@ -148,6 +148,58 @@ interface RequestContext {
 }
 
 /**
+ * ExecutionReceipt / LineageReference type-only stubs (ADR-0028 §D7, §D9).
+ * Tracking issue #56 builds these out further (verification, canonical
+ * bytes, signature checks). This pass only freezes the field shapes.
+ */
+/** Ordered guarantee levels for any artifact/witness/receipt/lineage check (ADR-0028 §D8). */
+type VerificationLevel = "none" | "shape" | "digest" | "cryptographic" | "anchored";
+/** Tagged verification outcome. `valid=true` at `shape` MUST NOT satisfy a `cryptographic` requirement. */
+interface VerificationResult {
+    level: VerificationLevel;
+    valid: boolean;
+    algorithm?: string;
+    keyId?: string;
+    checkedAt: string;
+    subjectDigest?: string;
+    warnings?: string[];
+    failure?: string;
+}
+/** Finality of a single cost observation within a receipt. */
+type CostFinality = "estimate" | "reserved" | "committed" | "provider_reported" | "invoiced";
+/** A single labeled cost observation (ADR-0022 §D6 distinct-fields rule). */
+interface CostObservation {
+    source: string;
+    amount: number;
+    currency: string;
+    finality: CostFinality;
+}
+/** Verifiable common receipt envelope, v1 (ADR-0028 §D7). Type-only stub — issue #56. */
+interface ExecutionReceipt {
+    schema: "cognitum.execution-receipt.v1";
+    receiptId: string;
+    product: string;
+    contractVersion: string;
+    subject: {
+        requestId: string;
+        operationId?: string;
+        tenantHash?: string;
+    };
+    startedAt: string;
+    completedAt?: string;
+    usage?: Record<string, unknown>;
+    costs: CostObservation[];
+    outcome: string;
+    artifactDigests?: string[];
+    lineageRoot?: string;
+    canonicalization?: string;
+    issuer?: string;
+    keyId?: string;
+    signature?: string;
+    verification: VerificationResult;
+}
+
+/**
  * MetaLlmClient construction and deployment ownership (ADR-0024a §D1).
  *
  * Type-only scaffolding plus construction-time validation for issue #58 / M2.
@@ -609,6 +661,185 @@ interface CountTokensResult {
 }
 
 /**
+ * Protocol-agnostic Server-Sent Events (SSE) byte-level parser
+ * (ADR-0024a §D5, ADR-0023 §D8 for the caller-facing time budgets that
+ * wrap this parser — this file itself has no timing logic).
+ *
+ * Pure state machine with NO Meta-LLM (or any other product) knowledge —
+ * this module is reused as-is for Anthropic Messages streaming and
+ * Responses streaming when those land in follow-up work (issue #58
+ * tracks only `chat.completions` streaming this pass). Consumes raw
+ * bytes via {@link SseParser.feed} (arbitrary fragmentation: chunks may
+ * split mid-line, mid-field, or mid-UTF-8 codepoint — bytes are buffered
+ * and only decoded once a complete line's bytes are known, so a split
+ * multi-byte codepoint at a chunk boundary is always safe) and yields
+ * fully-parsed {@link SseEvent}s. Multiple `data:` lines are joined with
+ * `\n` per the SSE spec; comment lines (leading `:`) are dropped; CRLF,
+ * lone CR, and LF line endings are all accepted.
+ *
+ * Bounded-garbage handling (ADR-0024a §D5 "bounded unknown events"):
+ * a single physical line over `maxLineBytes`, one event's joined `data:`
+ * payload over `maxEventBytes`, or unterminated buffered bytes over
+ * `maxBufferedBytes` are all dropped as malformed rather than growing
+ * memory without bound; `maxMalformedEvents` caps how many such drops are
+ * tolerated before {@link SseParser.feed} throws {@link SseParseError} and
+ * the caller must abort the stream.
+ *
+ * Deliberate simplification vs. the full WHATWG EventSource processing
+ * model: the `id`/`retry` fields reset with every dispatched event rather
+ * than persisting as a `last-event-id` across events (SSE reconnection
+ * semantics) — none of the three target protocols (OpenAI, Anthropic,
+ * Responses) rely on client-driven SSE reconnection this pass.
+ */
+/** One fully-parsed, dispatched SSE event (generic — no protocol knowledge). */
+interface SseEvent {
+    /** The `event:` field, if any. `undefined` means the default "message" type per spec. */
+    event?: string;
+    /** All `data:` lines for this event, joined with `\n` (SSE spec). */
+    data: string;
+    /** The `id:` field, if any and not containing a NUL byte. */
+    id?: string;
+    /** The `retry:` field in milliseconds, if any and all-ASCII-digit. */
+    retry?: number;
+}
+
+/**
+ * OpenAI `chat.completions` streaming event types (ADR-0024a §D5): role,
+ * content delta, tool-call fragments, finish reason, trailing usage, the
+ * Cognitum receipt (reusing the frozen `ExecutionReceipt` type from
+ * `../../agentic/index.js`), a terminal wire-level error event, and the
+ * `[DONE]` sentinel. Any recognized-but-not-decoded shape falls back to
+ * {@link UnknownStreamEvent} rather than throwing.
+ *
+ * One raw SSE `data:` payload can decode into *multiple* facets (e.g. one
+ * chunk carrying both a content delta and, on the last chunk, a finish
+ * reason) — {@link decodeOpenAiSseEvent} returns all of them, each
+ * becoming its own {@link import("./envelope.js").MetaLlmStreamEnvelope}
+ * with its own sequence number, preserving per-facet granularity rather
+ * than flattening a chunk into one opaque event.
+ */
+
+interface OpenAiRoleEvent {
+    type: "role";
+    index: number;
+    role: string;
+}
+interface OpenAiContentDeltaEvent {
+    type: "content_delta";
+    index: number;
+    delta: string;
+}
+interface OpenAiToolCallDeltaEvent {
+    type: "tool_call_delta";
+    index: number;
+    toolCallIndex: number;
+    id?: string;
+    functionName?: string;
+    argumentsDelta?: string;
+}
+interface OpenAiFinishReasonEvent {
+    type: "finish_reason";
+    index: number;
+    finishReason: string;
+}
+interface OpenAiUsageEvent {
+    type: "usage";
+    usage: ChatCompletionUsage;
+}
+interface OpenAiReceiptEvent {
+    type: "receipt";
+    receipt: ExecutionReceipt;
+}
+interface OpenAiStreamErrorPayload {
+    message: string;
+    type?: string;
+    code?: string;
+    param?: string;
+}
+/** A wire-level terminal error event embedded in the SSE stream itself (`data: {"error": {...}}`). */
+interface OpenAiStreamErrorEvent {
+    type: "error";
+    error: OpenAiStreamErrorPayload;
+}
+/** The literal `data: [DONE]` sentinel that closes a successful OpenAI chat-completions stream. */
+interface OpenAiDoneEvent {
+    type: "done";
+}
+/** A syntactically valid SSE event whose payload this decoder does not recognize. Never a crash. */
+interface UnknownStreamEvent {
+    type: "unknown";
+    raw: unknown;
+}
+type OpenAiStreamEvent = OpenAiRoleEvent | OpenAiContentDeltaEvent | OpenAiToolCallDeltaEvent | OpenAiFinishReasonEvent | OpenAiUsageEvent | OpenAiReceiptEvent | OpenAiStreamErrorEvent | OpenAiDoneEvent | UnknownStreamEvent;
+interface DecodedOpenAiSseEvent {
+    events: OpenAiStreamEvent[];
+    unknownFields?: Record<string, unknown>;
+}
+/**
+ * Decode one generic {@link SseEvent} into zero or more {@link OpenAiStreamEvent}s.
+ * Never throws — malformed JSON or an unrecognized shape becomes an
+ * {@link UnknownStreamEvent} (ADR-0024a §D5: "Unknown valid events become
+ * `UnknownStreamEvent`").
+ */
+declare function decodeOpenAiSseEvent(raw: SseEvent): DecodedOpenAiSseEvent;
+
+/**
+ * `MetaLlmStreamEnvelope<E>` (ADR-0024a §D5's frozen streaming envelope
+ * shape) plus a small optional text/tool accumulator over a
+ * `chat.completions` event stream (D5 point 2: "an optional text/tool
+ * accumulator over that stream").
+ */
+
+/**
+ * Wraps every parsed stream event with sequencing/provenance metadata.
+ * Frozen shape per ADR-0024a §D5 — do not add fields without an ADR update.
+ */
+interface MetaLlmStreamEnvelope<E> {
+    event: E;
+    /** 1-based order of this event within one logical stream call. */
+    sequence: number;
+    /** ISO-8601 timestamp of when this envelope was produced locally. */
+    receivedAt: string;
+    requestId: string;
+    /** The underlying SSE `event:` field name, if any (OpenAI chat completions does not set one). */
+    rawEventName?: string;
+    /** Fields present on the wire payload that this decoder does not recognize — preserved losslessly. */
+    unknownFields?: Record<string, unknown>;
+}
+/**
+ * Accumulates a `chat.completions` stream's role/content/tool-call/finish/
+ * usage/receipt facets into one final snapshot. Works identically whether
+ * the stream ended successfully or was cut short — the caller absorbs
+ * whatever envelopes were yielded before a terminal error and reads
+ * `snapshot()` for the partial result (ADR-0024a §D5: partial state is
+ * whatever was already delivered through normal iteration, not a
+ * separately-reconstructed value).
+ */
+declare class ChatCompletionsStreamAccumulator {
+    private role;
+    private contentByIndex;
+    private toolCallsByIndex;
+    private finishReasonByIndex;
+    private usage;
+    private receipt;
+    private done;
+    absorb(envelope: MetaLlmStreamEnvelope<OpenAiStreamEvent>): void;
+    snapshot(): {
+        role?: string;
+        contentByChoice: Record<number, string>;
+        toolCallsByChoice: Record<number, Array<{
+            id?: string;
+            name?: string;
+            arguments: string;
+        }>>;
+        finishReasonByChoice: Record<number, string>;
+        usage?: ChatCompletionUsage;
+        receipt?: ExecutionReceipt;
+        completed: boolean;
+    };
+}
+
+/**
  * MetaLlmClient (ADR-0024a). Issue #58 / M2.
  *
  * M2 start (PR #85):
@@ -674,6 +905,17 @@ declare class MetaLlmClient {
          * issue).
          */
         completions: (request: ChatCompletionRequest, options?: MetaLlmCallOptions) => Promise<MetaLlmResult<ChatCompletion>>;
+        /**
+         * `POST /v1/chat/completions` with `stream: true` (ADR-0024a §D5).
+         * Issue #58 / M2 continuation — the first protocol wired onto the
+         * generic SSE parser (`../sse/parser.js`); Anthropic Messages and
+         * Responses streaming are deferred follow-ups that reuse the same
+         * parser. Returns an async generator — iterate with `for await`; it
+         * completes normally only after the OpenAI wire terminal condition
+         * (`[DONE]` or a `finish_reason`) is observed, otherwise it throws a
+         * typed `AgenticError` describing why (see `./stream/chat-completions-stream.js`).
+         */
+        completionsStream: (request: ChatCompletionRequest, options?: MetaLlmCallOptions) => AsyncGenerator<MetaLlmStreamEnvelope<OpenAiStreamEvent>, void, void>;
     };
     /**
      * `POST /v1/completions` (legacy OpenAI completions). Real HTTP call
@@ -728,4 +970,4 @@ declare class MetaLlmClient {
     private getJson;
 }
 
-export { type AnthropicContentBlock, type AnthropicMessage, type AnthropicMessageParam, type AnthropicMessageRequest, type AnthropicToolChoice, type AnthropicToolDefinition, type AnthropicUsage, type ChatCompletion, type ChatCompletionChoice, type ChatCompletionRequest, type ChatCompletionUsage, type ChatContentPart, type ChatMessage, type ChatToolCall, type ChatToolChoice, type ChatToolDefinition, type CountTokensRequest, type CountTokensResult, type EmbeddingDatum, type EmbeddingRequest, type EmbeddingResponse, type EmbeddingUsage, type LegacyCompletion, type LegacyCompletionChoice, type LegacyCompletionRequest, type MetaLlmCallOptions, MetaLlmClient, type MetaLlmClientConfig, type MetaLlmHealth, type MetaLlmModelInfo, type MetaLlmModelList, type MetaLlmReceipt, type MetaLlmResponseMeta, type MetaLlmResult, type MetaLlmRoutingControls, type MetaLlmSafetyControl, type MetaLlmTelemetryEvent, type MetaLlmTelemetryHooks, type MetaLlmTransport, type MetaLlmWhoAmI, type ResolvedMetaLlmClientConfig, type ResponsesOutputItem, type ResponsesRequest, type ResponsesResponse, resolveMetaLlmClientConfig };
+export { type AnthropicContentBlock, type AnthropicMessage, type AnthropicMessageParam, type AnthropicMessageRequest, type AnthropicToolChoice, type AnthropicToolDefinition, type AnthropicUsage, type ChatCompletion, type ChatCompletionChoice, type ChatCompletionRequest, type ChatCompletionUsage, ChatCompletionsStreamAccumulator, type ChatContentPart, type ChatMessage, type ChatToolCall, type ChatToolChoice, type ChatToolDefinition, type CountTokensRequest, type CountTokensResult, type DecodedOpenAiSseEvent, type EmbeddingDatum, type EmbeddingRequest, type EmbeddingResponse, type EmbeddingUsage, type LegacyCompletion, type LegacyCompletionChoice, type LegacyCompletionRequest, type MetaLlmCallOptions, MetaLlmClient, type MetaLlmClientConfig, type MetaLlmHealth, type MetaLlmModelInfo, type MetaLlmModelList, type MetaLlmReceipt, type MetaLlmResponseMeta, type MetaLlmResult, type MetaLlmRoutingControls, type MetaLlmSafetyControl, type MetaLlmStreamEnvelope, type MetaLlmTelemetryEvent, type MetaLlmTelemetryHooks, type MetaLlmTransport, type MetaLlmWhoAmI, type OpenAiContentDeltaEvent, type OpenAiDoneEvent, type OpenAiFinishReasonEvent, type OpenAiReceiptEvent, type OpenAiRoleEvent, type OpenAiStreamErrorEvent, type OpenAiStreamErrorPayload, type OpenAiStreamEvent, type OpenAiToolCallDeltaEvent, type OpenAiUsageEvent, type ResolvedMetaLlmClientConfig, type ResponsesOutputItem, type ResponsesRequest, type ResponsesResponse, type UnknownStreamEvent, decodeOpenAiSseEvent, resolveMetaLlmClientConfig };

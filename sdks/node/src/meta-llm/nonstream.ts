@@ -39,7 +39,13 @@ const PRODUCT = "meta-llm";
  */
 const INFERENCE_SCOPE = "meta-llm.inference";
 
-function newRequestId(): string {
+/**
+ * Exported (rather than kept module-private) so `./stream/chat-completions-stream.js`
+ * can generate request IDs the same way, without duplicating this logic —
+ * streaming reuses this module's credential/auth helpers verbatim (issue #58,
+ * D5 streaming pass).
+ */
+export function newRequestId(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `req_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -54,7 +60,8 @@ export interface NonstreamDeps {
   telemetry?: MetaLlmTelemetryHooks;
 }
 
-function applyAuth(headers: Record<string, string>, credential: Credential): void {
+/** Exported for reuse by `./stream/chat-completions-stream.js` (issue #58 D5 streaming pass). */
+export function applyAuth(headers: Record<string, string>, credential: Credential): void {
   // The SDK sends exactly one contracted placement per operation
   // (ADR-0024a §D8) — same rule as `client.ts`'s GET path.
   if (credential.scheme.toLowerCase() === "bearer") {
@@ -64,7 +71,8 @@ function applyAuth(headers: Record<string, string>, credential: Credential): voi
   }
 }
 
-async function requireCredential(deps: NonstreamDeps, operation: string): Promise<Credential> {
+/** Exported for reuse by `./stream/chat-completions-stream.js` (issue #58 D5 streaming pass). */
+export async function requireCredential(deps: NonstreamDeps, operation: string): Promise<Credential> {
   const provider = deps.credentialProvider;
   if (!provider) {
     throw new AgenticError(

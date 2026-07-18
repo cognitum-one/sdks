@@ -41,6 +41,9 @@ import type { MetaLlmHealth, MetaLlmModelList, MetaLlmWhoAmI } from "./discovery
 import type { MetaLlmResult, MetaLlmResponseMeta } from "./envelope.js";
 import { mapMetaLlmHttpError } from "./http-errors.js";
 import { postJsonIdempotent, type NonstreamDeps } from "./nonstream.js";
+import { chatCompletionsStreamImpl } from "./stream/chat-completions-stream.js";
+import type { MetaLlmStreamEnvelope } from "./stream/envelope.js";
+import type { OpenAiStreamEvent } from "./stream/openai-events.js";
 import type {
   AnthropicMessage,
   AnthropicMessageRequest,
@@ -166,6 +169,22 @@ export class MetaLlmClient {
         "chat.completions",
         request,
       ),
+
+    /**
+     * `POST /v1/chat/completions` with `stream: true` (ADR-0024a §D5).
+     * Issue #58 / M2 continuation — the first protocol wired onto the
+     * generic SSE parser (`../sse/parser.js`); Anthropic Messages and
+     * Responses streaming are deferred follow-ups that reuse the same
+     * parser. Returns an async generator — iterate with `for await`; it
+     * completes normally only after the OpenAI wire terminal condition
+     * (`[DONE]` or a `finish_reason`) is observed, otherwise it throws a
+     * typed `AgenticError` describing why (see `./stream/chat-completions-stream.js`).
+     */
+    completionsStream: (
+      request: ChatCompletionRequest,
+      options?: MetaLlmCallOptions,
+    ): AsyncGenerator<MetaLlmStreamEnvelope<OpenAiStreamEvent>, void, void> =>
+      chatCompletionsStreamImpl(this.nonstreamDeps(options), request, options?.requestContext),
   };
 
   /**
