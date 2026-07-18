@@ -55,6 +55,9 @@ export {
   DEFAULT_API_KEY_ENV_VAR,
 } from "./static-api-key-provider.js";
 
+export type { D12Category } from "./sentinel.js";
+export { SentinelSecretRedactor } from "./sentinel.js";
+
 export type {
   OnUnknownEstimate,
   BudgetPolicy,

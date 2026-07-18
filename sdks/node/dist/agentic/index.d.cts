@@ -273,6 +273,50 @@ declare class StaticApiKeyCredentialProvider implements CredentialProvider {
 }
 
 /**
+ * Concrete `SecretRedactor` implementation — the sentinel scan defined by
+ * ADR-0028 §D13, driven by ADR-0022 §D10 classification and the D12
+ * category list. Closes issue #54.
+ *
+ * Faithful to D13's exact mechanism (see docs/adr/0028-...-redaction.md):
+ *
+ *   1. A key-name check against the D12 category list runs first — a value
+ *      can be sensitive purely because of the field it lives in, regardless
+ *      of shape.
+ *   2. Fixed-format matchers (bearer token, JWT, PEM private-key block,
+ *      cloud-provider access-key pattern, pre-signed URL query parameter)
+ *      run next.
+ *   3. A Shannon-entropy fallback over a contiguous token of >= 20 characters
+ *      runs ONLY if no fixed-format matcher hit — a match is classified by
+ *      pattern first, entropy only as a fallback. The threshold is scoped to
+ *      the token's actual character set rather than one global cutoff: a
+ *      16-symbol hex-only token (max possible entropy log2(16) = 4.0 bits/
+ *      char) uses a 3.0 bits/char threshold, since real hex-encoded secrets
+ *      never approach the unreachable theoretical max (empirically 3.4-3.9
+ *      bits/char for 32/64-char hex tokens); a broader alphanumeric/
+ *      base64-like token keeps the original 4.0 bits/char threshold. This is
+ *      the same charset-scoped-threshold technique used by detect-secrets /
+ *      truffleHog.
+ *   4. Traversal is a bounded-depth-8 DFS: a value reached at depth 9 or
+ *      deeper is replaced with `[max-depth-exceeded]` without further
+ *      recursion. Cycles are broken by an object-identity ancestor set and
+ *      replaced with `[cyclic-reference]`. Matches are replaced with
+ *      `[redacted:<category>]`, where `<category>` is a D12 category name,
+ *      or `secret-pattern` / `high-entropy` for value-only matches.
+ */
+
+/** D12/D13 category list consulted by the key-name check. */
+type D12Category = "prompts" | "messages" | "tool-arguments-results" | "source" | "repository-urls" | "patches" | "credentials" | "environment-values" | "webhook-bodies" | "signed-urls" | "raw-tenant-user-identifiers";
+/**
+ * Concrete `SecretRedactor` (ADR-0022 §D1/§D10) implementing the exact
+ * sentinel-scan mechanism specified by ADR-0028 §D13.
+ */
+declare class SentinelSecretRedactor implements SecretRedactor {
+    #private;
+    classify(fieldName: string, value: unknown): SecretClassification;
+    redact<T>(value: T): T;
+}
+
+/**
  * Shared per-call request context (ADR-0019 §D5) and budget policy
  * (ADR-0022 §D6). Type-only scaffolding — issue #52 / M1.
  */
@@ -455,4 +499,4 @@ interface LineageReference {
     verification: VerificationResult;
 }
 
-export { AgenticError, type AgenticErrorKind, type BudgetPolicy, type CancellationReason, type CancellationToken, type CapabilitySet, type CapabilitySource, type CostFinality, type CostObservation, type Credential, type CredentialAuthority, type CredentialProvider, type CredentialRequest, DEFAULT_API_KEY_ENV_VAR, DEFAULT_RETRY_POLICY, type EventStreamOptions, type ExecutionReceipt, type IdempotencyBindingV1, type LineageReference, type OnUnknownEstimate, type OperationEvent, type OperationHandle, type OperationRetryClass, type OperationSnapshot, type OperationState, type Page, type PageRequest, RedactedSecret, type RequestContext, type RetryPolicy, type SecretClassification, type SecretRedactor, StaticApiKeyCredentialProvider, type StaticApiKeyCredentialProviderOptions, type TenantContext, type TimeBudget, UnsupportedCapabilityError, type VerificationLevel, type VerificationResult, type WaitOptions, equalJitterDelayMs };
+export { AgenticError, type AgenticErrorKind, type BudgetPolicy, type CancellationReason, type CancellationToken, type CapabilitySet, type CapabilitySource, type CostFinality, type CostObservation, type Credential, type CredentialAuthority, type CredentialProvider, type CredentialRequest, type D12Category, DEFAULT_API_KEY_ENV_VAR, DEFAULT_RETRY_POLICY, type EventStreamOptions, type ExecutionReceipt, type IdempotencyBindingV1, type LineageReference, type OnUnknownEstimate, type OperationEvent, type OperationHandle, type OperationRetryClass, type OperationSnapshot, type OperationState, type Page, type PageRequest, RedactedSecret, type RequestContext, type RetryPolicy, type SecretClassification, type SecretRedactor, SentinelSecretRedactor, StaticApiKeyCredentialProvider, type StaticApiKeyCredentialProviderOptions, type TenantContext, type TimeBudget, UnsupportedCapabilityError, type VerificationLevel, type VerificationResult, type WaitOptions, equalJitterDelayMs };
