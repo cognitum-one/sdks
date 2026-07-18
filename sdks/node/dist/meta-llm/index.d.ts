@@ -147,24 +147,6 @@ interface RequestContext {
     tracingCarrier?: Record<string, string>;
 }
 
-/**
- * ExecutionReceipt / LineageReference type-only stubs (ADR-0028 §D7, §D9).
- * Tracking issue #56 builds these out further (verification, canonical
- * bytes, signature checks). This pass only freezes the field shapes.
- */
-/** Ordered guarantee levels for any artifact/witness/receipt/lineage check (ADR-0028 §D8). */
-type VerificationLevel = "none" | "shape" | "digest" | "cryptographic" | "anchored";
-/** Tagged verification outcome. `valid=true` at `shape` MUST NOT satisfy a `cryptographic` requirement. */
-interface VerificationResult {
-    level: VerificationLevel;
-    valid: boolean;
-    algorithm?: string;
-    keyId?: string;
-    checkedAt: string;
-    subjectDigest?: string;
-    warnings?: string[];
-    failure?: string;
-}
 /** Finality of a single cost observation within a receipt. */
 type CostFinality = "estimate" | "reserved" | "committed" | "provider_reported" | "invoiced";
 /** A single labeled cost observation (ADR-0022 §D6 distinct-fields rule). */
@@ -174,30 +156,77 @@ interface CostObservation {
     currency: string;
     finality: CostFinality;
 }
-/** Verifiable common receipt envelope, v1 (ADR-0028 §D7). Type-only stub — issue #56. */
-interface ExecutionReceipt {
-    schema: "cognitum.execution-receipt.v1";
-    receiptId: string;
-    product: string;
-    contractVersion: string;
-    subject: {
-        requestId: string;
-        operationId?: string;
-        tenantHash?: string;
-    };
-    startedAt: string;
-    completedAt?: string;
-    usage?: Record<string, unknown>;
-    costs: CostObservation[];
-    outcome: string;
-    artifactDigests?: string[];
-    lineageRoot?: string;
-    canonicalization?: string;
-    issuer?: string;
-    keyId?: string;
-    signature?: string;
-    verification: VerificationResult;
+
+/**
+ * ADR-0024b §D2: routing types and precedence. Issue #59, D11 migration
+ * step 1 ("Release routing receipt and usage read-only support after
+ * ADR-0024a serving").
+ *
+ * `ModelSelector` deliberately has NO escape hatch for a raw provider model
+ * ID — `auto`, a `ModelTier`, or a contract-declared alias string are the
+ * only three shapes the audited resolver accepts; anything else is rejected
+ * server-side as `model_not_found` (§D2). This is a deliberate rejection,
+ * not an oversight, so no fourth "raw model id" variant is added here.
+ *
+ * Unknown values RECEIVED from the server (e.g. a `resolved_tier` that
+ * predates this SDK's enum) must be preserved rather than dropped — see
+ * `../types/receipt.js`'s `ReceiptModelTier`/`ReceiptCacheResult`, which
+ * widen the known union with `(string & {})` so an unrecognized wire value
+ * still round-trips as a plain string instead of being coerced away.
+ *
+ * Values the SDK *sends*, by contrast, are validated against the closed set
+ * at request time via `assertSendableRoutingControls` — §D2: "stable
+ * methods cannot send them until capabilities declare support."
+ *
+ * Body controls win over `X-Cognitum-*` headers (§D2) — this SDK never
+ * exposes a generic header-override surface for routing, safety, auth,
+ * request ID, idempotency, trace, host, or content-length fields (see
+ * `../nonstream.ts`/`../client.ts`: headers are built internally from typed
+ * fields only), so there is no header path these controls could lose to.
+ */
+type ModelTier = "low" | "mid" | "high";
+type ModelSelector = {
+    readonly kind: "auto";
+} | {
+    readonly kind: "tier";
+    readonly tier: ModelTier;
+} | {
+    readonly kind: "contract_declared_alias";
+    readonly alias: string;
+};
+type FallbackPolicy = "fail_fast" | "best_effort";
+type EscalationStrategy = "stream_oneshot" | "post_hoc" | "buffered" | "inflight";
+type CacheMode = "disabled" | "exact" | "semantic";
+type SafetyMode = "block" | "warn" | "redact";
+/**
+ * Opaque, sanitized attribution metadata (ADR-0024b §D2). Included in
+ * operation/idempotency metadata where contracted, but never treated as
+ * tenant, budget, rate-limit, or resource-owner authority.
+ */
+type SubTenantAttribution = string;
+/** ADR-0024b §D2's `MetaLlmRoutingControls`. */
+interface MetaLlmRoutingControls {
+    model?: ModelSelector;
+    minTier?: ModelTier;
+    maxTier?: ModelTier;
+    fallbackPolicy?: FallbackPolicy;
+    escalation?: EscalationStrategy;
+    cache?: CacheMode;
+    safety?: SafetyMode;
+    subTenantId?: SubTenantAttribution;
 }
+/** Thrown by `assertSendableRoutingControls` — never thrown by response parsing. */
+declare class UnsendableRoutingControlsError extends Error {
+    constructor(message: string);
+}
+/**
+ * Validates a caller-supplied `MetaLlmRoutingControls` immediately before it
+ * is serialized onto the wire. Throws rather than silently sending an
+ * unrecognized enum member or a raw provider model ID. Never called on data
+ * received from the server — received unknown values are preserved, not
+ * rejected (see `../types/receipt.js`).
+ */
+declare function assertSendableRoutingControls(controls: MetaLlmRoutingControls | undefined): void;
 
 /**
  * MetaLlmClient construction and deployment ownership (ADR-0024a §D1).
@@ -208,20 +237,11 @@ interface ExecutionReceipt {
  */
 
 /**
- * ADR-0024b product-specific routing controls. Frozen as an opaque
- * placeholder here — the concrete shape lands with issue #59
- * (ADR-0024b: Meta LLM platform resources, routing, and usage). A generic
- * caller override MUST NOT be able to conflict with the eventual typed
- * fields (ADR-0024a §D3), so this stays a nominal, intentionally-narrow
- * record rather than `Record<string, unknown>` reused elsewhere.
- */
-interface MetaLlmRoutingControls {
-    readonly __brand?: "MetaLlmRoutingControls";
-    [key: string]: unknown;
-}
-/**
  * ADR-0024b product-specific safety control. Frozen as an opaque placeholder
- * — see {@link MetaLlmRoutingControls} for the same issue #59 deferral note.
+ * — this stays a separate, still-deferred surface from `MetaLlmRoutingControls`
+ * (whose `safety: SafetyMode` field is now concrete): richer safety
+ * configuration (detector-class selection, thresholds) is out of this
+ * pass's scope.
  */
 interface MetaLlmSafetyControl {
     readonly __brand?: "MetaLlmSafetyControl";
@@ -290,18 +310,118 @@ interface ResolvedMetaLlmClientConfig extends MetaLlmClientConfig {
 declare function resolveMetaLlmClientConfig(config: MetaLlmClientConfig): ResolvedMetaLlmClientConfig;
 
 /**
- * Result and metadata envelope (ADR-0024a §D4). Type-only this pass — the
- * receipt/drift-comparison logic described in §D4's "body and headers
- * duplicate receipt fields" paragraph is deferred to the follow-up issue
- * that lands ADR-0024b's `MetaLlmReceipt`.
+ * ADR-0028's `Money`: an exact decimal amount + ISO-4217 currency, decoded
+ * from wire USD decimal values so cost/price/savings fields never enter the
+ * public domain model as binary floating point (ADR-0024b §D3: "Wire
+ * fields such as current USD price values decode into ADR-0028 decimal
+ * `Money`; they never enter the public domain model as binary floating
+ * point").
+ *
+ * No `Money`/decimal type exists yet elsewhere in this SDK (checked
+ * `../../agentic/receipts.ts`'s `CostObservation.amount`, which is still a
+ * plain `number` from the earlier ADR-0028 receipt/lineage stub — that is
+ * an existing gap, out of scope to fix here, not something this type
+ * inherits). This is a minimal string-backed decimal wrapper rather than a
+ * new bignum/decimal dependency — the SDK does not otherwise depend on one,
+ * and a decimal string is the only representation that cannot silently
+ * lose precision at the JS/TS layer.
+ *
+ * Deliberately no arithmetic is provided here — this type exists to
+ * prevent accidental floating-point ingestion of money values, not to be a
+ * money-math library. Callers needing arithmetic should parse `amount`
+ * with a decimal library of their own choosing.
  */
+interface Money {
+    /** Exact decimal string, e.g. `"0.0123"`. Never a `number`. */
+    readonly amount: string;
+    /** ISO-4217 currency code, e.g. `"USD"`. */
+    readonly currency: string;
+}
 /**
- * Placeholder for ADR-0024b's `MetaLlmReceipt`. Kept as `unknown` rather than
- * `Record<string, unknown>` so callers cannot accidentally treat an absent
- * receipt as a shaped, empty object (ADR-0024a §D4: "Missing metadata
- * remains missing").
+ * Decode a wire money value into a {@link Money}. Accepts `amount` as
+ * either a decimal string (preferred — exact) or a JSON number (tolerated;
+ * a JSON number has already lost the ability to represent arbitrary
+ * decimal precision at the `JSON.parse` boundary, but this decoder
+ * performs no further floating-point arithmetic on it — it is converted
+ * with `String()` only, never rounded or rescaled). Returns `undefined`
+ * for a missing or malformed value rather than fabricating a zero amount.
  */
-type MetaLlmReceipt = unknown;
+declare function parseMoney(raw: unknown): Money | undefined;
+
+/**
+ * ADR-0024b §D3's `MetaLlmReceipt`. Replaces the `unknown` placeholder that
+ * shipped with ADR-0024a's envelope (`../envelope.ts`) — this is the
+ * concrete shape issue #59 reserved that placeholder for.
+ *
+ * Every field here is server-authoritative evidence, not something this
+ * SDK computes or backfills — a missing cost/price/savings field stays
+ * missing rather than being reconstructed from token counts (§D3:
+ * "Missing cost is not reconstructed from tokens"). Parsing never throws:
+ * an unrecognized shape yields `undefined` (for the whole receipt) or a
+ * preserved-but-untyped `raw` entry (for individual unknown fields), never
+ * a thrown error — response parsing must not reject evidence just because
+ * this SDK's enum set has not caught up yet (§D2).
+ */
+
+/**
+ * `resolved_tier` can widen beyond this SDK's known `ModelTier` set as the
+ * server evolves — the value is preserved as a plain string rather than
+ * dropped or coerced (§D2: "Unknown received values are preserved").
+ */
+type ReceiptModelTier = ModelTier | (string & {});
+/** Same unknown-preserving treatment as {@link ReceiptModelTier}, for `cache_result`. */
+type ReceiptCacheResult = "hit" | "miss" | "bypass" | (string & {});
+/**
+ * Only contract-safe detector classes and counts are exposed here (§D4:
+ * "Warn and redact expose only contract-safe detector classes and counts.
+ * Prompts, matches, secrets, and unredacted content are excluded").
+ */
+interface SafetySummary {
+    mode?: string;
+    detectorClasses?: string[];
+    blocked?: boolean;
+    /** Unrecognized fields from the server response, preserved verbatim. */
+    raw?: Record<string, unknown>;
+}
+/** ADR-0024b §D3's `MetaLlmReceipt`. */
+interface MetaLlmReceipt {
+    requestId: string;
+    resolvedTier?: ReceiptModelTier;
+    resolvedModel?: string;
+    escalated?: boolean;
+    capDegraded?: boolean;
+    routingReason?: string;
+    price?: Money;
+    cacheResult?: ReceiptCacheResult;
+    cacheSavings?: Money;
+    promptCacheSavings?: Money;
+    fallbackUsed?: boolean;
+    breakerCounts?: Record<string, number>;
+    subTenantId?: string;
+    safetySummary?: SafetySummary;
+    usage?: Record<string, unknown>;
+    costs: CostObservation[];
+    /** Fields present on the wire this decoder does not recognize, preserved verbatim (never dropped). */
+    raw?: Record<string, unknown>;
+}
+/**
+ * Parse a raw wire `cognitum_receipt` payload into a typed
+ * {@link MetaLlmReceipt}. Returns `undefined` for a missing/malformed
+ * receipt rather than a shaped empty object (ADR-0024a §D4: "Missing
+ * metadata remains missing").
+ */
+declare function parseMetaLlmReceipt(raw: unknown): MetaLlmReceipt | undefined;
+
+/**
+ * Result and metadata envelope (ADR-0024a §D4). The receipt/drift-
+ * comparison logic described in §D4's "body and headers duplicate receipt
+ * fields" paragraph remains deferred (still not implemented this pass —
+ * only decoding a receipt already present on the response, not comparing
+ * it against header/body duplicates), but `MetaLlmReceipt` itself is now
+ * the concrete ADR-0024b §D3 shape (issue #59, D11 migration step 1)
+ * rather than the earlier `unknown` placeholder.
+ */
+
 /** Per-response metadata carried alongside every {@link MetaLlmResult} (ADR-0024a §D4). */
 interface MetaLlmResponseMeta {
     requestId: string;
@@ -371,7 +491,15 @@ interface MetaLlmWhoAmI {
  * implements the actual HTTP call logic for these operations owns the
  * snake_case <-> camelCase mapping; no such mapping exists yet since this
  * pass ships types only.
+ *
+ * `routingControls` (ADR-0024b §D2, issue #59) is added to
+ * `ChatCompletionRequest`, `LegacyCompletionRequest`, and `ResponsesRequest`
+ * — the same three protocol request shapes ADR-0024b's issue names,
+ * alongside `AnthropicMessageRequest` in `./anthropic.ts`. `EmbeddingRequest`
+ * deliberately does NOT get this field: it is out of ADR-0024b D11 step 1's
+ * scope.
  */
+
 /** A single chat message. Content may be plain text or a multi-part array. */
 interface ChatMessage {
     role: "system" | "user" | "assistant" | "tool" | "developer";
@@ -433,6 +561,8 @@ interface ChatCompletionRequest {
         type: "text" | "json_object";
     };
     seed?: number;
+    /** ADR-0024b §D2. Body controls win over any `X-Cognitum-*` header. */
+    routingControls?: MetaLlmRoutingControls;
 }
 interface ChatCompletionUsage {
     promptTokens: number;
@@ -472,6 +602,8 @@ interface LegacyCompletionRequest {
     bestOf?: number;
     logitBias?: Record<string, number>;
     user?: string;
+    /** ADR-0024b §D2. Body controls win over any `X-Cognitum-*` header. */
+    routingControls?: MetaLlmRoutingControls;
 }
 interface LegacyCompletionChoice {
     text: string;
@@ -522,6 +654,8 @@ interface ResponsesRequest {
     tools?: ChatToolDefinition[];
     toolChoice?: ChatToolChoice;
     metadata?: Record<string, string>;
+    /** ADR-0024b §D2. Body controls win over any `X-Cognitum-*` header. */
+    routingControls?: MetaLlmRoutingControls;
 }
 /** `POST /v1/responses` response. */
 interface ResponsesResponse {
@@ -574,7 +708,12 @@ interface EmbeddingResponse {
  * Field names here are idiomatic camelCase; the wire uses snake_case
  * (`max_tokens`, `stop_sequences`, ...). See `./openai.ts` for the same
  * mapping note — the follow-up HTTP-logic issue owns the conversion.
+ *
+ * `routingControls` (ADR-0024b §D2, issue #59) is added to
+ * `AnthropicMessageRequest` — see `./openai.ts`'s module doc for the full
+ * list of the four request shapes this field lands on.
  */
+
 type AnthropicContentBlock = {
     type: "text";
     text: string;
@@ -629,6 +768,8 @@ interface AnthropicMessageRequest {
     metadata?: {
         userId?: string;
     };
+    /** ADR-0024b §D2. Body controls win over any `X-Cognitum-*` header. */
+    routingControls?: MetaLlmRoutingControls;
 }
 interface AnthropicUsage {
     inputTokens: number;
@@ -659,6 +800,93 @@ interface CountTokensRequest {
 interface CountTokensResult {
     inputTokens: number;
 }
+
+/**
+ * ADR-0024b §D3's `UsageSummary`/`BudgetView`, plus the bounded query the
+ * read-only `client.usage()` method (`../client.ts`) accepts.
+ *
+ * Usage is strictly authenticated-account scoped (§D3) — every query is
+ * bound to the caller's own credential; there is no cross-tenant or
+ * cross-account parameter anywhere in {@link UsageQuery}. An empty
+ * `UsageSummary` is not reinterpreted as "no usage anywhere" vs "this
+ * account genuinely has none" (§D3) — `client.usage()` returns whatever
+ * the server reports as-is, with no speculative fallback logic layered on
+ * top.
+ */
+
+interface CacheStats {
+    hitRate?: number;
+    savings?: Money;
+    raw?: Record<string, unknown>;
+}
+interface UsageTotals {
+    requests?: number;
+    promptTokens?: number;
+    completionTokens?: number;
+    totalTokens?: number;
+    cost?: Money;
+    raw?: Record<string, unknown>;
+}
+/**
+ * Plan degradation and reset information are preserved as reported (§D4) —
+ * this SDK never recomputes `status`/`headroom` from the other fields.
+ */
+interface BudgetView {
+    serving?: Money;
+    hardLimit?: Money;
+    committed?: Money;
+    reserved?: Money;
+    headroom?: Money;
+    status?: string;
+    resetsAt?: string;
+    raw?: Record<string, unknown>;
+}
+interface UsageBreakdownEntry {
+    requests?: number;
+    cost?: Money;
+    raw?: Record<string, unknown>;
+}
+interface UsagePeriodEntry extends UsageBreakdownEntry {
+    period: string;
+}
+/** ADR-0024b §D3's `UsageSummary`. */
+interface UsageSummary {
+    totals: UsageTotals;
+    tierMix?: Record<string, number>;
+    escalationRate?: number;
+    cache?: CacheStats;
+    fallbackRate?: number;
+    emptyBilledRate?: number;
+    byModel?: Record<string, UsageBreakdownEntry>;
+    byProvider?: Record<string, UsageBreakdownEntry>;
+    byPeriod?: UsagePeriodEntry[];
+    budget?: BudgetView;
+    /** Fields present on the wire this decoder does not recognize, preserved verbatim (never dropped). */
+    raw?: Record<string, unknown>;
+}
+/** Bounded `YYYY-MM` query window plus optional grouping (ADR-0024b §D3). */
+interface UsageQuery {
+    /** Inclusive `YYYY-MM` start of the query range. */
+    from: string;
+    /** Inclusive `YYYY-MM` end of the query range. */
+    to: string;
+    model?: string;
+    provider?: string;
+    groupBy?: "model" | "provider" | "period";
+}
+declare class InvalidUsageQueryError extends Error {
+    constructor(message: string);
+}
+/** Validates the bounded `YYYY-MM` range required by §D3 before any request is sent. */
+declare function assertValidUsageQuery(query: UsageQuery): void;
+/**
+ * Parse a raw `/v1/usage` JSON body into a typed {@link UsageSummary}.
+ * Never throws — an entirely empty/malformed body decodes to an
+ * `UsageSummary` with empty `totals` rather than an error, since an empty
+ * result is itself meaningful account-scoped evidence (§D3), not a parse
+ * failure.
+ */
+declare function parseUsageSummary(raw: unknown): UsageSummary;
 
 /**
  * Protocol-agnostic Server-Sent Events (SSE) byte-level parser
@@ -706,10 +934,15 @@ interface SseEvent {
 /**
  * OpenAI `chat.completions` streaming event types (ADR-0024a §D5): role,
  * content delta, tool-call fragments, finish reason, trailing usage, the
- * Cognitum receipt (reusing the frozen `ExecutionReceipt` type from
- * `../../agentic/index.js`), a terminal wire-level error event, and the
- * `[DONE]` sentinel. Any recognized-but-not-decoded shape falls back to
+ * Cognitum receipt, a terminal wire-level error event, and the `[DONE]`
+ * sentinel. Any recognized-but-not-decoded shape falls back to
  * {@link UnknownStreamEvent} rather than throwing.
+ *
+ * The receipt facet (`OpenAiReceiptEvent`) now carries the concrete
+ * ADR-0024b §D3 `MetaLlmReceipt` shape (issue #59, D11 migration step 1)
+ * rather than the earlier generic ADR-0028 `ExecutionReceipt` stub — this
+ * is the "receipt field ... already anticipated" slot the streaming pass
+ * (PR #88) reserved for it.
  *
  * One raw SSE `data:` payload can decode into *multiple* facets (e.g. one
  * chunk carrying both a content delta and, on the last chunk, a finish
@@ -748,7 +981,7 @@ interface OpenAiUsageEvent {
 }
 interface OpenAiReceiptEvent {
     type: "receipt";
-    receipt: ExecutionReceipt;
+    receipt: MetaLlmReceipt;
 }
 interface OpenAiStreamErrorPayload {
     message: string;
@@ -834,7 +1067,7 @@ declare class ChatCompletionsStreamAccumulator {
         }>>;
         finishReasonByChoice: Record<number, string>;
         usage?: ChatCompletionUsage;
-        receipt?: ExecutionReceipt;
+        receipt?: MetaLlmReceipt;
         completed: boolean;
     };
 }
@@ -860,8 +1093,16 @@ declare class ChatCompletionsStreamAccumulator {
  * and `messages.countTokens` — reusing `./nonstream.js`'s
  * `postJsonIdempotent` verbatim rather than a per-operation reimplementation.
  *
- * Explicitly out of scope this pass (see PR description): streaming
- * (§D5) and ADR-0024b routing controls (issue #59).
+ * ADR-0024b D11 migration step 1 (issue #59): `MetaLlmRoutingControls` is
+ * now the concrete §D2 shape and lands as an optional field on
+ * `chat.completions`/`messages.create`/`completions`/`responses` requests
+ * (see `./types/openai.js`/`./types/anthropic.js`); `client.usage()` is the
+ * new read-only, authenticated-account-scoped §D3 endpoint; and every
+ * nonstream/stream response now decodes a `MetaLlmReceipt` when the server
+ * includes one. Explicitly still out of scope: batches, pods, bench,
+ * webhooks, guidance, collaboration, evolution, MicroLoRA, flywheel,
+ * genome, brain, vectors, and conditional hosts (§D5-§D8) — separate
+ * future issues per §D11 steps 2-4.
  */
 
 /** Options accepted by every operation method. */
@@ -883,6 +1124,17 @@ declare class MetaLlmClient {
     models(options?: MetaLlmCallOptions): Promise<MetaLlmResult<MetaLlmModelList>>;
     /** Authenticated account and credential type only (ADR-0024a §D1). */
     whoami(options?: MetaLlmCallOptions): Promise<MetaLlmResult<MetaLlmWhoAmI>>;
+    /**
+     * `GET /v1/usage` (ADR-0024b §D1's `client.usage`, D11 migration step 1).
+     * Strictly authenticated-account scoped — every query is bound to the
+     * caller's own credential; there is no parameter that can select another
+     * account's usage. Uses the contract's bounded `YYYY-MM` range plus
+     * optional `model`/`provider`/`groupBy` grouping (§D3). An empty result
+     * is returned exactly as reported — never reinterpreted as "no usage
+     * anywhere" vs. "this account genuinely has none" (§D3: no speculative
+     * fallback logic is layered on top).
+     */
+    usage(query: UsageQuery, options?: MetaLlmCallOptions): Promise<MetaLlmResult<UsageSummary>>;
     /**
      * Versioned behavior safe for this caller, from the static compatibility
      * snapshot (no I/O — ADR-0024a §D9 gate #3 is not yet published). Unknown
@@ -970,4 +1222,4 @@ declare class MetaLlmClient {
     private getJson;
 }
 
-export { type AnthropicContentBlock, type AnthropicMessage, type AnthropicMessageParam, type AnthropicMessageRequest, type AnthropicToolChoice, type AnthropicToolDefinition, type AnthropicUsage, type ChatCompletion, type ChatCompletionChoice, type ChatCompletionRequest, type ChatCompletionUsage, ChatCompletionsStreamAccumulator, type ChatContentPart, type ChatMessage, type ChatToolCall, type ChatToolChoice, type ChatToolDefinition, type CountTokensRequest, type CountTokensResult, type DecodedOpenAiSseEvent, type EmbeddingDatum, type EmbeddingRequest, type EmbeddingResponse, type EmbeddingUsage, type LegacyCompletion, type LegacyCompletionChoice, type LegacyCompletionRequest, type MetaLlmCallOptions, MetaLlmClient, type MetaLlmClientConfig, type MetaLlmHealth, type MetaLlmModelInfo, type MetaLlmModelList, type MetaLlmReceipt, type MetaLlmResponseMeta, type MetaLlmResult, type MetaLlmRoutingControls, type MetaLlmSafetyControl, type MetaLlmStreamEnvelope, type MetaLlmTelemetryEvent, type MetaLlmTelemetryHooks, type MetaLlmTransport, type MetaLlmWhoAmI, type OpenAiContentDeltaEvent, type OpenAiDoneEvent, type OpenAiFinishReasonEvent, type OpenAiReceiptEvent, type OpenAiRoleEvent, type OpenAiStreamErrorEvent, type OpenAiStreamErrorPayload, type OpenAiStreamEvent, type OpenAiToolCallDeltaEvent, type OpenAiUsageEvent, type ResolvedMetaLlmClientConfig, type ResponsesOutputItem, type ResponsesRequest, type ResponsesResponse, type UnknownStreamEvent, decodeOpenAiSseEvent, resolveMetaLlmClientConfig };
+export { type AnthropicContentBlock, type AnthropicMessage, type AnthropicMessageParam, type AnthropicMessageRequest, type AnthropicToolChoice, type AnthropicToolDefinition, type AnthropicUsage, type BudgetView, type CacheMode, type CacheStats, type ChatCompletion, type ChatCompletionChoice, type ChatCompletionRequest, type ChatCompletionUsage, ChatCompletionsStreamAccumulator, type ChatContentPart, type ChatMessage, type ChatToolCall, type ChatToolChoice, type ChatToolDefinition, type CountTokensRequest, type CountTokensResult, type DecodedOpenAiSseEvent, type EmbeddingDatum, type EmbeddingRequest, type EmbeddingResponse, type EmbeddingUsage, type EscalationStrategy, type FallbackPolicy, InvalidUsageQueryError, type LegacyCompletion, type LegacyCompletionChoice, type LegacyCompletionRequest, type MetaLlmCallOptions, MetaLlmClient, type MetaLlmClientConfig, type MetaLlmHealth, type MetaLlmModelInfo, type MetaLlmModelList, type MetaLlmReceipt, type MetaLlmResponseMeta, type MetaLlmResult, type MetaLlmRoutingControls, type MetaLlmSafetyControl, type MetaLlmStreamEnvelope, type MetaLlmTelemetryEvent, type MetaLlmTelemetryHooks, type MetaLlmTransport, type MetaLlmWhoAmI, type ModelSelector, type ModelTier, type Money, type OpenAiContentDeltaEvent, type OpenAiDoneEvent, type OpenAiFinishReasonEvent, type OpenAiReceiptEvent, type OpenAiRoleEvent, type OpenAiStreamErrorEvent, type OpenAiStreamErrorPayload, type OpenAiStreamEvent, type OpenAiToolCallDeltaEvent, type OpenAiUsageEvent, type ReceiptCacheResult, type ReceiptModelTier, type ResolvedMetaLlmClientConfig, type ResponsesOutputItem, type ResponsesRequest, type ResponsesResponse, type SafetyMode, type SafetySummary, type SubTenantAttribution, type UnknownStreamEvent, UnsendableRoutingControlsError, type UsageBreakdownEntry, type UsagePeriodEntry, type UsageQuery, type UsageSummary, type UsageTotals, assertSendableRoutingControls, assertValidUsageQuery, decodeOpenAiSseEvent, parseMetaLlmReceipt, parseMoney, parseUsageSummary, resolveMetaLlmClientConfig };

@@ -46,7 +46,11 @@ pub enum CostFinality {
 }
 
 /// A single labeled cost observation (ADR-0022 §D6 distinct-fields rule).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// `PartialEq` added by ADR-0024b D11 migration step 1 (issue #59) so
+// `meta_llm::types::MetaLlmReceipt` (which embeds `Vec<CostObservation>`)
+// and, transitively, `meta_llm::stream::OpenAiStreamEvent` can keep
+// deriving `PartialEq` for their own equality checks/tests.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CostObservation {
     pub source: String,

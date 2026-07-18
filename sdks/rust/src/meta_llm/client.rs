@@ -20,8 +20,16 @@
 //! `super::nonstream` verbatim rather than a per-operation
 //! reimplementation.
 //!
-//! Explicitly out of scope this pass (see PR description): streaming
-//! (§D5) and ADR-0024b routing controls (issue #59).
+//! ADR-0024b D11 migration step 1 (issue #59): `MetaLlmRoutingControls` is
+//! now the concrete §D2 shape and lands as an optional field on
+//! `chat_completions`/`messages_create`/`completions`/`responses`
+//! requests (`types::openai`/`types::anthropic`); `usage()` is the new
+//! read-only, authenticated-account-scoped §D3 endpoint; and every
+//! nonstream/stream response now decodes a `MetaLlmReceipt` when the
+//! server includes one. Explicitly still out of scope: batches, pods,
+//! bench, webhooks, guidance, collaboration, evolution, MicroLoRA,
+//! flywheel, genome, brain, vectors, and conditional hosts (§D5-§D8) --
+//! separate future issues per §D11 steps 2-4.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -34,11 +42,49 @@ use super::envelope::MetaLlmResult;
 use super::http::{as_object, take_string, unsupported};
 use super::stream::{self, ChatCompletionsStream};
 use super::types::{
+    assert_sendable_routing_controls, assert_valid_usage_query, parse_usage_summary,
     AnthropicMessage, AnthropicMessageRequest, ChatCompletion, ChatCompletionRequest,
     CountTokensRequest, CountTokensResult, EmbeddingRequest, EmbeddingResponse, LegacyCompletion,
-    LegacyCompletionRequest, ResponsesRequest, ResponsesResponse,
+    LegacyCompletionRequest, MetaLlmRoutingControls, ResponsesRequest, ResponsesResponse,
+    UsageQuery, UsageSummary,
 };
 use super::{DEFAULT_CAPABILITY_VERSION, PRODUCT};
+
+/// Minimal query-string percent-encoding for `usage()`'s `from`/`to`/
+/// `model`/`provider` parameters. The `url` crate is only an optional
+/// dependency of the `seed`/`mdns` features (`Cargo.toml`), not `meta-llm`
+/// alone, so this stays a small self-contained encoder rather than adding
+/// a new dependency edge for the `meta-llm`-only build.
+fn urlencode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+/// Fails locally, before any network I/O or credential acquisition,
+/// rather than sending an unrecognized enum member or a raw provider
+/// model ID the resolver would reject anyway (ADR-0024b §D2).
+#[allow(clippy::result_large_err)]
+fn assert_routing_controls_sendable(
+    operation: &str,
+    controls: Option<&MetaLlmRoutingControls>,
+) -> Result<(), AgenticError> {
+    assert_sendable_routing_controls(controls).map_err(|cause| AgenticError {
+        product: Some(PRODUCT.to_owned()),
+        operation: Some(operation.to_owned()),
+        ..AgenticError::new(
+            AgenticErrorKind::Validation,
+            format!("{operation} routing_controls rejected: {cause}"),
+        )
+    })
+}
 
 /// Serving-protocol client for Meta LLM (ADR-0024a). Construction performs
 /// no I/O (ADR-0024a §D1, ADR-0019 §D3).
@@ -157,6 +203,51 @@ impl MetaLlmClient {
         })
     }
 
+    /// `GET /v1/usage` (ADR-0024b §D1's `client.usage`, D11 migration
+    /// step 1). Strictly authenticated-account scoped — every query is
+    /// bound to the caller's own credential; there is no parameter that
+    /// can select another account's usage. Uses the contract's bounded
+    /// `YYYY-MM` range plus optional `model`/`provider`/`group_by`
+    /// grouping (§D3). An empty result is returned exactly as reported —
+    /// never reinterpreted as "no usage anywhere" vs. "this account
+    /// genuinely has none" (§D3: no speculative fallback logic is layered
+    /// on top).
+    #[allow(clippy::result_large_err)]
+    pub async fn usage(
+        &self,
+        query: &UsageQuery,
+    ) -> Result<MetaLlmResult<UsageSummary>, AgenticError> {
+        assert_valid_usage_query(query).map_err(|cause| AgenticError {
+            product: Some(PRODUCT.to_owned()),
+            operation: Some("usage".to_owned()),
+            ..AgenticError::new(
+                AgenticErrorKind::Validation,
+                format!("usage query rejected: {cause}"),
+            )
+        })?;
+
+        let mut path = format!(
+            "/v1/usage?from={}&to={}",
+            urlencode(&query.from),
+            urlencode(&query.to)
+        );
+        if let Some(model) = &query.model {
+            path.push_str(&format!("&model={}", urlencode(model)));
+        }
+        if let Some(provider) = &query.provider {
+            path.push_str(&format!("&provider={}", urlencode(provider)));
+        }
+        if let Some(group_by) = query.group_by {
+            path.push_str(&format!("&group_by={}", group_by.as_query_str()));
+        }
+
+        let (data, meta) = self.get_json(&path, "usage", true).await?;
+        Ok(MetaLlmResult {
+            data: parse_usage_summary(&data),
+            meta,
+        })
+    }
+
     /// Versioned behavior safe for this caller, from the static
     /// compatibility snapshot (no I/O — ADR-0024a §D9 gate #3 is not yet
     /// published). Unknown server versions receive the intersection of
@@ -205,6 +296,7 @@ impl MetaLlmClient {
         &self,
         request: &ChatCompletionRequest,
     ) -> Result<MetaLlmResult<ChatCompletion>, AgenticError> {
+        assert_routing_controls_sendable("chat_completions", request.routing_controls.as_ref())?;
         let body = serde_json::to_value(request).map_err(|cause| AgenticError {
             product: Some(PRODUCT.to_owned()),
             operation: Some("chat_completions".to_owned()),
@@ -263,6 +355,7 @@ impl MetaLlmClient {
         &self,
         request: &LegacyCompletionRequest,
     ) -> Result<MetaLlmResult<LegacyCompletion>, AgenticError> {
+        assert_routing_controls_sendable("completions", request.routing_controls.as_ref())?;
         let body = serde_json::to_value(request).map_err(|cause| AgenticError {
             product: Some(PRODUCT.to_owned()),
             operation: Some("completions".to_owned()),
@@ -298,6 +391,7 @@ impl MetaLlmClient {
         &self,
         request: &AnthropicMessageRequest,
     ) -> Result<MetaLlmResult<AnthropicMessage>, AgenticError> {
+        assert_routing_controls_sendable("messages_create", request.routing_controls.as_ref())?;
         let body = serde_json::to_value(request).map_err(|cause| AgenticError {
             product: Some(PRODUCT.to_owned()),
             operation: Some("messages_create".to_owned()),
@@ -373,6 +467,7 @@ impl MetaLlmClient {
         &self,
         request: &ResponsesRequest,
     ) -> Result<MetaLlmResult<ResponsesResponse>, AgenticError> {
+        assert_routing_controls_sendable("responses", request.routing_controls.as_ref())?;
         let body = serde_json::to_value(request).map_err(|cause| AgenticError {
             product: Some(PRODUCT.to_owned()),
             operation: Some("responses".to_owned()),

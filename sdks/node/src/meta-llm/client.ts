@@ -19,8 +19,16 @@
  * and `messages.countTokens` — reusing `./nonstream.js`'s
  * `postJsonIdempotent` verbatim rather than a per-operation reimplementation.
  *
- * Explicitly out of scope this pass (see PR description): streaming
- * (§D5) and ADR-0024b routing controls (issue #59).
+ * ADR-0024b D11 migration step 1 (issue #59): `MetaLlmRoutingControls` is
+ * now the concrete §D2 shape and lands as an optional field on
+ * `chat.completions`/`messages.create`/`completions`/`responses` requests
+ * (see `./types/openai.js`/`./types/anthropic.js`); `client.usage()` is the
+ * new read-only, authenticated-account-scoped §D3 endpoint; and every
+ * nonstream/stream response now decodes a `MetaLlmReceipt` when the server
+ * includes one. Explicitly still out of scope: batches, pods, bench,
+ * webhooks, guidance, collaboration, evolution, MicroLoRA, flywheel,
+ * genome, brain, vectors, and conditional hosts (§D5-§D8) — separate
+ * future issues per §D11 steps 2-4.
  */
 
 import {
@@ -60,6 +68,7 @@ import type {
   ResponsesRequest,
   ResponsesResponse,
 } from "./types/openai.js";
+import { assertValidUsageQuery, parseUsageSummary, type UsageQuery, type UsageSummary } from "./types/usage.js";
 
 const DEFAULT_CAPABILITY_VERSION = "0.0.0";
 const PRODUCT = "meta-llm";
@@ -111,6 +120,41 @@ export class MetaLlmClient {
     return this.getJson<MetaLlmWhoAmI>("/v1/whoami", "whoami", options, {
       requireCredential: true,
     });
+  }
+
+  /**
+   * `GET /v1/usage` (ADR-0024b §D1's `client.usage`, D11 migration step 1).
+   * Strictly authenticated-account scoped — every query is bound to the
+   * caller's own credential; there is no parameter that can select another
+   * account's usage. Uses the contract's bounded `YYYY-MM` range plus
+   * optional `model`/`provider`/`groupBy` grouping (§D3). An empty result
+   * is returned exactly as reported — never reinterpreted as "no usage
+   * anywhere" vs. "this account genuinely has none" (§D3: no speculative
+   * fallback logic is layered on top).
+   */
+  async usage(
+    query: UsageQuery,
+    options?: MetaLlmCallOptions,
+  ): Promise<MetaLlmResult<UsageSummary>> {
+    try {
+      assertValidUsageQuery(query);
+    } catch (cause) {
+      throw new AgenticError("validation", `usage query rejected: ${(cause as Error).message}`, {
+        product: PRODUCT,
+        operation: "usage",
+        retryable: false,
+        cause,
+      });
+    }
+    const params = new URLSearchParams({ from: query.from, to: query.to });
+    if (query.model) params.set("model", query.model);
+    if (query.provider) params.set("provider", query.provider);
+    if (query.groupBy) params.set("group_by", query.groupBy);
+
+    const { data, meta } = await this.getJson<unknown>(`/v1/usage?${params.toString()}`, "usage", options, {
+      requireCredential: true,
+    });
+    return { data: parseUsageSummary(data), meta };
   }
 
   /**

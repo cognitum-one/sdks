@@ -14,12 +14,21 @@ type-checking under mypy.
 Field names here are snake_case, matching both Python convention and the
 wire's own snake_case (``max_tokens``, ``top_p``, ...) -- unlike the Node
 SDK's camelCase, no case mapping is needed here once HTTP logic lands.
+
+``routing_controls`` (ADR-0024b §D2, issue #59) is added to
+``ChatCompletionRequest``, ``LegacyCompletionRequest``, and
+``ResponsesRequest`` -- the same three protocol request shapes ADR-0024b's
+issue names, alongside ``AnthropicMessageRequest`` in ``.anthropic``.
+``EmbeddingRequest`` deliberately does NOT get this field: it is out of
+ADR-0024b D11 step 1's scope.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal, TypedDict
+
+from cognitum.meta_llm.types.routing import MetaLlmRoutingControls
 
 
 class ChatImageUrl(TypedDict, total=False):
@@ -88,6 +97,8 @@ class ChatCompletionRequest:
     tool_choice: ChatToolChoice | None = None
     response_format: dict[str, str] | None = None
     seed: int | None = None
+    #: ADR-0024b §D2. Body controls win over any ``X-Cognitum-*`` header.
+    routing_controls: MetaLlmRoutingControls | None = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +148,8 @@ class LegacyCompletionRequest:
     best_of: int | None = None
     logit_bias: dict[str, float] | None = None
     user: str | None = None
+    #: ADR-0024b §D2. Body controls win over any ``X-Cognitum-*`` header.
+    routing_controls: MetaLlmRoutingControls | None = None
 
 
 @dataclass(frozen=True)
@@ -191,6 +204,8 @@ class ResponsesRequest:
     tools: list[ChatToolDefinition] | None = None
     tool_choice: ChatToolChoice | None = None
     metadata: dict[str, str] | None = None
+    #: ADR-0024b §D2. Body controls win over any ``X-Cognitum-*`` header.
+    routing_controls: MetaLlmRoutingControls | None = None
 
 
 @dataclass(frozen=True)

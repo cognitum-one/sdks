@@ -10,7 +10,13 @@
  * Field names here are idiomatic camelCase; the wire uses snake_case
  * (`max_tokens`, `stop_sequences`, ...). See `./openai.ts` for the same
  * mapping note — the follow-up HTTP-logic issue owns the conversion.
+ *
+ * `routingControls` (ADR-0024b §D2, issue #59) is added to
+ * `AnthropicMessageRequest` — see `./openai.ts`'s module doc for the full
+ * list of the four request shapes this field lands on.
  */
+
+import type { MetaLlmRoutingControls } from "./routing.js";
 
 export type AnthropicContentBlock =
   | { type: "text"; text: string }
@@ -57,6 +63,8 @@ export interface AnthropicMessageRequest {
   tools?: AnthropicToolDefinition[];
   toolChoice?: AnthropicToolChoice;
   metadata?: { userId?: string };
+  /** ADR-0024b §D2. Body controls win over any `X-Cognitum-*` header. */
+  routingControls?: MetaLlmRoutingControls;
 }
 
 export interface AnthropicUsage {

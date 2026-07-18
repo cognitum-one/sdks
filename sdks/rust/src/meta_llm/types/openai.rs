@@ -12,10 +12,19 @@
 //! = "snake_case")]` is added explicitly for clarity even where it is a
 //! no-op, and per-field renames cover the few reserved-word collisions
 //! (`type` -> `r#type`).
+//!
+//! `routing_controls` (ADR-0024b §D2, issue #59) is added to
+//! `ChatCompletionRequest`, `LegacyCompletionRequest`, and
+//! `ResponsesRequest` — the same three protocol request shapes ADR-0024b's
+//! issue names, alongside `AnthropicMessageRequest` in `super::anthropic`.
+//! `EmbeddingRequest` deliberately does NOT get this field: it is out of
+//! ADR-0024b D11 step 1's scope.
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+
+use super::routing::MetaLlmRoutingControls;
 
 /// A single chat message. Content may be plain text or a multi-part array.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +136,8 @@ pub struct ChatCompletionRequest {
     pub tool_choice: Option<ChatToolChoice>,
     pub response_format: Option<HashMap<String, String>>,
     pub seed: Option<i64>,
+    /// ADR-0024b §D2. Body controls win over any `X-Cognitum-*` header.
+    pub routing_controls: Option<MetaLlmRoutingControls>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,6 +197,8 @@ pub struct LegacyCompletionRequest {
     pub best_of: Option<u32>,
     pub logit_bias: Option<HashMap<String, f64>>,
     pub user: Option<String>,
+    /// ADR-0024b §D2. Body controls win over any `X-Cognitum-*` header.
+    pub routing_controls: Option<MetaLlmRoutingControls>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -248,6 +261,8 @@ pub struct ResponsesRequest {
     pub tools: Option<Vec<ChatToolDefinition>>,
     pub tool_choice: Option<ChatToolChoice>,
     pub metadata: Option<HashMap<String, String>>,
+    /// ADR-0024b §D2. Body controls win over any `X-Cognitum-*` header.
+    pub routing_controls: Option<MetaLlmRoutingControls>,
 }
 
 /// `POST /v1/responses` response.

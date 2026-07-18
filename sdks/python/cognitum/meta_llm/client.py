@@ -20,8 +20,16 @@ and ``messages.count_tokens`` -- reusing ``nonstream.py``'s
 ``post_json_idempotent`` verbatim rather than a per-operation
 reimplementation.
 
-Explicitly out of scope this pass (see PR description): streaming (§D5)
-and ADR-0024b routing controls (issue #59).
+ADR-0024b D11 migration step 1 (issue #59): ``MetaLlmRoutingControls`` is
+now the concrete §D2 shape and lands as an optional field on
+``chat.completions``/``messages.create``/``completions``/``responses``
+requests (``types/openai.py``/``types/anthropic.py``); ``usage()`` is the
+new read-only, authenticated-account-scoped §D3 endpoint; and every
+nonstream/stream response now decodes a ``MetaLlmReceipt`` when the server
+includes one. Explicitly still out of scope: batches, pods, bench,
+webhooks, guidance, collaboration, evolution, MicroLoRA, flywheel, genome,
+brain, vectors, and conditional hosts (§D5-§D8) -- separate future issues
+per §D11 steps 2-4.
 
 This client is async-only (mirrors Node's Promise-native design and Rust's
 async-only ``Client``) -- a sync facade may follow in a later issue if
@@ -58,6 +66,18 @@ from cognitum.meta_llm.parsing import (
     parse_responses_response,
 )
 from cognitum.meta_llm.stream.chat_completions_stream import chat_completions_stream
+from cognitum.meta_llm.types.routing import (
+    MetaLlmRoutingControls,
+    UnsendableRoutingControlsError,
+    assert_sendable_routing_controls,
+)
+from cognitum.meta_llm.types.usage import (
+    InvalidUsageQueryError,
+    UsageQuery,
+    UsageSummary,
+    assert_valid_usage_query,
+    parse_usage_summary,
+)
 
 if TYPE_CHECKING:
     from cognitum.agentic import Credential, RequestContext
@@ -78,6 +98,27 @@ if TYPE_CHECKING:
         ResponsesResponse,
     )
 
+
+def _assert_routing_controls_sendable(
+    operation: str, controls: MetaLlmRoutingControls | None
+) -> None:
+    """Fails locally, before any network I/O or credential acquisition,
+    rather than sending an unrecognized enum member or a raw provider model
+    ID the resolver would reject anyway (ADR-0024b §D2).
+    """
+    try:
+        assert_sendable_routing_controls(controls)
+    except UnsendableRoutingControlsError as cause:
+        raise AgenticError(
+            "validation",
+            f"{operation} routing_controls rejected: {cause}",
+            product=_PRODUCT,
+            operation=operation,
+            retryable=False,
+            cause=cause,
+        ) from cause
+
+
 _PRODUCT = "meta-llm"
 _DEFAULT_CAPABILITY_VERSION = "0.0.0"
 
@@ -96,6 +137,7 @@ class _ChatNamespace:
         validated against here -- this pass only implements the nonstream
         path (§D5 is a follow-up issue).
         """
+        _assert_routing_controls_sendable("chat.completions", request.routing_controls)
         body = asdict(request)
         data, meta = await post_json_idempotent(
             self._client._config,
@@ -138,6 +180,7 @@ class _MessagesNamespace:
         (issue #58 / M2 continuation) -- see ``_ChatNamespace.completions``'s
         docstring and ``nonstream.py`` for the shared idempotency/retry logic.
         """
+        _assert_routing_controls_sendable("messages.create", request.routing_controls)
         body = asdict(request)
         data, meta = await post_json_idempotent(
             self._client._config,
@@ -244,6 +287,44 @@ class MetaLlmClient:
             meta=meta,
         )
 
+    async def usage(self, query: UsageQuery) -> MetaLlmResult[UsageSummary]:
+        """``GET /v1/usage`` (ADR-0024b §D1's ``client.usage``, D11
+        migration step 1). Strictly authenticated-account scoped -- every
+        query is bound to the caller's own credential; there is no
+        parameter that can select another account's usage. Uses the
+        contract's bounded ``YYYY-MM`` range plus optional
+        ``model``/``provider``/``group_by`` grouping (§D3). An empty
+        result is returned exactly as reported -- never reinterpreted as
+        "no usage anywhere" vs. "this account genuinely has none" (§D3: no
+        speculative fallback logic is layered on top).
+        """
+        try:
+            assert_valid_usage_query(query)
+        except InvalidUsageQueryError as cause:
+            raise AgenticError(
+                "validation",
+                f"usage query rejected: {cause}",
+                product=_PRODUCT,
+                operation="usage",
+                retryable=False,
+                cause=cause,
+            ) from cause
+
+        from urllib.parse import urlencode
+
+        params: dict[str, str] = {"from": query.from_, "to": query.to}
+        if query.model:
+            params["model"] = query.model
+        if query.provider:
+            params["provider"] = query.provider
+        if query.group_by:
+            params["group_by"] = query.group_by
+
+        data, meta = await self._get_json(
+            f"/v1/usage?{urlencode(params)}", "usage", require_credential=True
+        )
+        return MetaLlmResult(data=parse_usage_summary(data), meta=meta)
+
     def capabilities(self) -> CapabilitySet:
         """Versioned behavior safe for this caller, from the static snapshot.
 
@@ -294,6 +375,7 @@ class MetaLlmClient:
         ``messages.create``, so it reuses ``post_json_idempotent`` from
         ``nonstream.py`` verbatim.
         """
+        _assert_routing_controls_sendable("completions", request.routing_controls)
         body = asdict(request)
         data, meta = await post_json_idempotent(
             self._config, self._transport, "/v1/completions", "completions", body
@@ -311,6 +393,7 @@ class MetaLlmClient:
         M2 continuation) reuses ``post_json_idempotent`` verbatim, same as
         ``chat.completions``.
         """
+        _assert_routing_controls_sendable("responses", request.routing_controls)
         body = asdict(request)
         data, meta = await post_json_idempotent(
             self._config, self._transport, "/v1/responses", "responses", body

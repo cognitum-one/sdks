@@ -1,9 +1,14 @@
 """OpenAI ``chat.completions`` streaming event types (ADR-0024a §D5): role,
 content delta, tool-call fragments, finish reason, trailing usage, the
-Cognitum receipt (reusing the frozen ``ExecutionReceipt`` type from
-:mod:`cognitum.agentic`), a terminal wire-level error event, and the
-``[DONE]`` sentinel. Any recognized-but-not-decoded shape falls back to
+Cognitum receipt, a terminal wire-level error event, and the ``[DONE]``
+sentinel. Any recognized-but-not-decoded shape falls back to
 :class:`UnknownStreamEvent` rather than raising.
+
+The receipt facet (``OpenAiReceiptEvent``) now carries the concrete
+ADR-0024b §D3 ``MetaLlmReceipt`` shape (issue #59, D11 migration step 1)
+rather than the earlier generic ADR-0028 ``ExecutionReceipt`` stub -- this
+is the "receipt field ... already anticipated" slot the streaming pass
+(PR #88) reserved for it.
 
 One raw SSE ``data:`` payload can decode into *multiple* facets (e.g. one
 chunk carrying both a content delta and, on the last chunk, a finish
@@ -18,13 +23,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 from cognitum.meta_llm.types.openai import ChatCompletionUsage
+from cognitum.meta_llm.types.receipt import MetaLlmReceipt, parse_meta_llm_receipt
 from cognitum.sse import SseEvent
-
-if TYPE_CHECKING:
-    from cognitum.agentic.receipts import ExecutionReceipt
 
 
 @dataclass(frozen=True)
@@ -66,7 +69,7 @@ class OpenAiUsageEvent:
 
 @dataclass(frozen=True)
 class OpenAiReceiptEvent:
-    receipt: ExecutionReceipt
+    receipt: MetaLlmReceipt
     type: Literal["receipt"] = "receipt"
 
 
@@ -238,7 +241,9 @@ def decode_openai_sse_event(raw: SseEvent) -> DecodedOpenAiSseEvent:
         )
 
     if "cognitum_receipt" in parsed:
-        events.append(OpenAiReceiptEvent(receipt=parsed["cognitum_receipt"]))
+        receipt = parse_meta_llm_receipt(parsed["cognitum_receipt"])
+        if receipt is not None:
+            events.append(OpenAiReceiptEvent(receipt=receipt))
 
     if not events:
         events.append(UnknownStreamEvent(raw=parsed))

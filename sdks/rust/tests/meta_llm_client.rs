@@ -446,6 +446,7 @@ async fn remaining_direct_nonstream_operations_fail_closed_without_credential_pr
             best_of: None,
             logit_bias: None,
             user: None,
+            routing_controls: None,
         })
         .await
         .unwrap_err();
@@ -475,6 +476,7 @@ async fn remaining_direct_nonstream_operations_fail_closed_without_credential_pr
             tools: None,
             tool_choice: None,
             metadata: None,
+            routing_controls: None,
         })
         .await
         .unwrap_err();

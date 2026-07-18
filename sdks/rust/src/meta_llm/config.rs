@@ -16,15 +16,17 @@ use crate::agentic::{
     AgenticError, AgenticErrorKind, BudgetPolicy, CapabilitySet, CredentialProvider, RequestContext,
 };
 
-/// ADR-0024b product-specific routing controls. Frozen as an opaque
-/// placeholder here — the concrete shape lands with issue #59 (ADR-0024b:
-/// Meta LLM platform resources, routing, and usage).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct MetaLlmRoutingControls(pub HashMap<String, serde_json::Value>);
+// ADR-0024b §D2's concrete `MetaLlmRoutingControls` shape (issue #59, D11
+// migration step 1). Re-exported here (rather than duplicated) so
+// existing references to `super::config::MetaLlmRoutingControls` keep
+// resolving now that the placeholder has a real shape.
+pub use super::types::routing::MetaLlmRoutingControls;
 
-/// ADR-0024b product-specific safety control. See
-/// [`MetaLlmRoutingControls`] for the same issue #59 deferral note.
+/// ADR-0024b product-specific safety control. Frozen as an opaque
+/// placeholder -- this stays a separate, still-deferred surface from
+/// `MetaLlmRoutingControls` (whose `safety: SafetyMode` field is now
+/// concrete): richer safety configuration (detector-class selection,
+/// thresholds) is out of this pass's scope.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct MetaLlmSafetyControl(pub HashMap<String, serde_json::Value>);

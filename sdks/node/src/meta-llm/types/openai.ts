@@ -13,7 +13,16 @@
  * implements the actual HTTP call logic for these operations owns the
  * snake_case <-> camelCase mapping; no such mapping exists yet since this
  * pass ships types only.
+ *
+ * `routingControls` (ADR-0024b §D2, issue #59) is added to
+ * `ChatCompletionRequest`, `LegacyCompletionRequest`, and `ResponsesRequest`
+ * — the same three protocol request shapes ADR-0024b's issue names,
+ * alongside `AnthropicMessageRequest` in `./anthropic.ts`. `EmbeddingRequest`
+ * deliberately does NOT get this field: it is out of ADR-0024b D11 step 1's
+ * scope.
  */
+
+import type { MetaLlmRoutingControls } from "./routing.js";
 
 /** A single chat message. Content may be plain text or a multi-part array. */
 export interface ChatMessage {
@@ -68,6 +77,8 @@ export interface ChatCompletionRequest {
   toolChoice?: ChatToolChoice;
   responseFormat?: { type: "text" | "json_object" };
   seed?: number;
+  /** ADR-0024b §D2. Body controls win over any `X-Cognitum-*` header. */
+  routingControls?: MetaLlmRoutingControls;
 }
 
 export interface ChatCompletionUsage {
@@ -111,6 +122,8 @@ export interface LegacyCompletionRequest {
   bestOf?: number;
   logitBias?: Record<string, number>;
   user?: string;
+  /** ADR-0024b §D2. Body controls win over any `X-Cognitum-*` header. */
+  routingControls?: MetaLlmRoutingControls;
 }
 
 export interface LegacyCompletionChoice {
@@ -154,6 +167,8 @@ export interface ResponsesRequest {
   tools?: ChatToolDefinition[];
   toolChoice?: ChatToolChoice;
   metadata?: Record<string, string>;
+  /** ADR-0024b §D2. Body controls win over any `X-Cognitum-*` header. */
+  routingControls?: MetaLlmRoutingControls;
 }
 
 /** `POST /v1/responses` response. */

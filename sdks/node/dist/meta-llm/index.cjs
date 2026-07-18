@@ -21,8 +21,15 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 var meta_llm_exports = {};
 __export(meta_llm_exports, {
   ChatCompletionsStreamAccumulator: () => ChatCompletionsStreamAccumulator,
+  InvalidUsageQueryError: () => InvalidUsageQueryError,
   MetaLlmClient: () => MetaLlmClient,
+  UnsendableRoutingControlsError: () => UnsendableRoutingControlsError,
+  assertSendableRoutingControls: () => assertSendableRoutingControls,
+  assertValidUsageQuery: () => assertValidUsageQuery,
   decodeOpenAiSseEvent: () => decodeOpenAiSseEvent,
+  parseMetaLlmReceipt: () => parseMetaLlmReceipt,
+  parseMoney: () => parseMoney,
+  parseUsageSummary: () => parseUsageSummary,
   resolveMetaLlmClientConfig: () => resolveMetaLlmClientConfig
 });
 module.exports = __toCommonJS(meta_llm_exports);
@@ -71,6 +78,359 @@ function resolveMetaLlmClientConfig(config) {
     warnInsecureHttpOnce(trimmed);
   }
   return { ...config, baseUrl: trimmed };
+}
+
+// src/meta-llm/types/routing.ts
+var MODEL_TIERS = /* @__PURE__ */ new Set(["low", "mid", "high"]);
+var FALLBACK_POLICIES = /* @__PURE__ */ new Set(["fail_fast", "best_effort"]);
+var ESCALATION_STRATEGIES = /* @__PURE__ */ new Set([
+  "stream_oneshot",
+  "post_hoc",
+  "buffered",
+  "inflight"
+]);
+var CACHE_MODES = /* @__PURE__ */ new Set(["disabled", "exact", "semantic"]);
+var SAFETY_MODES = /* @__PURE__ */ new Set(["block", "warn", "redact"]);
+var UnsendableRoutingControlsError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "UnsendableRoutingControlsError";
+  }
+};
+function assertSendableModelSelector(selector) {
+  switch (selector.kind) {
+    case "auto":
+      return;
+    case "tier":
+      if (!MODEL_TIERS.has(selector.tier)) {
+        throw new UnsendableRoutingControlsError(
+          `unrecognized ModelTier in ModelSelector.tier: ${JSON.stringify(selector.tier)}`
+        );
+      }
+      return;
+    case "contract_declared_alias":
+      if (typeof selector.alias !== "string" || selector.alias.length === 0) {
+        throw new UnsendableRoutingControlsError(
+          "ModelSelector.contract_declared_alias requires a non-empty alias string"
+        );
+      }
+      return;
+    default: {
+      const unrecognized = selector;
+      throw new UnsendableRoutingControlsError(`unrecognized ModelSelector.kind: ${JSON.stringify(unrecognized.kind)}`);
+    }
+  }
+}
+function assertSendableRoutingControls(controls) {
+  if (!controls) return;
+  if (controls.model !== void 0) assertSendableModelSelector(controls.model);
+  if (controls.minTier !== void 0 && !MODEL_TIERS.has(controls.minTier)) {
+    throw new UnsendableRoutingControlsError(`unrecognized ModelTier for minTier: ${JSON.stringify(controls.minTier)}`);
+  }
+  if (controls.maxTier !== void 0 && !MODEL_TIERS.has(controls.maxTier)) {
+    throw new UnsendableRoutingControlsError(`unrecognized ModelTier for maxTier: ${JSON.stringify(controls.maxTier)}`);
+  }
+  if (controls.fallbackPolicy !== void 0 && !FALLBACK_POLICIES.has(controls.fallbackPolicy)) {
+    throw new UnsendableRoutingControlsError(
+      `unrecognized FallbackPolicy: ${JSON.stringify(controls.fallbackPolicy)}`
+    );
+  }
+  if (controls.escalation !== void 0 && !ESCALATION_STRATEGIES.has(controls.escalation)) {
+    throw new UnsendableRoutingControlsError(
+      `unrecognized EscalationStrategy: ${JSON.stringify(controls.escalation)}`
+    );
+  }
+  if (controls.cache !== void 0 && !CACHE_MODES.has(controls.cache)) {
+    throw new UnsendableRoutingControlsError(`unrecognized CacheMode: ${JSON.stringify(controls.cache)}`);
+  }
+  if (controls.safety !== void 0 && !SAFETY_MODES.has(controls.safety)) {
+    throw new UnsendableRoutingControlsError(`unrecognized SafetyMode: ${JSON.stringify(controls.safety)}`);
+  }
+}
+
+// src/meta-llm/types/money.ts
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function parseMoney(raw) {
+  if (!isRecord(raw)) return void 0;
+  const amountRaw = raw.amount;
+  const currency = raw.currency ?? raw.currency_code ?? raw.currencyCode;
+  if ((typeof amountRaw === "string" || typeof amountRaw === "number") && typeof currency === "string") {
+    return { amount: String(amountRaw), currency };
+  }
+  return void 0;
+}
+
+// src/meta-llm/types/receipt.ts
+var KNOWN_RECEIPT_KEYS = /* @__PURE__ */ new Set([
+  "request_id",
+  "requestId",
+  "resolved_tier",
+  "resolvedTier",
+  "resolved_model",
+  "resolvedModel",
+  "escalated",
+  "cap_degraded",
+  "capDegraded",
+  "routing_reason",
+  "routingReason",
+  "price",
+  "cache_result",
+  "cacheResult",
+  "cache_savings",
+  "cacheSavings",
+  "prompt_cache_savings",
+  "promptCacheSavings",
+  "fallback_used",
+  "fallbackUsed",
+  "breaker_counts",
+  "breakerCounts",
+  "sub_tenant_id",
+  "subTenantId",
+  "safety_summary",
+  "safetySummary",
+  "usage",
+  "costs"
+]);
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function parseCostObservation(raw) {
+  if (!isRecord2(raw)) return void 0;
+  const { source, amount, currency, finality } = raw;
+  if (typeof source !== "string" || typeof currency !== "string" || typeof finality !== "string") {
+    return void 0;
+  }
+  return {
+    source,
+    amount: typeof amount === "number" ? amount : Number(amount),
+    currency,
+    finality
+  };
+}
+function parseSafetySummary(raw) {
+  if (!isRecord2(raw)) return void 0;
+  const known = /* @__PURE__ */ new Set(["mode", "detector_classes", "detectorClasses", "blocked"]);
+  const detectorClassesRaw = raw.detector_classes ?? raw.detectorClasses;
+  const rawRemainder = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (!known.has(key)) rawRemainder[key] = value;
+  }
+  return {
+    mode: typeof raw.mode === "string" ? raw.mode : void 0,
+    detectorClasses: Array.isArray(detectorClassesRaw) ? detectorClassesRaw.filter((v) => typeof v === "string") : void 0,
+    blocked: typeof raw.blocked === "boolean" ? raw.blocked : void 0,
+    raw: Object.keys(rawRemainder).length > 0 ? rawRemainder : void 0
+  };
+}
+function parseMetaLlmReceipt(raw) {
+  if (!isRecord2(raw)) return void 0;
+  const requestIdRaw = raw.request_id ?? raw.requestId;
+  const requestId = typeof requestIdRaw === "string" ? requestIdRaw : "";
+  const costsRaw = raw.costs;
+  const costs = Array.isArray(costsRaw) ? costsRaw.map(parseCostObservation).filter((c) => c !== void 0) : [];
+  const rawRemainder = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (!KNOWN_RECEIPT_KEYS.has(key)) rawRemainder[key] = value;
+  }
+  const resolvedTierRaw = raw.resolved_tier ?? raw.resolvedTier;
+  const resolvedModelRaw = raw.resolved_model ?? raw.resolvedModel;
+  const capDegradedRaw = raw.cap_degraded ?? raw.capDegraded;
+  const routingReasonRaw = raw.routing_reason ?? raw.routingReason;
+  const cacheResultRaw = raw.cache_result ?? raw.cacheResult;
+  const fallbackUsedRaw = raw.fallback_used ?? raw.fallbackUsed;
+  const breakerCountsRaw = raw.breaker_counts ?? raw.breakerCounts;
+  const subTenantIdRaw = raw.sub_tenant_id ?? raw.subTenantId;
+  return {
+    requestId,
+    resolvedTier: typeof resolvedTierRaw === "string" ? resolvedTierRaw : void 0,
+    resolvedModel: typeof resolvedModelRaw === "string" ? resolvedModelRaw : void 0,
+    escalated: typeof raw.escalated === "boolean" ? raw.escalated : void 0,
+    capDegraded: typeof capDegradedRaw === "boolean" ? capDegradedRaw : void 0,
+    routingReason: typeof routingReasonRaw === "string" ? routingReasonRaw : void 0,
+    price: parseMoney(raw.price),
+    cacheResult: typeof cacheResultRaw === "string" ? cacheResultRaw : void 0,
+    cacheSavings: parseMoney(raw.cache_savings ?? raw.cacheSavings),
+    promptCacheSavings: parseMoney(raw.prompt_cache_savings ?? raw.promptCacheSavings),
+    fallbackUsed: typeof fallbackUsedRaw === "boolean" ? fallbackUsedRaw : void 0,
+    breakerCounts: isRecord2(breakerCountsRaw) ? breakerCountsRaw : void 0,
+    subTenantId: typeof subTenantIdRaw === "string" ? subTenantIdRaw : void 0,
+    safetySummary: parseSafetySummary(raw.safety_summary ?? raw.safetySummary),
+    usage: isRecord2(raw.usage) ? raw.usage : void 0,
+    costs,
+    raw: Object.keys(rawRemainder).length > 0 ? rawRemainder : void 0
+  };
+}
+
+// src/meta-llm/types/usage.ts
+function isRecord3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+var YYYY_MM = /^\d{4}-(0[1-9]|1[0-2])$/;
+var InvalidUsageQueryError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "InvalidUsageQueryError";
+  }
+};
+function assertValidUsageQuery(query) {
+  if (!YYYY_MM.test(query.from)) {
+    throw new InvalidUsageQueryError(`UsageQuery.from must match YYYY-MM; got ${JSON.stringify(query.from)}`);
+  }
+  if (!YYYY_MM.test(query.to)) {
+    throw new InvalidUsageQueryError(`UsageQuery.to must match YYYY-MM; got ${JSON.stringify(query.to)}`);
+  }
+  if (query.from > query.to) {
+    throw new InvalidUsageQueryError(
+      `UsageQuery.from (${JSON.stringify(query.from)}) must not be after .to (${JSON.stringify(query.to)})`
+    );
+  }
+}
+function parseCacheStats(raw) {
+  if (!isRecord3(raw)) return void 0;
+  const known = /* @__PURE__ */ new Set(["hit_rate", "hitRate", "savings"]);
+  const rawRemainder = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (!known.has(key)) rawRemainder[key] = value;
+  }
+  const hitRateRaw = raw.hit_rate ?? raw.hitRate;
+  return {
+    hitRate: typeof hitRateRaw === "number" ? hitRateRaw : void 0,
+    savings: parseMoneyImport(raw.savings),
+    raw: Object.keys(rawRemainder).length > 0 ? rawRemainder : void 0
+  };
+}
+function parseUsageTotals(raw) {
+  if (!isRecord3(raw)) return {};
+  const known = /* @__PURE__ */ new Set([
+    "requests",
+    "prompt_tokens",
+    "promptTokens",
+    "completion_tokens",
+    "completionTokens",
+    "total_tokens",
+    "totalTokens",
+    "cost"
+  ]);
+  const rawRemainder = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (!known.has(key)) rawRemainder[key] = value;
+  }
+  return {
+    requests: typeof raw.requests === "number" ? raw.requests : void 0,
+    promptTokens: typeof (raw.prompt_tokens ?? raw.promptTokens) === "number" ? raw.prompt_tokens ?? raw.promptTokens : void 0,
+    completionTokens: typeof (raw.completion_tokens ?? raw.completionTokens) === "number" ? raw.completion_tokens ?? raw.completionTokens : void 0,
+    totalTokens: typeof (raw.total_tokens ?? raw.totalTokens) === "number" ? raw.total_tokens ?? raw.totalTokens : void 0,
+    cost: parseMoneyImport(raw.cost),
+    raw: Object.keys(rawRemainder).length > 0 ? rawRemainder : void 0
+  };
+}
+function parseBudgetView(raw) {
+  if (!isRecord3(raw)) return void 0;
+  const known = /* @__PURE__ */ new Set([
+    "serving",
+    "hard_limit",
+    "hardLimit",
+    "committed",
+    "reserved",
+    "headroom",
+    "status",
+    "resets_at",
+    "resetsAt"
+  ]);
+  const rawRemainder = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (!known.has(key)) rawRemainder[key] = value;
+  }
+  const resetsAtRaw = raw.resets_at ?? raw.resetsAt;
+  return {
+    serving: parseMoneyImport(raw.serving),
+    hardLimit: parseMoneyImport(raw.hard_limit ?? raw.hardLimit),
+    committed: parseMoneyImport(raw.committed),
+    reserved: parseMoneyImport(raw.reserved),
+    headroom: parseMoneyImport(raw.headroom),
+    status: typeof raw.status === "string" ? raw.status : void 0,
+    resetsAt: typeof resetsAtRaw === "string" ? resetsAtRaw : void 0,
+    raw: Object.keys(rawRemainder).length > 0 ? rawRemainder : void 0
+  };
+}
+function parseBreakdownEntry(raw) {
+  if (!isRecord3(raw)) return {};
+  const known = /* @__PURE__ */ new Set(["requests", "cost"]);
+  const rawRemainder = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (!known.has(key)) rawRemainder[key] = value;
+  }
+  return {
+    requests: typeof raw.requests === "number" ? raw.requests : void 0,
+    cost: parseMoneyImport(raw.cost),
+    raw: Object.keys(rawRemainder).length > 0 ? rawRemainder : void 0
+  };
+}
+function parseBreakdownMap(raw) {
+  if (!isRecord3(raw)) return void 0;
+  const out = {};
+  for (const [key, value] of Object.entries(raw)) {
+    out[key] = parseBreakdownEntry(value);
+  }
+  return out;
+}
+function parsePeriodEntries(raw) {
+  if (!Array.isArray(raw)) return void 0;
+  return raw.filter((item) => isRecord3(item) && typeof item.period === "string").map((item) => ({ period: item.period, ...parseBreakdownEntry(item) }));
+}
+function parseMoneyImport(raw) {
+  if (!isRecord3(raw)) return void 0;
+  const amountRaw = raw.amount;
+  const currency = raw.currency ?? raw.currency_code ?? raw.currencyCode;
+  if ((typeof amountRaw === "string" || typeof amountRaw === "number") && typeof currency === "string") {
+    return { amount: String(amountRaw), currency };
+  }
+  return void 0;
+}
+var KNOWN_USAGE_KEYS = /* @__PURE__ */ new Set([
+  "totals",
+  "tier_mix",
+  "tierMix",
+  "escalation_rate",
+  "escalationRate",
+  "cache",
+  "fallback_rate",
+  "fallbackRate",
+  "empty_billed_rate",
+  "emptyBilledRate",
+  "by_model",
+  "byModel",
+  "by_provider",
+  "byProvider",
+  "by_period",
+  "byPeriod",
+  "budget"
+]);
+function parseUsageSummary(raw) {
+  if (!isRecord3(raw)) return { totals: {} };
+  const rawRemainder = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (!KNOWN_USAGE_KEYS.has(key)) rawRemainder[key] = value;
+  }
+  const escalationRateRaw = raw.escalation_rate ?? raw.escalationRate;
+  const fallbackRateRaw = raw.fallback_rate ?? raw.fallbackRate;
+  const emptyBilledRateRaw = raw.empty_billed_rate ?? raw.emptyBilledRate;
+  const tierMixRaw = raw.tier_mix ?? raw.tierMix;
+  return {
+    totals: parseUsageTotals(raw.totals),
+    tierMix: isRecord3(tierMixRaw) ? tierMixRaw : void 0,
+    escalationRate: typeof escalationRateRaw === "number" ? escalationRateRaw : void 0,
+    cache: parseCacheStats(raw.cache),
+    fallbackRate: typeof fallbackRateRaw === "number" ? fallbackRateRaw : void 0,
+    emptyBilledRate: typeof emptyBilledRateRaw === "number" ? emptyBilledRateRaw : void 0,
+    byModel: parseBreakdownMap(raw.by_model ?? raw.byModel),
+    byProvider: parseBreakdownMap(raw.by_provider ?? raw.byProvider),
+    byPeriod: parsePeriodEntries(raw.by_period ?? raw.byPeriod),
+    budget: parseBudgetView(raw.budget),
+    raw: Object.keys(rawRemainder).length > 0 ? rawRemainder : void 0
+  };
 }
 
 // src/agentic/errors.ts
@@ -347,17 +707,31 @@ async function sendPostOnce(deps, path, operation, body, credential, idempotency
     }
     throw err;
   }
-  const data = await response.json();
+  const rawJson = await response.json();
+  const data = rawJson;
+  const receipt = rawJson !== null && typeof rawJson === "object" && !Array.isArray(rawJson) ? parseMetaLlmReceipt(rawJson.cognitum_receipt) : void 0;
   const meta = {
     requestId: response.headers.get("x-cognitum-request-id") ?? requestId,
     httpStatus: response.status,
     protocolVersion: response.headers.get("x-cognitum-protocol-version") ?? void 0,
     retryAfterMs,
-    idempotentReplay
+    idempotentReplay,
+    receipt
   };
   return { data, meta };
 }
 async function postJsonIdempotent(deps, path, operation, body) {
+  const bodyRoutingControls = body?.routingControls;
+  try {
+    assertSendableRoutingControls(bodyRoutingControls);
+  } catch (cause) {
+    throw new AgenticError("validation", `${operation} routingControls rejected: ${cause.message}`, {
+      product: PRODUCT2,
+      operation,
+      retryable: false,
+      cause
+    });
+  }
   let credential = await requireCredential(deps, operation);
   const idempotencyKey = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : newRequestId();
   const canonicalSha256 = canonicalRequestSha256(body);
@@ -625,7 +999,7 @@ var KNOWN_TOP_LEVEL_KEYS = /* @__PURE__ */ new Set([
   "system_fingerprint",
   "error"
 ]);
-function isRecord(value) {
+function isRecord4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function decodeOpenAiSseEvent(raw) {
@@ -639,11 +1013,11 @@ function decodeOpenAiSseEvent(raw) {
   } catch {
     return { events: [{ type: "unknown", raw: raw.data }] };
   }
-  if (!isRecord(parsed)) {
+  if (!isRecord4(parsed)) {
     return { events: [{ type: "unknown", raw: parsed }] };
   }
   const events = [];
-  if (isRecord(parsed.error)) {
+  if (isRecord4(parsed.error)) {
     const e = parsed.error;
     events.push({
       type: "error",
@@ -657,9 +1031,9 @@ function decodeOpenAiSseEvent(raw) {
   }
   if (Array.isArray(parsed.choices)) {
     for (const choiceRaw of parsed.choices) {
-      if (!isRecord(choiceRaw)) continue;
+      if (!isRecord4(choiceRaw)) continue;
       const index = typeof choiceRaw.index === "number" ? choiceRaw.index : 0;
-      const delta = isRecord(choiceRaw.delta) ? choiceRaw.delta : {};
+      const delta = isRecord4(choiceRaw.delta) ? choiceRaw.delta : {};
       if (typeof delta.role === "string") {
         events.push({ type: "role", index, role: delta.role });
       }
@@ -668,8 +1042,8 @@ function decodeOpenAiSseEvent(raw) {
       }
       if (Array.isArray(delta.tool_calls)) {
         for (const toolCallRaw of delta.tool_calls) {
-          if (!isRecord(toolCallRaw)) continue;
-          const fn = isRecord(toolCallRaw.function) ? toolCallRaw.function : {};
+          if (!isRecord4(toolCallRaw)) continue;
+          const fn = isRecord4(toolCallRaw.function) ? toolCallRaw.function : {};
           events.push({
             type: "tool_call_delta",
             index,
@@ -685,7 +1059,7 @@ function decodeOpenAiSseEvent(raw) {
       }
     }
   }
-  if (isRecord(parsed.usage)) {
+  if (isRecord4(parsed.usage)) {
     const u = parsed.usage;
     events.push({
       type: "usage",
@@ -697,7 +1071,8 @@ function decodeOpenAiSseEvent(raw) {
     });
   }
   if (parsed.cognitum_receipt !== void 0) {
-    events.push({ type: "receipt", receipt: parsed.cognitum_receipt });
+    const receipt = parseMetaLlmReceipt(parsed.cognitum_receipt);
+    if (receipt) events.push({ type: "receipt", receipt });
   }
   if (events.length === 0) {
     events.push({ type: "unknown", raw: parsed });
@@ -972,6 +1347,36 @@ var MetaLlmClient = class {
     return this.getJson("/v1/whoami", "whoami", options, {
       requireCredential: true
     });
+  }
+  /**
+   * `GET /v1/usage` (ADR-0024b §D1's `client.usage`, D11 migration step 1).
+   * Strictly authenticated-account scoped — every query is bound to the
+   * caller's own credential; there is no parameter that can select another
+   * account's usage. Uses the contract's bounded `YYYY-MM` range plus
+   * optional `model`/`provider`/`groupBy` grouping (§D3). An empty result
+   * is returned exactly as reported — never reinterpreted as "no usage
+   * anywhere" vs. "this account genuinely has none" (§D3: no speculative
+   * fallback logic is layered on top).
+   */
+  async usage(query, options) {
+    try {
+      assertValidUsageQuery(query);
+    } catch (cause) {
+      throw new AgenticError("validation", `usage query rejected: ${cause.message}`, {
+        product: PRODUCT4,
+        operation: "usage",
+        retryable: false,
+        cause
+      });
+    }
+    const params = new URLSearchParams({ from: query.from, to: query.to });
+    if (query.model) params.set("model", query.model);
+    if (query.provider) params.set("provider", query.provider);
+    if (query.groupBy) params.set("group_by", query.groupBy);
+    const { data, meta } = await this.getJson(`/v1/usage?${params.toString()}`, "usage", options, {
+      requireCredential: true
+    });
+    return { data: parseUsageSummary(data), meta };
   }
   /**
    * Versioned behavior safe for this caller, from the static compatibility
@@ -1282,8 +1687,15 @@ var ChatCompletionsStreamAccumulator = class {
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   ChatCompletionsStreamAccumulator,
+  InvalidUsageQueryError,
   MetaLlmClient,
+  UnsendableRoutingControlsError,
+  assertSendableRoutingControls,
+  assertValidUsageQuery,
   decodeOpenAiSseEvent,
+  parseMetaLlmReceipt,
+  parseMoney,
+  parseUsageSummary,
   resolveMetaLlmClientConfig
 });
 //# sourceMappingURL=index.cjs.map

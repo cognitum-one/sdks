@@ -1,17 +1,15 @@
 /**
- * Result and metadata envelope (ADR-0024a §D4). Type-only this pass — the
- * receipt/drift-comparison logic described in §D4's "body and headers
- * duplicate receipt fields" paragraph is deferred to the follow-up issue
- * that lands ADR-0024b's `MetaLlmReceipt`.
+ * Result and metadata envelope (ADR-0024a §D4). The receipt/drift-
+ * comparison logic described in §D4's "body and headers duplicate receipt
+ * fields" paragraph remains deferred (still not implemented this pass —
+ * only decoding a receipt already present on the response, not comparing
+ * it against header/body duplicates), but `MetaLlmReceipt` itself is now
+ * the concrete ADR-0024b §D3 shape (issue #59, D11 migration step 1)
+ * rather than the earlier `unknown` placeholder.
  */
 
-/**
- * Placeholder for ADR-0024b's `MetaLlmReceipt`. Kept as `unknown` rather than
- * `Record<string, unknown>` so callers cannot accidentally treat an absent
- * receipt as a shaped, empty object (ADR-0024a §D4: "Missing metadata
- * remains missing").
- */
-export type MetaLlmReceipt = unknown;
+import type { MetaLlmReceipt } from "./types/receipt.js";
+export type { MetaLlmReceipt } from "./types/receipt.js";
 
 /** Per-response metadata carried alongside every {@link MetaLlmResult} (ADR-0024a §D4). */
 export interface MetaLlmResponseMeta {

@@ -8,23 +8,22 @@
 
 import type { BudgetPolicy, CredentialProvider, RequestContext } from "../agentic/index.js";
 import type { CapabilitySet } from "../agentic/index.js";
+import type { MetaLlmRoutingControls } from "./types/routing.js";
 
 /**
- * ADR-0024b product-specific routing controls. Frozen as an opaque
- * placeholder here — the concrete shape lands with issue #59
- * (ADR-0024b: Meta LLM platform resources, routing, and usage). A generic
- * caller override MUST NOT be able to conflict with the eventual typed
- * fields (ADR-0024a §D3), so this stays a nominal, intentionally-narrow
- * record rather than `Record<string, unknown>` reused elsewhere.
+ * ADR-0024b §D2's concrete `MetaLlmRoutingControls` shape (issue #59, D11
+ * migration step 1). Re-exported here (rather than duplicated) so existing
+ * imports of `MetaLlmRoutingControls` from `./config.js` keep working
+ * unchanged now that the placeholder has a real shape.
  */
-export interface MetaLlmRoutingControls {
-  readonly __brand?: "MetaLlmRoutingControls";
-  [key: string]: unknown;
-}
+export type { MetaLlmRoutingControls } from "./types/routing.js";
 
 /**
  * ADR-0024b product-specific safety control. Frozen as an opaque placeholder
- * — see {@link MetaLlmRoutingControls} for the same issue #59 deferral note.
+ * — this stays a separate, still-deferred surface from `MetaLlmRoutingControls`
+ * (whose `safety: SafetyMode` field is now concrete): richer safety
+ * configuration (detector-class selection, thresholds) is out of this
+ * pass's scope.
  */
 export interface MetaLlmSafetyControl {
   readonly __brand?: "MetaLlmSafetyControl";

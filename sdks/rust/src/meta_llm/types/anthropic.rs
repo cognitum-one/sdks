@@ -8,12 +8,17 @@
 //!
 //! Field names are `snake_case`, matching both Rust convention and the
 //! wire's own snake_case (`max_tokens`, `stop_sequences`, ...).
+//!
+//! `routing_controls` (ADR-0024b §D2, issue #59) is added to
+//! `AnthropicMessageRequest` -- see `super::openai`'s module docs for the
+//! full list of the four request shapes this field lands on.
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
 use super::openai::ChatMessageContent;
+use super::routing::MetaLlmRoutingControls;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -94,6 +99,8 @@ pub struct AnthropicMessageRequest {
     pub tools: Option<Vec<AnthropicToolDefinition>>,
     pub tool_choice: Option<AnthropicToolChoice>,
     pub metadata: Option<HashMap<String, String>>,
+    /// ADR-0024b §D2. Body controls win over any `X-Cognitum-*` header.
+    pub routing_controls: Option<MetaLlmRoutingControls>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

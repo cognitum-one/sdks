@@ -67,6 +67,7 @@ fn legacy_completion_request() -> LegacyCompletionRequest {
         best_of: None,
         logit_bias: None,
         user: None,
+        routing_controls: None,
     }
 }
 
@@ -83,6 +84,7 @@ fn responses_request() -> ResponsesRequest {
         tools: None,
         tool_choice: None,
         metadata: None,
+        routing_controls: None,
     }
 }
 
