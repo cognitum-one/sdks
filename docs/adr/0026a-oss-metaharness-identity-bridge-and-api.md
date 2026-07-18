@@ -341,13 +341,13 @@ Every method declares its prerequisite and evidence owner:
 
 | Method | Required capability | Evidence owner |
 |--------|---------------------|----------------|
-| catalog methods | `metaharness.catalog.templates/hosts` | Bridge + pinned bundle |
-| analyze / score | `repository.analyze` / `repository.score` | Bridge + pinned bundle |
-| plan | `scaffold.plan` | Bridge |
-| scaffold | `scaffold.render` plus ADR-0026b integrity/commit mode/recovery | Bridge + SDK platform probe |
-| inspect / validate / compare | `manifest.inspect` / `harness.validate/compare` | Bridge |
-| verify witness | `witness.shape/digest/ed25519/anchor` at requested level | Bridge/kernel + SDK trust policy |
-| cancellation | `process.cancel` | Bridge + SDK process manager |
+| catalog methods | `metaharness.catalog.templates` / `metaharness.catalog.hosts` | Bridge + pinned bundle |
+| analyze / score | `metaharness.repository.analyze` / `metaharness.repository.score` | Bridge + pinned bundle |
+| plan | `metaharness.scaffold.plan` | Bridge |
+| scaffold | `metaharness.scaffold.render` plus ADR-0026b integrity/commit mode/recovery | Bridge + SDK platform probe |
+| inspect / validate / compare | `metaharness.manifest.inspect` / `metaharness.harness.{validate,compare}` | Bridge |
+| verify witness | `metaharness.witness.{shape,digest,ed25519,anchor}` at requested level | Bridge/kernel + SDK trust policy |
+| cancellation | `metaharness.process.cancel` | Bridge + SDK process manager |
 
 The optional Proxy provider advertises a separate
 `meta-proxy.lifecycle-provider.v1` capability and per-operation

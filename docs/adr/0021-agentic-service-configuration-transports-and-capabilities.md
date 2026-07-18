@@ -261,6 +261,12 @@ authority component, a protocol error, upgrade response, reload, or changed
 server version invalidates the entry. Security-sensitive operations may require
 a freshly authenticated set.
 
+Lookup begins with ADR-0022's non-secret `CredentialAuthority`. If authenticated
+discovery supplies a previously unknown principal, tenant, scope, or plan, the
+SDK verifies it against the acquired credential and rekeys the immutable result
+before shared reuse. It never sends the target operation merely to discover the
+authority or a capability.
+
 Concurrent discovery for one complete authority key is single-flight. Waiters
 share the immutable result, not credentials or mutable request context. One
 waiter's cancellation does not cancel discovery for other waiters; the shared
@@ -272,15 +278,17 @@ expiry, and optional signature validate.
 
 ### D7. Preconditions
 
-Every facade method declares its capability expression. Examples:
+Every contract operation ID declares its capability expression. Examples:
 
 ```text
-MetaLlm.responses.stream       requires meta-llm.responses.streaming
-MetaProxy.sponsoredChatStream  requires meta-proxy.sponsored.streaming
-MetaHarness.scaffold(create)   requires All(durable-journal, atomic-create)
-MetaHarness.scaffold(replace)  requires All(durable-journal, transaction.recovery,
-                                             exchange-replace)
-HarnessAas.submit              requires harnessaas.executor.isolation >= container
+meta-llm.responses.stream          requires meta-llm.responses.streaming
+meta-proxy.sponsored.chat.stream   requires meta-proxy.sponsored.streaming
+metaharness.scaffold.create        requires All(metaharness.scaffold.durable-journal,
+                                                metaharness.scaffold.atomic-create)
+metaharness.scaffold.replace       requires All(metaharness.scaffold.durable-journal,
+                                                metaharness.transaction.recovery,
+                                                metaharness.scaffold.exchange-replace)
+harnessaas.solves.submit           requires harnessaas.executor.isolation >= container
 ```
 
 `transactional-replace` is a separately opted-in preview substitute for

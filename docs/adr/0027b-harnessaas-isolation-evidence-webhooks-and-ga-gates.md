@@ -92,7 +92,7 @@ The runtime publishes:
 ~~~text
 ExecutorIsolationCapability {
   level: none | process | container | microvm
-  state: supported | degraded | unavailable
+  state: supported | degraded | unsupported
   worker_build_digest
   policy_digest
   controls: {

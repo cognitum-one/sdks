@@ -51,9 +51,15 @@ map:
 
 ```text
 CredentialProvider {
+  describeAuthority(CredentialRequest) -> CredentialAuthority
   acquire(CredentialRequest) -> Credential
   identity() -> non-secret stable provider identity
   invalidate(reason)
+}
+
+CredentialAuthority {
+  provider_fingerprint, product, normalized_origin, audience
+  principal?, tenant?, delegated_subtenant?, effective_scopes?, plan?
 }
 
 CredentialRequest {
@@ -71,12 +77,19 @@ Credential {
   expires_at,
   granted_scopes,
   audience,
-  source
+  source,
+  authority
 }
 ```
 
-The provider MUST refuse an audience or origin mismatch. Credentials are
-acquired after request validation and capability preconditions but before I/O.
+The provider MUST refuse an audience or origin mismatch. After local request
+validation, the SDK obtains the non-secret authority descriptor needed to
+partition capability state. When authenticated runtime discovery is required,
+it may acquire a credential before evaluating the target operation's capability
+precondition and use it only for that discovery request. No target operation,
+mutation, content upload, execution, or spend request is sent until the
+precondition passes. An authority field learned from authenticated discovery
+must match the acquired credential before the result can enter a shared cache.
 Refresh may occur once after a verified authentication challenge; generic
 retries do not repeatedly invoke an interactive login.
 

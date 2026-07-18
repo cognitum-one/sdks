@@ -288,22 +288,23 @@ with digest/media type/size and are read only through an explicit bounded sink.
 
 ### D8. Capability and release gates
 
-Mutation requires the intersection of:
+Every mutation requires this common intersection:
 
 ~~~text
 metaharness.distribution.integrity
-metaharness.repository.commit-pin
 metaharness.scaffold.plan
 metaharness.scaffold.durable-journal
-metaharness.scaffold.atomic-create
-metaharness.scaffold.exchange-replace | metaharness.scaffold.transactional-replace
 metaharness.process.cancel
 metaharness.transaction.recovery
 ~~~
 
-`transactional-replace` is preview and never satisfies an atomic-visibility
-requirement. Unknown/degraded capability blocks apply; generic force cannot
-override it.
+Remote-source mutation additionally requires `metaharness.repository.commit-pin`.
+Creating a new target requires `metaharness.scaffold.atomic-create`. Stable
+replacement requires `metaharness.scaffold.exchange-replace`; the explicitly
+opted-in preview replacement may instead require
+`metaharness.scaffold.transactional-replace`. The latter never satisfies an
+atomic-visibility requirement. Unknown/degraded capability blocks apply;
+generic force cannot override it.
 
 Current blockers are the unpublished reviewed `0.4.1`, absent structured
 bridge, mutable `from-repo`, destructive force path, EXDEV copy fallback,

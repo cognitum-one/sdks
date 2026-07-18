@@ -110,7 +110,10 @@ explicitly preview and `0.3.0` release claims MUST say so.
 
 No phase may bypass R0. R3 and R4 may proceed in parallel after R2. A product
 can remain preview without blocking stable methods from another product, but a
-release cannot claim “all four fully integrated” until every stable row passes.
+release cannot claim “all four fully integrated” until each required product
+inventory declares at least one stable public operation, no required inventory
+row is preview, blocked, internal, or not-applicable, and every required stable
+row passes. A product with zero stable rows never satisfies this claim.
 
 ### D10. Prerelease and maturity policy
 
@@ -238,7 +241,7 @@ The release report links each architecture decision to executable evidence:
 | 0024 | Meta LLM protocol, stream, route, usage, and cost fidelity | OpenAI/Anthropic fixtures, stream events, `x_cognitum`, token and cost reconciliation |
 | 0025 | Meta Proxy local control and explicit routing/failover | Status, capability subset, consent, no-silent-fallback, reload, token isolation |
 | 0026 | Structured MetaHarness process and verified npm distribution boundary | Exact-version bridge, no-shell argv, output limits, process-tree cancellation, acquisition consent |
-| 0027 | HarnessaaS job, event, approval, artifact, and isolation semantics | State-machine, resume, approve/reject, digest/size, sandbox, receipt and lineage fixtures |
+| 0027 | HarnessaaS job, event, approval, artifact, and isolation semantics | State-machine, resume, approve/deny, digest/size, sandbox, receipt and lineage fixtures |
 | 0028 | Telemetry, traces, usage, receipts, lineage, and redaction | Canonical events, trace propagation, exactly-one terminal record, content exclusion, signature verification |
 | 0029 | Package, runtime, browser, feature, and CLI boundaries | Installed-artifact imports, bundle graph, lazy imports, feature powerset, CLI JSON and secret tests |
 

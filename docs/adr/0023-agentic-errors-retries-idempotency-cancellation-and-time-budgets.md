@@ -136,7 +136,7 @@ state. A status code alone is never sufficient.
 |-----------------|---------------------------|------------------------|----------------|
 | Safe read | May retry transient failures | Only if no semantic body/event consumed | Contract marks safe and no side effect |
 | Idempotent mutation | May retry | May retry only when full outcome is known absent or safely replayable | Contract and server guarantee |
-| Idempotent with key | May retry using the same key and body fingerprint | May replay only if server returns the stored complete outcome | Server binds principal, method, path, body hash |
+| Idempotent with key | May retry using the same key and body fingerprint | May replay only if server returns the stored complete outcome | Server implements exact `IdempotencyBindingV1` and atomic complete-result replay |
 | Non-idempotent | No automatic retry | Never | Caller starts a new logical operation explicitly |
 | Streaming | At most before request acceptance when contract explicitly supports it | Never after first response byte | Resumable application event protocol, not inference byte replay |
 | Local process | No automatic restart | Never | Caller invokes a new process run |

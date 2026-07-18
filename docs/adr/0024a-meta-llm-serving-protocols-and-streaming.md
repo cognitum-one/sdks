@@ -312,8 +312,10 @@ No serving operation becomes stable until applicable gates pass:
    envelopes, limits, and golden fixtures.
 3. Add authenticated capabilities with product and contract versions, maturity,
    auth methods, scopes, limits, and limitations.
-4. Bind idempotency to method, path, canonical request hash, and principal, with
-   deterministic mismatch error.
+4. Implement ADR-0023 `IdempotencyBindingV1` exactly, including principal,
+   tenant/delegated subtenant, method, normalized route, canonical request hash,
+   caller key, and contract major, with atomic replay and deterministic mismatch
+   error.
 5. Define streaming replay as unsupported or publish a durable resumable
    contract; lookup alone is not stream idempotency.
 6. Reconcile `/v1/models` with accepted public aliases and identify internal

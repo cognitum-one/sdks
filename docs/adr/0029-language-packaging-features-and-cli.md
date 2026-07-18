@@ -296,17 +296,17 @@ lifecycle provider is configured. The CLI MUST remain a thin
 caller of public SDK methods. It cannot contain an alternative transport,
 error mapping, retry loop, capability table, or policy engine.
 
-Canonical command-bearing symbols are fixed below. Languages adapt only casing
-and async conventions; they do not substitute synonyms:
+Canonical Node facade spellings are fixed by the owning product ADR. Python and
+Rust adapt only casing and async conventions, never semantic synonyms:
 
-| Product | Public SDK operation | CLI command | Exposure prerequisite |
-|---------|----------------------|-------------|-----------------------|
-| Shared | `capabilities.inspect` | `agentic capabilities` | At least one configured product |
+| Product | Canonical Node facade method | CLI command | Exposure prerequisite |
+|---------|------------------------------|-------------|-----------------------|
+| Shared | each configured client's `capabilities()` | `agentic capabilities` | At least one configured product |
 | Meta LLM | `models.list`, `chat.completions.create`, `usage.list` | `meta-llm models`, `meta-llm chat`, `meta-llm usage` | Operation maturity from contract |
-| Meta Proxy | `status` | `meta-proxy status` | Authenticated local client |
-| Meta Proxy manager | `start`, `stop` | `meta-proxy start`, `meta-proxy stop` | Injected verified lifecycle provider |
-| MetaHarness | `capabilities`, `templates`, `hosts`, `analyze`, `score`, `plan`, `scaffold`, `validate`, `verify` | Same final command segment under `metaharness` | Exact bridge capability and runtime |
-| HarnessaaS | `submit`, `get`, `events`, `approvals.list`, `approve`, `deny`, `cancel`, `artifacts.list` | `harnessaas submit`, `status`, `events`, `approvals`, `approve`, `deny`, `cancel`, `artifacts` | Exact job/evidence capability |
+| Meta Proxy | `status()` | `meta-proxy status` | Authenticated local client |
+| Meta Proxy manager | `start()`, `stop()` | `meta-proxy start`, `meta-proxy stop` | Injected verified lifecycle provider |
+| MetaHarness | `capabilities()`, `listTemplates()`, `listHosts()`, `analyzeRepository()`, `scoreRepository()`, `planScaffold()`, `scaffold()`, `validateHarness()`, `verifyWitness()` | Corresponding command under `metaharness` | Exact bridge capability and runtime |
+| HarnessaaS | `submitSolve()`, `getSolve()`, `SolveHandle.events()`, `listApprovals()`, `approve()`, `deny()`, `SolveHandle.cancel()`, `listArtifacts()` | Corresponding `submit`, `status`, `events`, `approvals`, `approve`, `deny`, `cancel`, or `artifacts` command | Exact job/evidence capability |
 
 `whoami` is the canonical authenticated identity probe on product clients;
 `identity()` remains the credential-provider fingerprint method in ADR-0022.

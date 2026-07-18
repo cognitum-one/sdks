@@ -1,8 +1,11 @@
 # Cognitum SDK ADRs + Domain Model
 
 Architecture Decision Records and Domain-Driven Design documentation for the
-Cognitum SDK ecosystem. Ground truth for the domain is the **Cognitum Seed**
-appliance firmware at `/home/ruvultra/projects/sdks/seed/` (git submodule).
+Cognitum SDK ecosystem. Ground truth for the Seed domain is the **Cognitum
+Seed** firmware in the repository's `seed/` submodule. Ground truth for agentic
+integrations is the product-owned immutable contract bundles and revisions
+locked by ADR-0020 and recorded in the audit log below. Neither substitutes for
+the other.
 
 ## Layout
 
@@ -54,7 +57,8 @@ are referenced by each SDK's architecture + implementation ADRs.
 
 1. [`ddd/seed-domain.md`](ddd/seed-domain.md) — DDD model of the Seed (bounded
    contexts, aggregates, value objects, domain events, ubiquitous language).
-   **Read this first; every ADR references it.**
+   **Read this first for Seed work.** Agentic integration work starts at
+   ADR-0019 and follows its product-owned contracts.
 2. [`0001-adr-template.md`](0001-adr-template.md) — Template used for all ADRs.
 3. [`0002-seed-wire-protocol.md`](0002-seed-wire-protocol.md) — The HTTP
    contract all three SDKs bind to for direct-to-Seed traffic.
@@ -212,4 +216,3 @@ shipped/verified.
 | OQ-16 | Which exact OSS MetaHarness bridge distribution supersedes the npm `0.4.0` versus source `0.4.1` drift, and when will it publish complete JSONL schemas? | MetaHarness owner + ADR-0026a/b | **Open** — the SDK never parses human CLI prose or invokes mutable `npx` resolution internally. |
 | OQ-17 | When will HarnessaaS publish durable asynchronous jobs, atomic submit idempotency, supported container or microVM isolation, signed evidence keys, and transactional webhooks? | HarnessaaS owner + ADR-0027a/b | **Open** — stable submit fails closed; legacy synchronous solve is preview-only and never executes untrusted commands through a process-only fallback. |
 | OQ-18 | Which product revisions and live staging deployments are the first release candidates for the twelve-binding conformance matrix? | Release Engineering + ADR-0030a/b | **Open** — the signed release manifest must bind exact SDK artifacts, contract digests, product revisions, and deployment evidence before GA. |
-
