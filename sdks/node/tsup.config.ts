@@ -34,6 +34,19 @@ export default defineConfig([
     external: ["multicast-dns"],
   },
   {
+    // Shared agentic contract subpath — @cognitum-one/sdk/agentic
+    // (ADR-0019 §D2). Type-only scaffolding: no child-process or
+    // filesystem imports, so this stays safe for browser-facing Meta LLM
+    // and HarnessaaS bundles that depend on it (ADR-0019 §D2 note).
+    entry: { "agentic/index": "src/agentic/index.ts" },
+    format: ["esm", "cjs"],
+    dts: true,
+    clean: false,
+    sourcemap: true,
+    target: "es2022",
+    outDir: "dist",
+  },
+  {
     entry: ["src/cli.ts"],
     format: ["esm"],
     outExtension: () => ({ js: ".mjs" }),

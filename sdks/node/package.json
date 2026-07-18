@@ -21,6 +21,11 @@
       "types": "./dist/seed/discovery/mdns.d.ts",
       "import": "./dist/seed/discovery/mdns.js",
       "require": "./dist/seed/discovery/mdns.cjs"
+    },
+    "./agentic": {
+      "types": "./dist/agentic/index.d.ts",
+      "import": "./dist/agentic/index.js",
+      "require": "./dist/agentic/index.cjs"
     }
   },
   "bin": {
