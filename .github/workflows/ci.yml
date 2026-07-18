@@ -76,11 +76,11 @@ jobs:
       # shouldn't depend on runner-local port state to get that skip
       # (same reasoning as the Node/Python SKIP_SEED_INTEGRATION env var).
       - name: build (all features except live-seed-tests)
-        run: cargo build --features "native-tls,seed,stream,blocking,mdns"
+        run: cargo build --features "native-tls,seed,stream,blocking,mdns,meta-llm"
       - name: test (all features except live-seed-tests)
-        run: cargo test --features "native-tls,seed,stream,blocking,mdns"
+        run: cargo test --features "native-tls,seed,stream,blocking,mdns,meta-llm"
       - name: clippy (all features except live-seed-tests)
-        run: cargo clippy --all-targets --features "native-tls,seed,stream,blocking,mdns" -- -D warnings
+        run: cargo clippy --all-targets --features "native-tls,seed,stream,blocking,mdns,meta-llm" -- -D warnings
 
   rust-feature-matrix:
     name: rust feature matrix (build)
@@ -97,7 +97,7 @@ jobs:
         # `default = ["rustls"]`) is the closest meaningful baseline.
         # Each remaining feature is then built individually on top of it.
         # `live-seed-tests` is excluded — see the comment on the `rust` job.
-        feature: [default, native-tls, seed, stream, blocking, mdns]
+        feature: [default, native-tls, seed, stream, blocking, mdns, meta-llm]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

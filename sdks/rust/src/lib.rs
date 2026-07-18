@@ -40,3 +40,6 @@ pub use error::Error;
 
 #[cfg(feature = "seed")]
 pub mod seed;
+
+#[cfg(feature = "meta-llm")]
+pub mod meta_llm;

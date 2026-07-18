@@ -1,0 +1,65 @@
+/**
+ * Meta LLM serving client (ADR-0024a). Product namespace per ADR-0019 §D2:
+ * `@cognitum-one/sdk/meta-llm`.
+ *
+ * Issue #58 / M2 start: `MetaLlmClient` construction, wire types, and
+ * real `health()` / `whoami()` / `models()` implementations. Streaming
+ * (§D5), the five protocol operations' HTTP logic, and ADR-0024b routing
+ * controls are deliberately out of scope — see follow-up issues.
+ *
+ * Per ADR-0019 §D4, this module depends on `../agentic/index.js` and MUST
+ * NOT be imported by any other product module (`meta-proxy`, `metaharness`,
+ * `harnessaas`).
+ */
+
+export type {
+  MetaLlmClientConfig,
+  MetaLlmRoutingControls,
+  MetaLlmSafetyControl,
+  MetaLlmTelemetryEvent,
+  MetaLlmTelemetryHooks,
+  MetaLlmTransport,
+  ResolvedMetaLlmClientConfig,
+} from "./config.js";
+export { resolveMetaLlmClientConfig } from "./config.js";
+
+export type { MetaLlmReceipt, MetaLlmResponseMeta, MetaLlmResult } from "./envelope.js";
+
+export type { MetaLlmHealth, MetaLlmModelInfo, MetaLlmModelList, MetaLlmWhoAmI } from "./discovery.js";
+
+export type {
+  ChatCompletion,
+  ChatCompletionChoice,
+  ChatCompletionRequest,
+  ChatCompletionUsage,
+  ChatContentPart,
+  ChatMessage,
+  ChatToolCall,
+  ChatToolChoice,
+  ChatToolDefinition,
+  EmbeddingDatum,
+  EmbeddingRequest,
+  EmbeddingResponse,
+  EmbeddingUsage,
+  LegacyCompletion,
+  LegacyCompletionChoice,
+  LegacyCompletionRequest,
+  ResponsesOutputItem,
+  ResponsesRequest,
+  ResponsesResponse,
+} from "./types/openai.js";
+
+export type {
+  AnthropicContentBlock,
+  AnthropicMessage,
+  AnthropicMessageParam,
+  AnthropicMessageRequest,
+  AnthropicToolChoice,
+  AnthropicToolDefinition,
+  AnthropicUsage,
+  CountTokensRequest,
+  CountTokensResult,
+} from "./types/anthropic.js";
+
+export type { MetaLlmCallOptions } from "./client.js";
+export { MetaLlmClient } from "./client.js";
