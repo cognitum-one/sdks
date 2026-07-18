@@ -204,6 +204,75 @@ interface SecretRedactor {
 }
 
 /**
+ * Concrete `CredentialProvider` for a static Cognitum-cloud API key
+ * (ADR-0022 §D1, §D2, §D3). Issue #53 / M1 follow-up — the frozen
+ * `CredentialProvider` contract from issue #52 (`./credentials.js`) gets its
+ * first real implementation here.
+ *
+ * This wraps a caller-supplied API key (or `COGNITUM_API_KEY`, matching the
+ * resolution order already used by `HttpClient.resolveApiKey` in
+ * `../client.js` and codified in ADR-0003 §"Credential provisioning") and
+ * hands it out only for the exact `product` / `normalizedOrigin` /
+ * `audience` the provider was constructed for (ADR-0022 §D1/§D3: "The
+ * provider MUST refuse an audience or origin mismatch" / "Credential
+ * providers are bound to the normalized origin selected during client
+ * construction. A redirect to another origin is not followed with
+ * credentials."). There is no wildcard origin or suffix matching — every
+ * check below is exact string equality.
+ *
+ * No HTTP request is made or shaped here — this type produces credentials,
+ * it does not send them.
+ */
+
+/** Canonical env var per ADR-0003 §"Credential provisioning" / `../client.js`. */
+declare const DEFAULT_API_KEY_ENV_VAR = "COGNITUM_API_KEY";
+/** Construction-time options for {@link StaticApiKeyCredentialProvider}. */
+interface StaticApiKeyCredentialProviderOptions {
+    /** Product this provider is authoritative for (e.g. "cognitum-cloud"). */
+    product: string;
+    /** Exact normalized origin this provider is bound to (ADR-0022 §D3). */
+    normalizedOrigin: string;
+    /** Exact audience this provider is bound to (ADR-0022 §D1). */
+    audience: string;
+    /**
+     * Explicit API key. When omitted, resolved from `envVar`
+     * (default {@link DEFAULT_API_KEY_ENV_VAR}) per ADR-0003's resolution
+     * order: explicit arg, then environment variable, then fail at
+     * construction time.
+     */
+    apiKey?: string;
+    /** Override the environment variable name checked when `apiKey` is omitted. */
+    envVar?: string;
+    /**
+     * Wire scheme label surfaced on the acquired {@link Credential}.
+     * Defaults to `"X-API-Key"`, the canonical cloud header per ADR-0003.
+     */
+    scheme?: string;
+    /** Injectable environment map, for testing. Defaults to `process.env`. */
+    env?: Record<string, string | undefined>;
+}
+/**
+ * Concrete `CredentialProvider` wrapping one static Cognitum-cloud API key
+ * (ADR-0022 §D1/§D2/§D3). Fails closed on any product, origin, or audience
+ * mismatch — see {@link StaticApiKeyCredentialProvider#assertMatch}.
+ */
+declare class StaticApiKeyCredentialProvider implements CredentialProvider {
+    #private;
+    constructor(options: StaticApiKeyCredentialProviderOptions);
+    /** Non-secret stable provider identity, safe to log. */
+    identity(): string;
+    describeAuthority(request: CredentialRequest): Promise<CredentialAuthority>;
+    acquire(request: CredentialRequest): Promise<Credential>;
+    invalidate(_reason: string): Promise<void>;
+    private authority;
+    /**
+     * Fail-closed match check (ADR-0022 §D1/§D3). Exact string equality only
+     * — no wildcard origin, suffix matching, or DNS-parent trust.
+     */
+    private assertMatch;
+}
+
+/**
  * Shared per-call request context (ADR-0019 §D5) and budget policy
  * (ADR-0022 §D6). Type-only scaffolding — issue #52 / M1.
  */
@@ -386,4 +455,4 @@ interface LineageReference {
     verification: VerificationResult;
 }
 
-export { AgenticError, type AgenticErrorKind, type BudgetPolicy, type CancellationReason, type CancellationToken, type CapabilitySet, type CapabilitySource, type CostFinality, type CostObservation, type Credential, type CredentialAuthority, type CredentialProvider, type CredentialRequest, DEFAULT_RETRY_POLICY, type EventStreamOptions, type ExecutionReceipt, type IdempotencyBindingV1, type LineageReference, type OnUnknownEstimate, type OperationEvent, type OperationHandle, type OperationRetryClass, type OperationSnapshot, type OperationState, type Page, type PageRequest, RedactedSecret, type RequestContext, type RetryPolicy, type SecretClassification, type SecretRedactor, type TenantContext, type TimeBudget, UnsupportedCapabilityError, type VerificationLevel, type VerificationResult, type WaitOptions, equalJitterDelayMs };
+export { AgenticError, type AgenticErrorKind, type BudgetPolicy, type CancellationReason, type CancellationToken, type CapabilitySet, type CapabilitySource, type CostFinality, type CostObservation, type Credential, type CredentialAuthority, type CredentialProvider, type CredentialRequest, DEFAULT_API_KEY_ENV_VAR, DEFAULT_RETRY_POLICY, type EventStreamOptions, type ExecutionReceipt, type IdempotencyBindingV1, type LineageReference, type OnUnknownEstimate, type OperationEvent, type OperationHandle, type OperationRetryClass, type OperationSnapshot, type OperationState, type Page, type PageRequest, RedactedSecret, type RequestContext, type RetryPolicy, type SecretClassification, type SecretRedactor, StaticApiKeyCredentialProvider, type StaticApiKeyCredentialProviderOptions, type TenantContext, type TimeBudget, UnsupportedCapabilityError, type VerificationLevel, type VerificationResult, type WaitOptions, equalJitterDelayMs };

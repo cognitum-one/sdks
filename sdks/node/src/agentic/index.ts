@@ -6,11 +6,12 @@
  * those product modules depend on this module; this module MUST NOT import
  * any product module.
  *
- * Everything here is **type-only scaffolding** (issue #52 / M1). There is no
- * network I/O, no credential acquisition, no retry loop, and no product
- * routing/consent/scaffold logic — those remain product-specific per D5 and
- * land in follow-up issues (#53 credential-provider implementation, #54
- * secret-redaction implementation, #56 receipt/lineage verification).
+ * Most of this module is **type-only scaffolding** (issue #52 / M1): there is
+ * still no network I/O, retry loop, or product routing/consent/scaffold
+ * logic — those remain product-specific per D5. `StaticApiKeyCredentialProvider`
+ * (issue #53) is the first concrete implementation landing on top of this
+ * contract; secret-redaction (#54) and receipt/lineage verification (#56)
+ * remain follow-up issues.
  *
  * Sources:
  * - docs/adr/0019-agentic-platform-bounded-contexts.md (D2, D3, D5, D6)
@@ -47,6 +48,12 @@ export type {
   SecretRedactor,
 } from "./credentials.js";
 export { RedactedSecret } from "./credentials.js";
+
+export type { StaticApiKeyCredentialProviderOptions } from "./static-api-key-provider.js";
+export {
+  StaticApiKeyCredentialProvider,
+  DEFAULT_API_KEY_ENV_VAR,
+} from "./static-api-key-provider.js";
 
 export type {
   OnUnknownEstimate,

@@ -25,6 +25,7 @@ pub mod credentials;
 pub mod errors;
 pub mod operations;
 pub mod receipts;
+pub mod static_api_key_provider;
 
 pub use capability::{CapabilitySet, CapabilitySource};
 pub use context::{BudgetPolicy, OnUnknownEstimate, RequestContext, TenantContext};
@@ -44,4 +45,7 @@ pub use operations::{
 pub use receipts::{
     CostFinality, CostObservation, ExecutionReceipt, LineageReference, LineageSubject,
     ReceiptSubject, VerificationLevel, VerificationResult,
+};
+pub use static_api_key_provider::{
+    StaticApiKeyCredentialProvider, StaticApiKeyCredentialProviderOptions, DEFAULT_API_KEY_ENV_VAR,
 };
