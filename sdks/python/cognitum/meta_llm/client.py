@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
@@ -56,9 +57,12 @@ from cognitum.meta_llm.parsing import (
     parse_legacy_completion,
     parse_responses_response,
 )
+from cognitum.meta_llm.stream.chat_completions_stream import chat_completions_stream
 
 if TYPE_CHECKING:
-    from cognitum.agentic import Credential
+    from cognitum.agentic import Credential, RequestContext
+    from cognitum.meta_llm.stream.envelope import MetaLlmStreamEnvelope
+    from cognitum.meta_llm.stream.openai_events import OpenAiStreamEvent
     from cognitum.meta_llm.types import (
         AnthropicMessage,
         AnthropicMessageRequest,
@@ -101,6 +105,26 @@ class _ChatNamespace:
             body,
         )
         return MetaLlmResult(data=parse_chat_completion(data), meta=meta)
+
+    def completions_stream(
+        self,
+        request: ChatCompletionRequest,
+        request_context: RequestContext | None = None,
+        **_kwargs: Any,
+    ) -> AsyncIterator[MetaLlmStreamEnvelope[OpenAiStreamEvent]]:
+        """``POST /v1/chat/completions`` with ``stream=True`` (ADR-0024a
+        §D5). Issue #58 / M2 continuation -- the first protocol wired onto
+        the generic SSE parser (:mod:`cognitum.sse`); Anthropic Messages and
+        Responses streaming are deferred follow-ups that reuse the same
+        parser. Returns an async iterator -- iterate with ``async for``; it
+        completes normally only after the OpenAI wire terminal condition
+        (``[DONE]`` or a ``finish_reason``) is observed, otherwise it raises
+        a typed ``AgenticError`` describing why (see
+        ``stream/chat_completions_stream.py``).
+        """
+        return chat_completions_stream(
+            self._client._config, self._client._transport, request, request_context
+        )
 
 
 class _MessagesNamespace:

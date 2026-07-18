@@ -59,6 +59,22 @@ export default defineConfig([
     outDir: "dist",
   },
   {
+    // Protocol-agnostic SSE parser subpath — @cognitum-one/sdk/sse
+    // (ADR-0024a §D5). Zero product knowledge, zero dependencies beyond
+    // `TextDecoder`/`TextEncoder` — safe for browser-facing bundles.
+    // `meta-llm`'s chat-completions streaming imports this directly by
+    // relative path (not through this subpath) — the subpath export exists
+    // so a future Anthropic/Responses streaming facade in another package
+    // can reuse it too.
+    entry: { "sse/index": "src/sse/index.ts" },
+    format: ["esm", "cjs"],
+    dts: true,
+    clean: false,
+    sourcemap: true,
+    target: "es2022",
+    outDir: "dist",
+  },
+  {
     entry: ["src/cli.ts"],
     format: ["esm"],
     outExtension: () => ({ js: ".mjs" }),

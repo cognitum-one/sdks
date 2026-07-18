@@ -42,7 +42,9 @@ const INFERENCE_SCOPE: &str = "meta-llm.inference";
 /// `SystemTime` entropy) rather than pulling in a `rand` dependency for a
 /// backoff jitter that only needs to avoid lockstep retries across
 /// callers, not cryptographic unpredictability.
-fn random_jitter_ms(bound: u64) -> u64 {
+/// `pub(super)` so `./stream/chat_completions_stream.rs` can reuse this
+/// verbatim (issue #58 D5 streaming pass).
+pub(super) fn random_jitter_ms(bound: u64) -> u64 {
     if bound == 0 {
         return 0;
     }
@@ -135,8 +137,11 @@ impl MetaLlmClient {
     /// Resolve a credential, failing closed with `Authentication` when no
     /// provider is configured — mirrors `http.rs`'s `get_json` gate for
     /// `whoami`/`models`, but with the inference scope (ADR-0024a §D8).
+    /// `pub(super)` (rather than private) so `./stream/chat_completions_stream.rs`
+    /// can reuse it verbatim (issue #58 D5 streaming pass) instead of
+    /// duplicating credential-acquisition logic.
     #[allow(clippy::result_large_err)]
-    async fn require_credential(&self, operation: &str) -> Result<Credential, AgenticError> {
+    pub(super) async fn require_credential(&self, operation: &str) -> Result<Credential, AgenticError> {
         let Some(provider) = self.config.credential_provider.as_ref() else {
             return Err(AgenticError {
                 product: Some(PRODUCT.to_owned()),

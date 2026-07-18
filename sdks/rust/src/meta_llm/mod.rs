@@ -20,6 +20,7 @@ pub mod envelope;
 mod http;
 mod idempotency;
 mod nonstream;
+pub mod stream;
 pub mod types;
 
 /// Product identity used in requests, credential scoping, and error fields.
@@ -35,3 +36,8 @@ pub use config::{
 };
 pub use discovery::{MetaLlmHealth, MetaLlmModelInfo, MetaLlmModelList, MetaLlmWhoAmI};
 pub use envelope::{MetaLlmReceipt, MetaLlmResponseMeta, MetaLlmResult};
+pub use stream::{
+    decode_openai_sse_event, ChatCompletionsStream, ChatCompletionsStreamAccumulator,
+    ChatCompletionsStreamSnapshot, DecodedOpenAiSseEvent, MetaLlmStreamEnvelope, OpenAiStreamErrorPayload,
+    OpenAiStreamEvent, ToolCallAccumulation,
+};

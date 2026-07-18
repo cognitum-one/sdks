@@ -43,3 +43,10 @@ pub mod seed;
 
 #[cfg(feature = "meta-llm")]
 pub mod meta_llm;
+
+/// Protocol-agnostic Server-Sent Events parsing (ADR-0024a §D5). Gated
+/// behind `meta-llm` since it is the module's only current consumer, but
+/// carries zero dependency on `meta_llm` itself and is reused as-is when
+/// Anthropic Messages / Responses streaming lands.
+#[cfg(feature = "meta-llm")]
+pub mod sse;

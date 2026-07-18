@@ -381,9 +381,465 @@ async function postJsonIdempotent(deps, path, operation, body) {
   }
 }
 
+// src/sse/parser.ts
+var DEFAULT_MAX_LINE_BYTES = 64 * 1024;
+var DEFAULT_MAX_EVENT_BYTES = 256 * 1024;
+var DEFAULT_MAX_BUFFERED_BYTES = 1024 * 1024;
+var DEFAULT_MAX_MALFORMED_EVENTS = 50;
+var SseParseError = class extends Error {
+  code;
+  constructor(code, message) {
+    super(message);
+    this.name = "SseParseError";
+    this.code = code;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
+var LF = 10;
+var CR = 13;
+var SseParser = class {
+  maxLineBytes;
+  maxEventBytes;
+  maxBufferedBytes;
+  maxMalformedEvents;
+  buffer = new Uint8Array(0);
+  lineDecoder = new TextDecoder("utf-8", { fatal: false });
+  fieldEncoder = new TextEncoder();
+  eventType;
+  dataLines = [];
+  dataBytesLen = 0;
+  eventId;
+  retryMs;
+  poisoned = false;
+  malformedCount = 0;
+  constructor(options) {
+    this.maxLineBytes = options?.maxLineBytes ?? DEFAULT_MAX_LINE_BYTES;
+    this.maxEventBytes = options?.maxEventBytes ?? DEFAULT_MAX_EVENT_BYTES;
+    this.maxBufferedBytes = options?.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
+    this.maxMalformedEvents = options?.maxMalformedEvents ?? DEFAULT_MAX_MALFORMED_EVENTS;
+  }
+  /**
+   * Feed the next chunk of raw bytes (any size, any split point — including
+   * mid-UTF-8-codepoint). Returns zero or more fully-dispatched events, in
+   * order. Throws {@link SseParseError} if a hard limit is exceeded.
+   */
+  feed(chunk) {
+    this.appendToBuffer(chunk);
+    const events = [];
+    for (; ; ) {
+      const line = this.takeLine();
+      if (line === void 0) break;
+      const event = this.processLine(line);
+      if (event) events.push(event);
+    }
+    return events;
+  }
+  /**
+   * Signal end of stream (no more bytes will arrive). Any undispatched
+   * partial event/line is dropped, matching the SSE spec: dispatch only
+   * happens on a blank line, and a stream that closes mid-event never
+   * sends one. This does NOT throw — whether an incomplete stream is an
+   * error is protocol-specific (e.g. "did we see `[DONE]`?"), which is the
+   * caller's decision, not this generic parser's.
+   */
+  finish() {
+    return {
+      hadUndispatchedData: this.dataLines.length > 0 || this.buffer.length > 0,
+      malformedEventCount: this.malformedCount
+    };
+  }
+  appendToBuffer(chunk) {
+    const merged = new Uint8Array(this.buffer.length + chunk.length);
+    merged.set(this.buffer, 0);
+    merged.set(chunk, this.buffer.length);
+    this.buffer = merged;
+    if (this.buffer.length > this.maxBufferedBytes) {
+      throw new SseParseError(
+        "buffer_overflow",
+        `SSE parser buffered ${this.buffer.length} bytes without a line terminator (limit ${this.maxBufferedBytes})`
+      );
+    }
+  }
+  /**
+   * Removes and returns the next complete line's raw bytes (terminator
+   * excluded), or `undefined` if no complete line is available yet.
+   * Accepts LF, CRLF, and lone CR (SSE/HTML spec line-terminator rule) —
+   * a trailing CR with no following byte yet is NOT treated as a
+   * terminator until either a following LF/non-LF byte or `finish()`
+   * disambiguates it, so a CRLF split exactly at the CR/LF boundary
+   * across two `feed()` calls is handled correctly.
+   */
+  takeLine() {
+    for (let i = 0; i < this.buffer.length; i += 1) {
+      const byte = this.buffer[i];
+      if (byte === LF) {
+        const line = this.buffer.slice(0, i);
+        this.buffer = this.buffer.slice(i + 1);
+        return line;
+      }
+      if (byte === CR) {
+        if (i + 1 < this.buffer.length) {
+          const consumed = this.buffer[i + 1] === LF ? i + 2 : i + 1;
+          const line = this.buffer.slice(0, i);
+          this.buffer = this.buffer.slice(consumed);
+          return line;
+        }
+        return void 0;
+      }
+    }
+    return void 0;
+  }
+  noteMalformed() {
+    this.malformedCount += 1;
+    if (this.malformedCount > this.maxMalformedEvents) {
+      throw new SseParseError(
+        "too_many_malformed_events",
+        `SSE parser exceeded ${this.maxMalformedEvents} malformed/oversized lines or events`
+      );
+    }
+  }
+  processLine(lineBytes) {
+    if (lineBytes.length > this.maxLineBytes) {
+      this.noteMalformed();
+      return void 0;
+    }
+    const line = this.lineDecoder.decode(lineBytes);
+    if (line.length === 0) {
+      return this.dispatch();
+    }
+    if (line.startsWith(":")) {
+      return void 0;
+    }
+    const colonIdx = line.indexOf(":");
+    let field;
+    let value;
+    if (colonIdx === -1) {
+      field = line;
+      value = "";
+    } else {
+      field = line.slice(0, colonIdx);
+      value = line.slice(colonIdx + 1);
+      if (value.startsWith(" ")) value = value.slice(1);
+    }
+    switch (field) {
+      case "event":
+        this.eventType = value;
+        break;
+      case "data": {
+        const additional = this.fieldEncoder.encode(value).length + (this.dataLines.length > 0 ? 1 : 0);
+        if (!this.poisoned && this.dataBytesLen + additional > this.maxEventBytes) {
+          this.poisoned = true;
+          this.noteMalformed();
+        }
+        if (!this.poisoned) {
+          this.dataLines.push(value);
+          this.dataBytesLen += additional;
+        }
+        break;
+      }
+      case "id":
+        if (!value.includes("\0")) this.eventId = value;
+        break;
+      case "retry":
+        if (/^[0-9]+$/.test(value)) this.retryMs = Number(value);
+        break;
+      default:
+        break;
+    }
+    return void 0;
+  }
+  dispatch() {
+    const hadData = this.dataLines.length > 0;
+    const event = hadData && !this.poisoned ? { event: this.eventType, data: this.dataLines.join("\n"), id: this.eventId, retry: this.retryMs } : void 0;
+    this.eventType = void 0;
+    this.dataLines = [];
+    this.dataBytesLen = 0;
+    this.eventId = void 0;
+    this.retryMs = void 0;
+    this.poisoned = false;
+    return event;
+  }
+};
+
+// src/meta-llm/stream/openai-events.ts
+var KNOWN_TOP_LEVEL_KEYS = /* @__PURE__ */ new Set([
+  "id",
+  "object",
+  "created",
+  "model",
+  "choices",
+  "usage",
+  "cognitum_receipt",
+  "system_fingerprint",
+  "error"
+]);
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function decodeOpenAiSseEvent(raw) {
+  const trimmed = raw.data.trim();
+  if (trimmed === "[DONE]") {
+    return { events: [{ type: "done" }] };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw.data);
+  } catch {
+    return { events: [{ type: "unknown", raw: raw.data }] };
+  }
+  if (!isRecord(parsed)) {
+    return { events: [{ type: "unknown", raw: parsed }] };
+  }
+  const events = [];
+  if (isRecord(parsed.error)) {
+    const e = parsed.error;
+    events.push({
+      type: "error",
+      error: {
+        message: typeof e.message === "string" ? e.message : "unknown error",
+        type: typeof e.type === "string" ? e.type : void 0,
+        code: typeof e.code === "string" ? e.code : void 0,
+        param: typeof e.param === "string" ? e.param : void 0
+      }
+    });
+  }
+  if (Array.isArray(parsed.choices)) {
+    for (const choiceRaw of parsed.choices) {
+      if (!isRecord(choiceRaw)) continue;
+      const index = typeof choiceRaw.index === "number" ? choiceRaw.index : 0;
+      const delta = isRecord(choiceRaw.delta) ? choiceRaw.delta : {};
+      if (typeof delta.role === "string") {
+        events.push({ type: "role", index, role: delta.role });
+      }
+      if (typeof delta.content === "string" && delta.content.length > 0) {
+        events.push({ type: "content_delta", index, delta: delta.content });
+      }
+      if (Array.isArray(delta.tool_calls)) {
+        for (const toolCallRaw of delta.tool_calls) {
+          if (!isRecord(toolCallRaw)) continue;
+          const fn = isRecord(toolCallRaw.function) ? toolCallRaw.function : {};
+          events.push({
+            type: "tool_call_delta",
+            index,
+            toolCallIndex: typeof toolCallRaw.index === "number" ? toolCallRaw.index : 0,
+            id: typeof toolCallRaw.id === "string" ? toolCallRaw.id : void 0,
+            functionName: typeof fn.name === "string" ? fn.name : void 0,
+            argumentsDelta: typeof fn.arguments === "string" ? fn.arguments : void 0
+          });
+        }
+      }
+      if (typeof choiceRaw.finish_reason === "string") {
+        events.push({ type: "finish_reason", index, finishReason: choiceRaw.finish_reason });
+      }
+    }
+  }
+  if (isRecord(parsed.usage)) {
+    const u = parsed.usage;
+    events.push({
+      type: "usage",
+      usage: {
+        promptTokens: Number(u.prompt_tokens ?? 0),
+        completionTokens: Number(u.completion_tokens ?? 0),
+        totalTokens: Number(u.total_tokens ?? 0)
+      }
+    });
+  }
+  if (parsed.cognitum_receipt !== void 0) {
+    events.push({ type: "receipt", receipt: parsed.cognitum_receipt });
+  }
+  if (events.length === 0) {
+    events.push({ type: "unknown", raw: parsed });
+  }
+  const unknownFields = {};
+  for (const key of Object.keys(parsed)) {
+    if (!KNOWN_TOP_LEVEL_KEYS.has(key)) unknownFields[key] = parsed[key];
+  }
+  return { events, unknownFields: Object.keys(unknownFields).length > 0 ? unknownFields : void 0 };
+}
+
+// src/meta-llm/stream/chat-completions-stream.ts
+var PRODUCT3 = "meta-llm";
+var OPERATION = "chat.completionsStream";
+async function* chatCompletionsStreamImpl(deps, request, requestContext) {
+  const timeBudget = requestContext?.timeBudget;
+  const cancellation = requestContext?.cancellation;
+  const requestId = requestContext?.requestId ?? newRequestId();
+  const response = await openStreamWithPreByteRetry(deps, request, requestId);
+  if (!response.body) {
+    throw new AgenticError("protocol", `${OPERATION} response had no readable body`, {
+      product: PRODUCT3,
+      operation: OPERATION,
+      requestId,
+      retryable: false,
+      code: "no_response_body"
+    });
+  }
+  yield* readSseBody(response.body, requestId, timeBudget, cancellation);
+}
+async function openStreamWithPreByteRetry(deps, request, requestId) {
+  let credential = await requireCredential(deps, OPERATION);
+  const body = JSON.stringify({ ...request, stream: true });
+  const retryPolicy = DEFAULT_RETRY_POLICY;
+  let attempt = 0;
+  let sleepBudgetUsedMs = 0;
+  let refreshedOnce = false;
+  for (; ; ) {
+    const headers = {
+      Accept: "text/event-stream",
+      "Content-Type": "application/json",
+      "X-Cognitum-Request-Id": requestId
+    };
+    applyAuth(headers, credential);
+    const url = `${deps.baseUrl}/v1/chat/completions`;
+    let response;
+    try {
+      response = await deps.transport(url, { method: "POST", headers, body });
+    } catch (cause) {
+      throw new AgenticError("transport", `${OPERATION} request failed: ${cause}`, {
+        product: PRODUCT3,
+        operation: OPERATION,
+        requestId,
+        retryable: true,
+        cause
+      });
+    }
+    if (response.ok) return response;
+    const err = await mapMetaLlmHttpError(response, OPERATION, requestId);
+    if (err.status === 401 && !refreshedOnce) {
+      refreshedOnce = true;
+      await deps.credentialProvider?.invalidate("401 challenge from meta-llm");
+      credential = await requireCredential(deps, OPERATION);
+      continue;
+    }
+    const isBoundedRetryable = err.status === 429 || err.status === 502 || err.status === 503;
+    if (isBoundedRetryable && attempt + 1 < retryPolicy.maxAttempts) {
+      const serverHintMs = err.retryAfterMs ?? 0;
+      const jitterMs = Math.random() * retryPolicy.baseMs;
+      const delayMs = equalJitterDelayMs(attempt, retryPolicy, serverHintMs, jitterMs);
+      if (sleepBudgetUsedMs + delayMs > retryPolicy.retrySleepBudgetMs) throw err;
+      sleepBudgetUsedMs += delayMs;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      attempt += 1;
+      continue;
+    }
+    throw err;
+  }
+}
+function deadlineError(operation, requestId, code, message, sequence) {
+  return new AgenticError("deadline_exceeded", message, {
+    product: PRODUCT3,
+    operation,
+    requestId,
+    retryable: false,
+    code,
+    details: { partial: true, eventsReceived: sequence }
+  });
+}
+async function* readSseBody(body, requestId, timeBudget, cancellation) {
+  const reader = body.getReader();
+  const parser = new SseParser();
+  let sequence = 0;
+  let sawTerminal = false;
+  const streamStartedAt = Date.now();
+  let lastByteAt = streamStartedAt;
+  let receivedFirstByte = false;
+  try {
+    for (; ; ) {
+      if (cancellation?.isCancelled) {
+        throw new AgenticError("cancelled", `${OPERATION} was cancelled locally`, {
+          product: PRODUCT3,
+          operation: OPERATION,
+          requestId,
+          retryable: false,
+          code: "local_cancellation",
+          details: { partial: true, eventsReceived: sequence }
+        });
+      }
+      const now = Date.now();
+      if (timeBudget?.requestDeadlineMs !== void 0 && now - streamStartedAt > timeBudget.requestDeadlineMs) {
+        throw deadlineError(
+          OPERATION,
+          requestId,
+          "request_deadline_exceeded",
+          `${OPERATION} exceeded requestDeadlineMs (${timeBudget.requestDeadlineMs}ms)`,
+          sequence
+        );
+      }
+      const idleLimit = receivedFirstByte ? timeBudget?.idleTimeoutMs : timeBudget?.firstByteTimeoutMs;
+      if (idleLimit !== void 0 && now - lastByteAt > idleLimit) {
+        throw deadlineError(
+          OPERATION,
+          requestId,
+          receivedFirstByte ? "idle_timeout" : "first_byte_timeout",
+          `${OPERATION} exceeded ${receivedFirstByte ? "idleTimeoutMs" : "firstByteTimeoutMs"} (${idleLimit}ms)`,
+          sequence
+        );
+      }
+      let readResult;
+      try {
+        readResult = await reader.read();
+      } catch (cause) {
+        throw new AgenticError("transport", `${OPERATION} stream read failed: ${cause}`, {
+          product: PRODUCT3,
+          operation: OPERATION,
+          requestId,
+          retryable: false,
+          code: "stream_disconnected",
+          details: { partial: true, eventsReceived: sequence },
+          cause
+        });
+      }
+      if (readResult.done) break;
+      receivedFirstByte = true;
+      lastByteAt = Date.now();
+      let rawEvents;
+      try {
+        rawEvents = parser.feed(readResult.value);
+      } catch (cause) {
+        throw new AgenticError("protocol", `${OPERATION} SSE parse failure: ${cause}`, {
+          product: PRODUCT3,
+          operation: OPERATION,
+          requestId,
+          retryable: false,
+          code: "sse_parse_error",
+          details: { partial: true, eventsReceived: sequence },
+          cause
+        });
+      }
+      for (const rawEvent of rawEvents) {
+        const { events, unknownFields } = decodeOpenAiSseEvent(rawEvent);
+        for (const event of events) {
+          sequence += 1;
+          if (event.type === "done" || event.type === "finish_reason") sawTerminal = true;
+          yield {
+            event,
+            sequence,
+            receivedAt: (/* @__PURE__ */ new Date()).toISOString(),
+            requestId,
+            rawEventName: rawEvent.event,
+            unknownFields
+          };
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (!sawTerminal) {
+    throw new AgenticError("protocol", `${OPERATION} stream ended without ever observing a terminal event`, {
+      product: PRODUCT3,
+      operation: OPERATION,
+      requestId,
+      retryable: false,
+      code: "stream_ended_without_terminal_event",
+      details: { partial: true, eventsReceived: sequence }
+    });
+  }
+}
+
 // src/meta-llm/client.ts
 var DEFAULT_CAPABILITY_VERSION = "0.0.0";
-var PRODUCT3 = "meta-llm";
+var PRODUCT4 = "meta-llm";
 function newRequestId2() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `req_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 }
@@ -421,7 +877,7 @@ var MetaLlmClient = class {
    */
   capabilities() {
     return this.config.capabilitiesSnapshot ?? {
-      product: PRODUCT3,
+      product: PRODUCT4,
       productVersion: DEFAULT_CAPABILITY_VERSION,
       protocol: "cognitum.meta-llm.http",
       protocolVersion: "1.0",
@@ -439,7 +895,7 @@ var MetaLlmClient = class {
     throw new AgenticError(
       "unsupported_capability",
       `ready("${feature}") is unsupported: no readiness endpoint is published for meta-llm yet`,
-      { product: PRODUCT3, operation: "ready", retryable: false }
+      { product: PRODUCT4, operation: "ready", retryable: false }
     );
   }
   // ---------------------------------------------------------------------
@@ -459,7 +915,18 @@ var MetaLlmClient = class {
       "/v1/chat/completions",
       "chat.completions",
       request
-    )
+    ),
+    /**
+     * `POST /v1/chat/completions` with `stream: true` (ADR-0024a §D5).
+     * Issue #58 / M2 continuation — the first protocol wired onto the
+     * generic SSE parser (`../sse/parser.js`); Anthropic Messages and
+     * Responses streaming are deferred follow-ups that reuse the same
+     * parser. Returns an async generator — iterate with `for await`; it
+     * completes normally only after the OpenAI wire terminal condition
+     * (`[DONE]` or a `finish_reason`) is observed, otherwise it throws a
+     * typed `AgenticError` describing why (see `./stream/chat-completions-stream.js`).
+     */
+    completionsStream: (request, options) => chatCompletionsStreamImpl(this.nonstreamDeps(options), request, options?.requestContext)
   };
   /**
    * `POST /v1/completions` (legacy OpenAI completions). Real HTTP call
@@ -558,7 +1025,7 @@ var MetaLlmClient = class {
     const provider = this.config.credentialProvider;
     if (!provider) return void 0;
     return provider.acquire({
-      product: PRODUCT3,
+      product: PRODUCT4,
       normalizedOrigin: this.config.baseUrl,
       audience: this.config.baseUrl,
       requiredScopes,
@@ -582,7 +1049,7 @@ var MetaLlmClient = class {
     if (opts.requireCredential) {
       credential = await this.resolveCredential(operation, ["meta-llm.read"]).catch((cause) => {
         throw new AgenticError("authentication", `failed to acquire credential: ${cause}`, {
-          product: PRODUCT3,
+          product: PRODUCT4,
           operation,
           requestId,
           retryable: false,
@@ -593,7 +1060,7 @@ var MetaLlmClient = class {
         throw new AgenticError(
           "authentication",
           `MetaLlmClient.${operation} requires a credential_provider`,
-          { product: PRODUCT3, operation, requestId, retryable: false }
+          { product: PRODUCT4, operation, requestId, retryable: false }
         );
       }
     }
@@ -614,7 +1081,7 @@ var MetaLlmClient = class {
         durationMs: Date.now() - startedAt
       });
       throw new AgenticError("transport", `${operation} request failed: ${cause}`, {
-        product: PRODUCT3,
+        product: PRODUCT4,
         operation,
         requestId,
         retryable: true,
@@ -640,8 +1107,78 @@ var MetaLlmClient = class {
     return { data, meta };
   }
 };
+
+// src/meta-llm/stream/envelope.ts
+var ChatCompletionsStreamAccumulator = class {
+  role;
+  contentByIndex = /* @__PURE__ */ new Map();
+  toolCallsByIndex = /* @__PURE__ */ new Map();
+  finishReasonByIndex = /* @__PURE__ */ new Map();
+  usage;
+  receipt;
+  done = false;
+  absorb(envelope) {
+    const event = envelope.event;
+    switch (event.type) {
+      case "role":
+        this.role = event.role;
+        break;
+      case "content_delta":
+        this.contentByIndex.set(event.index, (this.contentByIndex.get(event.index) ?? "") + event.delta);
+        break;
+      case "tool_call_delta": {
+        let byIndex = this.toolCallsByIndex.get(event.index);
+        if (!byIndex) {
+          byIndex = /* @__PURE__ */ new Map();
+          this.toolCallsByIndex.set(event.index, byIndex);
+        }
+        const existing = byIndex.get(event.toolCallIndex) ?? { arguments: "" };
+        if (event.id) existing.id = event.id;
+        if (event.functionName) existing.name = event.functionName;
+        if (event.argumentsDelta) existing.arguments += event.argumentsDelta;
+        byIndex.set(event.toolCallIndex, existing);
+        break;
+      }
+      case "finish_reason":
+        this.finishReasonByIndex.set(event.index, event.finishReason);
+        break;
+      case "usage":
+        this.usage = event.usage;
+        break;
+      case "receipt":
+        this.receipt = event.receipt;
+        break;
+      case "done":
+        this.done = true;
+        break;
+      default:
+        break;
+    }
+  }
+  snapshot() {
+    const contentByChoice = {};
+    for (const [index, content] of this.contentByIndex) contentByChoice[index] = content;
+    const toolCallsByChoice = {};
+    for (const [index, byIndex] of this.toolCallsByIndex) {
+      toolCallsByChoice[index] = Array.from(byIndex.values());
+    }
+    const finishReasonByChoice = {};
+    for (const [index, reason] of this.finishReasonByIndex) finishReasonByChoice[index] = reason;
+    return {
+      role: this.role,
+      contentByChoice,
+      toolCallsByChoice,
+      finishReasonByChoice,
+      usage: this.usage,
+      receipt: this.receipt,
+      completed: this.done
+    };
+  }
+};
 export {
+  ChatCompletionsStreamAccumulator,
   MetaLlmClient,
+  decodeOpenAiSseEvent,
   resolveMetaLlmClientConfig
 };
 //# sourceMappingURL=index.js.map

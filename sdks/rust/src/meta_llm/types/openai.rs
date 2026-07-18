@@ -136,7 +136,7 @@ pub enum StringOrStrings {
     Many(Vec<String>),
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ChatCompletionUsage {
     pub prompt_tokens: u64,

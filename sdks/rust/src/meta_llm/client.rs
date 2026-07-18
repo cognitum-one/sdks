@@ -24,13 +24,15 @@
 //! (§D5) and ADR-0024b routing controls (issue #59).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use crate::agentic::{AgenticError, AgenticErrorKind, CapabilitySet};
+use crate::agentic::{AgenticError, AgenticErrorKind, CancellationToken, CapabilitySet, TimeBudget};
 
 use super::config::{resolve_config, MetaLlmClientConfig};
 use super::discovery::{MetaLlmHealth, MetaLlmModelInfo, MetaLlmModelList, MetaLlmWhoAmI};
 use super::envelope::MetaLlmResult;
 use super::http::{as_object, take_string, unsupported};
+use super::stream::{self, ChatCompletionsStream};
 use super::types::{
     AnthropicMessage, AnthropicMessageRequest, ChatCompletion, ChatCompletionRequest,
     CountTokensRequest, CountTokensResult, EmbeddingRequest, EmbeddingResponse, LegacyCompletion,
@@ -227,6 +229,28 @@ impl MetaLlmClient {
             data: parsed,
             meta,
         })
+    }
+
+    /// `POST /v1/chat/completions` with `stream: true` (ADR-0024a §D5).
+    /// Issue #58 / M2 continuation — the first protocol wired onto the
+    /// generic SSE parser (`crate::sse`); Anthropic Messages and Responses
+    /// streaming are deferred follow-ups that reuse the same parser.
+    /// Returns a [`ChatCompletionsStream`] — pull events with
+    /// `next_envelope().await` in a `while let Some(envelope) = ...` loop
+    /// (see `super::stream`'s module docs for why this isn't a
+    /// `futures::Stream`). The stream completes successfully only after
+    /// observing the OpenAI wire terminal condition (`[DONE]` or a
+    /// `finish_reason`); otherwise `next_envelope` returns a typed
+    /// `AgenticError` describing why.
+    #[allow(clippy::result_large_err)]
+    pub async fn chat_completions_stream(
+        &self,
+        request: &ChatCompletionRequest,
+        time_budget: Option<TimeBudget>,
+        cancellation: Option<Arc<dyn CancellationToken>>,
+    ) -> Result<ChatCompletionsStream, AgenticError> {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        stream::chat_completions_stream(self, request, request_id, time_budget, cancellation).await
     }
 
     /// `POST /v1/completions` (legacy OpenAI completions). Real HTTP call

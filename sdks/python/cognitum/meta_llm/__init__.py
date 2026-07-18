@@ -33,6 +33,24 @@ from cognitum.meta_llm.discovery import (
     MetaLlmWhoAmI,
 )
 from cognitum.meta_llm.envelope import MetaLlmReceipt, MetaLlmResponseMeta, MetaLlmResult
+from cognitum.meta_llm.stream import (
+    ChatCompletionsStreamAccumulator,
+    ChatCompletionsStreamSnapshot,
+    DecodedOpenAiSseEvent,
+    MetaLlmStreamEnvelope,
+    OpenAiContentDeltaEvent,
+    OpenAiDoneEvent,
+    OpenAiFinishReasonEvent,
+    OpenAiReceiptEvent,
+    OpenAiRoleEvent,
+    OpenAiStreamErrorEvent,
+    OpenAiStreamErrorPayload,
+    OpenAiStreamEvent,
+    OpenAiToolCallDeltaEvent,
+    OpenAiUsageEvent,
+    UnknownStreamEvent,
+    decode_openai_sse_event,
+)
 from cognitum.meta_llm.types import (
     AnthropicContentBlock,
     AnthropicImageSource,
@@ -82,6 +100,23 @@ __all__ = [
     "MetaLlmReceipt",
     "MetaLlmResponseMeta",
     "MetaLlmResult",
+    # Streaming (ADR-0024a §D5)
+    "MetaLlmStreamEnvelope",
+    "ChatCompletionsStreamAccumulator",
+    "ChatCompletionsStreamSnapshot",
+    "OpenAiRoleEvent",
+    "OpenAiContentDeltaEvent",
+    "OpenAiToolCallDeltaEvent",
+    "OpenAiFinishReasonEvent",
+    "OpenAiUsageEvent",
+    "OpenAiReceiptEvent",
+    "OpenAiStreamErrorPayload",
+    "OpenAiStreamErrorEvent",
+    "OpenAiDoneEvent",
+    "UnknownStreamEvent",
+    "OpenAiStreamEvent",
+    "DecodedOpenAiSseEvent",
+    "decode_openai_sse_event",
     # OpenAI-style wire types
     "ChatImageUrl",
     "ChatContentPart",
