@@ -6,11 +6,12 @@ those product modules depend on ``cognitum.agentic``; this package MUST NOT
 import any product module (``cognitum.meta_llm``, ``cognitum.meta_proxy``,
 ``cognitum.metaharness``, ``cognitum.harnessaas``).
 
-Everything here is **type-only scaffolding** (issue #52 / M1). There is no
-network I/O, no credential acquisition, no retry loop, and no product
-routing/consent/scaffold logic -- those remain product-specific per §D5 and
-land in follow-up issues (#53 credential-provider implementation, #54
-secret-redaction implementation, #56 receipt/lineage verification).
+Most of this package is **type-only scaffolding** (issue #52 / M1): there is
+still no network I/O, retry loop, or product routing/consent/scaffold
+logic -- those remain product-specific per §D5.
+``StaticApiKeyCredentialProvider`` (issue #53) is the first concrete
+implementation landing on top of this contract; secret-redaction (#54) and
+receipt/lineage verification (#56) remain follow-up issues.
 
 Sources:
 
@@ -77,6 +78,10 @@ from cognitum.agentic.receipts import (
     VerificationLevel,
     VerificationResult,
 )
+from cognitum.agentic.static_api_key_provider import (
+    DEFAULT_API_KEY_ENV_VAR,
+    StaticApiKeyCredentialProvider,
+)
 
 __all__ = [
     # Capability negotiation
@@ -125,4 +130,7 @@ __all__ = [
     "ExecutionReceipt",
     "LineageSubject",
     "LineageReference",
+    # Concrete credential provider (issue #53)
+    "StaticApiKeyCredentialProvider",
+    "DEFAULT_API_KEY_ENV_VAR",
 ]
