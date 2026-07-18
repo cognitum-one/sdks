@@ -413,36 +413,16 @@ async fn ready_fails_closed() {
 #[tokio::test]
 async fn protocol_operations_are_not_implemented_yet() {
     use cognitum_one::meta_llm::types::{
-        AnthropicMessageRequest, ChatCompletionRequest, CountTokensRequest, EmbeddingRequest,
-        LegacyCompletionRequest, ResponsesRequest,
+        CountTokensRequest, EmbeddingRequest, LegacyCompletionRequest, ResponsesRequest,
     };
 
     let config = MetaLlmClientConfig::new("https://meta-llm.test.cognitum.one");
     let client = MetaLlmClient::new(config).unwrap();
 
-    let chat_err = client
-        .chat_completions(&ChatCompletionRequest {
-            model: "m".into(),
-            messages: vec![],
-            max_tokens: None,
-            temperature: None,
-            top_p: None,
-            n: None,
-            stream: None,
-            stop: None,
-            presence_penalty: None,
-            frequency_penalty: None,
-            logit_bias: None,
-            user: None,
-            tools: None,
-            tool_choice: None,
-            response_format: None,
-            seed: None,
-        })
-        .await
-        .unwrap_err();
-    assert_eq!(chat_err.kind, AgenticErrorKind::UnsupportedCapability);
-
+    // `chat_completions` and `messages_create` now have real HTTP call
+    // logic (issue #58 / M2 continuation) — see the dedicated
+    // `chat_completions_*` / `messages_create_*` tests below. The other
+    // three protocol operations remain follow-up-issue placeholders.
     let completions_err = client
         .completions(&LegacyCompletionRequest {
             model: "m".into(),
@@ -467,25 +447,6 @@ async fn protocol_operations_are_not_implemented_yet() {
         completions_err.kind,
         AgenticErrorKind::UnsupportedCapability
     );
-
-    let messages_err = client
-        .messages_create(&AnthropicMessageRequest {
-            model: "m".into(),
-            messages: vec![],
-            max_tokens: 16,
-            system: None,
-            temperature: None,
-            top_p: None,
-            top_k: None,
-            stop_sequences: None,
-            stream: None,
-            tools: None,
-            tool_choice: None,
-            metadata: None,
-        })
-        .await
-        .unwrap_err();
-    assert_eq!(messages_err.kind, AgenticErrorKind::UnsupportedCapability);
 
     let count_tokens_err = client
         .messages_count_tokens(&CountTokensRequest {

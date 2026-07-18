@@ -275,7 +275,13 @@ impl MetaLlmClient {
         Ok((data, meta))
     }
 
-    fn map_http_error(
+    /// HTTP-status -> `AgenticErrorKind` mapping (ADR-0024a §D6's full table).
+    /// Shared by every operation's error path — GET (`health`/`whoami`/
+    /// `models`) and the idempotent-with-key POSTs in `./nonstream.rs`
+    /// alike, since none of these statuses are protocol-specific. `pub(super)`
+    /// so `./nonstream.rs` (a sibling submodule of `meta_llm`) can reuse it
+    /// rather than duplicating the table.
+    pub(super) fn map_http_error(
         status: reqwest::StatusCode,
         body_text: &str,
         operation: &str,
@@ -290,6 +296,12 @@ impl MetaLlmClient {
         };
 
         match status.as_u16() {
+            // Never retried (ADR-0024a §D6).
+            400 => base(
+                AgenticErrorKind::Validation,
+                non_empty(body_text, "invalid request"),
+                false,
+            ),
             401 => base(
                 AgenticErrorKind::Authentication,
                 non_empty(body_text, "authentication failed"),
@@ -305,6 +317,25 @@ impl MetaLlmClient {
                 non_empty(body_text, "not found"),
                 false,
             ),
+            409 => base(
+                AgenticErrorKind::Conflict,
+                non_empty(body_text, "state conflict or idempotency mismatch"),
+                false,
+            ),
+            402 => base(
+                AgenticErrorKind::BudgetExceeded,
+                non_empty(body_text, "budget or upgrade required"),
+                false,
+            ),
+            422 => base(
+                AgenticErrorKind::SafetyBlocked,
+                non_empty(body_text, "safety or semantic validation failed"),
+                false,
+            ),
+            // Bounded retry only when the caller proves replay safety (an
+            // idempotent-with-key operation) — the retry loop in
+            // `./nonstream.rs` is what actually gates this; `retryable: true`
+            // here only reflects the status's own classification.
             429 => base(
                 AgenticErrorKind::RateLimited,
                 non_empty(body_text, "rate limited"),

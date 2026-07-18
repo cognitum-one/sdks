@@ -1,10 +1,13 @@
 //! Meta LLM serving client (ADR-0024a). Product module + feature per
 //! ADR-0019 §D2: `cognitum_one::meta_llm`, Cargo feature `meta-llm`.
 //!
-//! Issue #58 / M2 start: `MetaLlmClient` construction, wire types, and real
-//! `health()` / `whoami()` / `models()` implementations. Streaming (§D5),
-//! the five protocol operations' HTTP logic, and ADR-0024b routing
-//! controls are deliberately out of scope — see follow-up issues.
+//! Issue #58 / M2: `MetaLlmClient` construction, wire types, real
+//! `health()` / `whoami()` / `models()` implementations, and — this pass —
+//! real HTTP call logic for `chat_completions` and `messages_create`
+//! (ADR-0024a §D6 error mapping, §D7 idempotency and retry). Streaming
+//! (§D5), the other three protocol operations (`completions`,
+//! `responses`, `embeddings`), and ADR-0024b routing controls are
+//! deliberately out of scope — see follow-up issues.
 //!
 //! Per ADR-0019 §D4, this module depends on `crate::agentic` and MUST NOT
 //! be imported by any other product module (`meta_proxy`, `metaharness`,
@@ -15,6 +18,8 @@ pub mod config;
 pub mod discovery;
 pub mod envelope;
 mod http;
+mod idempotency;
+mod nonstream;
 pub mod types;
 
 /// Product identity used in requests, credential scoping, and error fields.

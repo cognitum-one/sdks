@@ -339,14 +339,9 @@ async def test_ready_fails_closed() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_chat_completions_not_implemented() -> None:
-    from cognitum.meta_llm import ChatCompletionRequest
-
-    client = MetaLlmClient(MetaLlmClientConfig(base_url=BASE_URL))
-    with pytest.raises(AgenticError) as exc_info:
-        await client.chat.completions(ChatCompletionRequest(model="m", messages=[]))
-    assert exc_info.value.kind == "unsupported_capability"
+# `chat.completions` and `messages.create` now have real HTTP call logic
+# (issue #58 / M2 continuation) -- see `test_nonstream.py`. The other
+# three protocol operations remain follow-up-issue placeholders.
 
 
 @pytest.mark.asyncio
@@ -359,14 +354,10 @@ async def test_completions_not_implemented() -> None:
 
 
 @pytest.mark.asyncio
-async def test_messages_create_and_count_tokens_not_implemented() -> None:
-    from cognitum.meta_llm import AnthropicMessageRequest, CountTokensRequest
+async def test_messages_count_tokens_not_implemented() -> None:
+    from cognitum.meta_llm import CountTokensRequest
 
     client = MetaLlmClient(MetaLlmClientConfig(base_url=BASE_URL))
-    with pytest.raises(AgenticError):
-        await client.messages.create(
-            AnthropicMessageRequest(model="m", messages=[], max_tokens=16)
-        )
     with pytest.raises(AgenticError):
         await client.messages.count_tokens(CountTokensRequest(model="m", messages=[]))
 
