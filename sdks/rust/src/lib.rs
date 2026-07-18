@@ -22,6 +22,7 @@
 //! }
 //! ```
 
+pub mod agentic;
 pub mod brain;
 pub mod catalog;
 pub mod client;
