@@ -105,6 +105,13 @@ impl AgenticError {
 /// Fail-closed error raised when a required capability is absent or unknown
 /// (ADR-0019 §D6). MUST be raised before any spend, mutation, consent, or
 /// code-execution side effect.
+///
+/// Node and Python model this as a subclass of their base agentic error
+/// (`UnsupportedCapabilityError extends AgenticError` /
+/// `class UnsupportedCapabilityError(AgenticError)`). Rust has no class
+/// inheritance, so this is a separate struct with a `From<UnsupportedCapabilityError>
+/// for AgenticError` conversion below — the Rust-idiomatic equivalent of
+/// that "is-a" relationship, not an oversight.
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("capability \"{capability}\" is unsupported or unknown for {product}/{operation}")]
 pub struct UnsupportedCapabilityError {

@@ -59,11 +59,31 @@ pub struct OperationEvent<TPayload> {
     pub payload: TPayload,
 }
 
+/// Pull-based event stream returned by [`OperationHandle::events`]
+/// (ADR-0023 §D6, FIX 1 of the M1 cross-language consistency review).
+///
+/// Mirrors the stateful `&mut self` async-trait pull pattern already
+/// established by [`crate::mcp::Transport::recv`] (a `Box<dyn Transport>`
+/// with an async `recv`/`send`/`close`) rather than adopting
+/// `futures::Stream`/`tokio-stream`, so this dependency-light module
+/// (ADR-0019 §D5) doesn't gain an unconditional streaming-crate dependency.
+/// Equivalent to Node's `AsyncIterable<OperationEvent>` and Python's
+/// `AsyncIterator[OperationEvent[Any]]`.
+#[async_trait]
+pub trait OperationEventStream: Send + Sync {
+    /// Pull the next event. Returns `Ok(None)` once the stream is
+    /// exhausted — a normal terminal state, not an error (mirrors
+    /// `AsyncIterable`/`AsyncIterator` completion in Node/Python).
+    async fn next(&mut self) -> Result<Option<OperationEvent<serde_json::Value>>, AgenticError>;
+}
+
 /// Common handle contract for remote batches, pods, and HarnessaaS jobs
 /// (ADR-0023 §D9). `events` and `cancel` are only present in behavior when
 /// the product capability set declares support (ADR-0019 §D6) — the
 /// default `cancel` implementation fails closed with
-/// [`UnsupportedCapabilityError`].
+/// [`UnsupportedCapabilityError`], and the default `events` implementation
+/// returns `None` (equivalent to Node's optional `events?()` being absent
+/// and Python's `events()` returning `None`).
 #[async_trait]
 pub trait OperationHandle: Send + Sync {
     type Result: Send + Sync;
@@ -79,6 +99,17 @@ pub trait OperationHandle: Send + Sync {
         &self,
         options: WaitOptions,
     ) -> Result<OperationSnapshot<Self::Result>, AgenticError>;
+
+    /// Returns a pull-based event stream when this operation's product
+    /// capability set declares event-stream support (ADR-0019 §D6);
+    /// `None` when it doesn't. Equivalent to Node's optional
+    /// `events?(options?): AsyncIterable<OperationEvent>` and Python's
+    /// `events(self, options=None) -> AsyncIterator[OperationEvent[Any]] |
+    /// None` (FIX 1 of the M1 cross-language consistency review — Rust
+    /// previously had no equivalent method at all).
+    fn events(&self, _options: EventStreamOptions) -> Option<Box<dyn OperationEventStream>> {
+        None
+    }
 
     /// Fails closed by default — a product implementation overrides this
     /// only once its capability set declares cancel support.

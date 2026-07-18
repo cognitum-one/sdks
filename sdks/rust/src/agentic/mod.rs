@@ -38,8 +38,8 @@ pub use errors::{
     UnsupportedCapabilityError,
 };
 pub use operations::{
-    EventStreamOptions, OperationEvent, OperationHandle, OperationSnapshot, OperationState, Page,
-    PageRequest, WaitOptions,
+    EventStreamOptions, OperationEvent, OperationEventStream, OperationHandle, OperationSnapshot,
+    OperationState, Page, PageRequest, WaitOptions,
 };
 pub use receipts::{
     CostFinality, CostObservation, ExecutionReceipt, LineageReference, LineageSubject,

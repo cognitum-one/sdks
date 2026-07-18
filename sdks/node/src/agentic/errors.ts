@@ -57,6 +57,15 @@ export class AgenticError extends Error {
   readonly retryAfterMs?: number;
   readonly attemptCount?: number;
   readonly details?: unknown;
+  /**
+   * Underlying cause of this error, wired through to the native ES2022
+   * `Error.cause` (this repo requires Node >=18, which supports it).
+   * Mirrors Python's `cause: BaseException | None` (wired to
+   * `self.__cause__`) and Rust's `cause: Option<String>` (FIX 2 of the M1
+   * cross-language consistency review — Node previously had no equivalent
+   * field).
+   */
+  declare readonly cause?: unknown;
 
   constructor(
     kind: AgenticErrorKind,
@@ -67,7 +76,7 @@ export class AgenticError extends Error {
       }
     >,
   ) {
-    super(message);
+    super(message, { cause: fields?.cause });
     this.name = "AgenticError";
     this.kind = kind;
     this.product = fields?.product;

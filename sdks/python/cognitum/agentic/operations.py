@@ -78,8 +78,16 @@ class OperationHandle(Protocol[TResult]):
     """Common handle contract for remote batches, pods, and HarnessaaS jobs
     (ADR-0023 §D9).
 
-    ``events`` and ``cancel`` are only present when the product capability
-    set declares support -- see ADR-0019 §D6.
+    ``events`` is only present in behavior when the product capability set
+    declares event-stream support -- see ADR-0019 §D6.
+
+    ``cancel`` is always declared but MUST fail closed: implementations
+    that don't support cancellation MUST raise
+    :class:`cognitum.agentic.errors.UnsupportedCapabilityError` rather than
+    silently returning ``None`` (FIX 4 of the M1 cross-language
+    consistency review, per ADR-0019 §D6's fail-closed philosophy; Rust's
+    default ``OperationHandle::cancel`` already does this and is the
+    reference behavior).
     """
 
     @property
@@ -107,7 +115,7 @@ class OperationHandle(Protocol[TResult]):
         self, options: EventStreamOptions | None = None
     ) -> AsyncIterator[OperationEvent[Any]] | None: ...
 
-    async def cancel(self) -> OperationSnapshot[TResult] | None: ...
+    async def cancel(self) -> OperationSnapshot[TResult]: ...
 
     async def result(self) -> TResult: ...
 

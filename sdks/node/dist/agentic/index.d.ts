@@ -48,6 +48,15 @@ declare class AgenticError extends Error {
     readonly retryAfterMs?: number;
     readonly attemptCount?: number;
     readonly details?: unknown;
+    /**
+     * Underlying cause of this error, wired through to the native ES2022
+     * `Error.cause` (this repo requires Node >=18, which supports it).
+     * Mirrors Python's `cause: BaseException | None` (wired to
+     * `self.__cause__`) and Rust's `cause: Option<String>` (FIX 2 of the M1
+     * cross-language consistency review — Node previously had no equivalent
+     * field).
+     */
+    readonly cause?: unknown;
     constructor(kind: AgenticErrorKind, message: string, fields?: Partial<Omit<AgenticError, "kind" | "message" | "name" | "retryable"> & {
         retryable: boolean;
     }>);
@@ -273,8 +282,15 @@ interface OperationEvent<TPayload = unknown> {
 }
 /**
  * Common handle contract for remote batches, pods, and HarnessaaS jobs
- * (ADR-0023 §D9). `events` and `cancel` are only present when the product
- * capability set declares support — see ADR-0019 §D6.
+ * (ADR-0023 §D9). `events` is only present when the product capability set
+ * declares event-stream support — see ADR-0019 §D6.
+ *
+ * `cancel` is always present but MUST fail closed — implementations that
+ * don't support cancellation MUST reject with `UnsupportedCapabilityError`
+ * (see `./errors.js`) rather than omitting the method or silently no-oping
+ * (FIX 4 of the M1 cross-language consistency review, per ADR-0019 §D6's
+ * fail-closed philosophy; Rust's default `OperationHandle::cancel` already
+ * does this and is the reference behavior).
  */
 interface OperationHandle<TResult = unknown> {
     readonly id: string;
@@ -285,7 +301,7 @@ interface OperationHandle<TResult = unknown> {
     get(): Promise<OperationSnapshot<TResult>>;
     wait(options?: WaitOptions): Promise<OperationSnapshot<TResult>>;
     events?(options?: EventStreamOptions): AsyncIterable<OperationEvent>;
-    cancel?(): Promise<OperationSnapshot<TResult>>;
+    cancel(): Promise<OperationSnapshot<TResult>>;
     result(): Promise<TResult>;
 }
 /** Cursor-based page request, independent of transport (HTTP query, RPC field, etc.). */

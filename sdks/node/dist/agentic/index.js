@@ -13,7 +13,7 @@ var AgenticError = class extends Error {
   attemptCount;
   details;
   constructor(kind, message, fields) {
-    super(message);
+    super(message, { cause: fields?.cause });
     this.name = "AgenticError";
     this.kind = kind;
     this.product = fields?.product;

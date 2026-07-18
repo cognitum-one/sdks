@@ -5,6 +5,7 @@
 use std::fmt;
 
 use async_trait::async_trait;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::agentic::errors::AgenticError;
@@ -131,7 +132,43 @@ pub enum SecretClassification {
 /// before it is formatted or handed to a caller telemetry hook
 /// (ADR-0022 §D10). No concrete implementation ships in this pass — lands
 /// in issue #54.
+///
+/// FIX 3 of the M1 cross-language consistency review: Node declares
+/// `redact<T>(value: T): T` and Python declares
+/// `redact(self, value: Any) -> Any`, both preserving the caller's
+/// original type. [`redact`](Self::redact) below matches that generic
+/// shape. [`redact_value`](Self::redact_value) is the dyn-safe method
+/// implementors actually provide — generic methods cannot be part of a
+/// trait's vtable, and `SecretRedactor` is intended to be usable as a
+/// trait object (`Arc<dyn SecretRedactor>`), mirroring the
+/// `Arc<dyn CredentialProvider>` / `Arc<dyn CancellationToken>` precedent
+/// already established for sibling traits in this module (see
+/// `RequestContext` in `./context.rs`). `redact`'s default implementation
+/// bridges the two via a JSON round-trip.
 pub trait SecretRedactor: Send + Sync {
     fn classify(&self, field_name: &str, value: &serde_json::Value) -> SecretClassification;
-    fn redact(&self, value: serde_json::Value) -> serde_json::Value;
+
+    /// Dyn-safe redaction entry point that implementors provide, operating
+    /// on `serde_json::Value`. Call this directly when only
+    /// `dyn SecretRedactor` (not a concrete type) is available.
+    fn redact_value(&self, value: serde_json::Value) -> serde_json::Value;
+
+    /// Generic, type-preserving redaction matching Node's
+    /// `redact<T>(value: T): T` / Python's `redact(self, value: Any) ->
+    /// Any`. Implemented via a JSON round-trip over
+    /// [`redact_value`](Self::redact_value). Requires `Self: Sized` —
+    /// generic methods are excluded from a trait's vtable, so this method
+    /// is only callable on a concrete type, never through
+    /// `dyn SecretRedactor`.
+    fn redact<T>(&self, value: T) -> T
+    where
+        Self: Sized,
+        T: Serialize + DeserializeOwned,
+    {
+        let json = serde_json::to_value(value)
+            .expect("SecretRedactor::redact: value must serialize to JSON");
+        let redacted = self.redact_value(json);
+        serde_json::from_value(redacted)
+            .expect("SecretRedactor::redact: redacted value must deserialize back to T")
+    }
 }

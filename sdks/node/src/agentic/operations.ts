@@ -49,8 +49,15 @@ export interface OperationEvent<TPayload = unknown> {
 
 /**
  * Common handle contract for remote batches, pods, and HarnessaaS jobs
- * (ADR-0023 §D9). `events` and `cancel` are only present when the product
- * capability set declares support — see ADR-0019 §D6.
+ * (ADR-0023 §D9). `events` is only present when the product capability set
+ * declares event-stream support — see ADR-0019 §D6.
+ *
+ * `cancel` is always present but MUST fail closed — implementations that
+ * don't support cancellation MUST reject with `UnsupportedCapabilityError`
+ * (see `./errors.js`) rather than omitting the method or silently no-oping
+ * (FIX 4 of the M1 cross-language consistency review, per ADR-0019 §D6's
+ * fail-closed philosophy; Rust's default `OperationHandle::cancel` already
+ * does this and is the reference behavior).
  */
 export interface OperationHandle<TResult = unknown> {
   readonly id: string;
@@ -62,7 +69,7 @@ export interface OperationHandle<TResult = unknown> {
   get(): Promise<OperationSnapshot<TResult>>;
   wait(options?: WaitOptions): Promise<OperationSnapshot<TResult>>;
   events?(options?: EventStreamOptions): AsyncIterable<OperationEvent>;
-  cancel?(): Promise<OperationSnapshot<TResult>>;
+  cancel(): Promise<OperationSnapshot<TResult>>;
   result(): Promise<TResult>;
 }
 
