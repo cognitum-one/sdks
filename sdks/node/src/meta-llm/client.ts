@@ -255,27 +255,30 @@ export class MetaLlmClient {
     this.config.telemetry?.onRequestStart?.({ operation, requestId });
     const startedAt = Date.now();
 
-    const credential = await this.resolveCredential(operation, ["meta-llm.read"]).catch(
-      (cause) => {
-        if (opts.requireCredential) {
-          throw new AgenticError("authentication", `failed to acquire credential: ${cause}`, {
-            product: PRODUCT,
-            operation,
-            requestId,
-            retryable: false,
-            cause,
-          });
-        }
-        return undefined;
-      },
-    );
+    // ADR-0024a §D1: `health()` is process-level response only — never
+    // identity or readiness — so it must not acquire (or attempt to
+    // acquire) a credential at all when a credential isn't required. Only
+    // `whoami`/`models` (both `requireCredential: true`) touch
+    // `credentialProvider` here.
+    let credential: Credential | undefined;
+    if (opts.requireCredential) {
+      credential = await this.resolveCredential(operation, ["meta-llm.read"]).catch((cause) => {
+        throw new AgenticError("authentication", `failed to acquire credential: ${cause}`, {
+          product: PRODUCT,
+          operation,
+          requestId,
+          retryable: false,
+          cause,
+        });
+      });
 
-    if (opts.requireCredential && !credential) {
-      throw new AgenticError(
-        "authentication",
-        `MetaLlmClient.${operation} requires a credential_provider`,
-        { product: PRODUCT, operation, requestId, retryable: false },
-      );
+      if (!credential) {
+        throw new AgenticError(
+          "authentication",
+          `MetaLlmClient.${operation} requires a credential_provider`,
+          { product: PRODUCT, operation, requestId, retryable: false },
+        );
+      }
     }
 
     const headers: Record<string, string> = {

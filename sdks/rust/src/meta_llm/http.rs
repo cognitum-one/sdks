@@ -165,20 +165,29 @@ impl MetaLlmClient {
         }
         let started_at = Instant::now();
 
-        let credential = self.resolve_credential(operation).await.map_err(|mut e| {
-            if e.product.is_none() {
-                e.product = Some(PRODUCT.to_owned());
+        // ADR-0024a §D1: `health()` is process-level response only — never
+        // identity or readiness — so it must not acquire (or attempt to
+        // acquire) a credential at all when `require_credential` is false.
+        // Only `whoami`/`models` (both `require_credential: true`) touch
+        // `credential_provider` here.
+        let credential = if require_credential {
+            let credential = self.resolve_credential(operation).await.map_err(|mut e| {
+                if e.product.is_none() {
+                    e.product = Some(PRODUCT.to_owned());
+                }
+                e
+            })?;
+            if credential.is_none() {
+                return Err(AgenticError::new(
+                    AgenticErrorKind::Authentication,
+                    format!("MetaLlmClient::{operation} requires a credential_provider"),
+                )
+                .with_product_operation(PRODUCT, operation));
             }
-            e
-        })?;
-
-        if require_credential && credential.is_none() {
-            return Err(AgenticError::new(
-                AgenticErrorKind::Authentication,
-                format!("MetaLlmClient::{operation} requires a credential_provider"),
-            )
-            .with_product_operation(PRODUCT, operation));
-        }
+            credential
+        } else {
+            None
+        };
 
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(

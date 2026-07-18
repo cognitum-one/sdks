@@ -7,9 +7,12 @@ first real HTTP-backed operations (``health``, ``whoami``, ``models``).
 
 from __future__ import annotations
 
+import ipaddress
 import re
+import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     import httpx
@@ -17,6 +20,40 @@ if TYPE_CHECKING:
     from cognitum.agentic import BudgetPolicy, CapabilitySet, CredentialProvider, RequestContext
 
 _HTTPS_RE = re.compile(r"^https://", re.IGNORECASE)
+
+#: One-shot latch so the ``allow_insecure_http`` escape hatch only ever
+#: warns once per base_url, matching the seed module's
+#: ``_warn_default_host_insecure`` pattern (``cognitum.seed._transport``).
+_WARNED_INSECURE_HTTP: set[str] = set()
+
+
+def _extract_host(url: str) -> str | None:
+    return urlparse(url).hostname
+
+
+def _is_loopback_host(host: str) -> bool:
+    """``True`` only for a literal IPv4/IPv6 loopback address. Hostname
+    resolution (e.g. "localhost") is deliberately excluded -- ADR-0022 §D3:
+    "Hostname resolution to loopback is insufficient for the default-safe
+    mode because rebinding can change the destination."
+    """
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _warn_insecure_http_once(base_url: str) -> None:
+    if base_url in _WARNED_INSECURE_HTTP:
+        return
+    _WARNED_INSECURE_HTTP.add(base_url)
+    warnings.warn(
+        "MetaLlmClientConfig: HTTP (non-TLS) transport is ENABLED via "
+        f'allow_insecure_http for loopback base_url "{base_url}". Never use this '
+        "in production — see ADR-0022 §D3.",
+        UserWarning,
+        stacklevel=3,
+    )
 
 
 class MetaLlmRoutingControls(dict[str, Any]):
@@ -90,12 +127,25 @@ class MetaLlmClientConfig:
         if not self.base_url:
             raise ValueError("MetaLlmClientConfig.base_url is required")
         base_url = self.base_url.rstrip("/")
-        if not _HTTPS_RE.match(base_url) and not self.allow_insecure_http:
-            raise ValueError(
-                "MetaLlmClientConfig.base_url must be an explicit HTTPS origin "
-                f'(ADR-0024a §D1); got "{self.base_url}". Set allow_insecure_http=True '
-                "for local development only."
-            )
+        if not _HTTPS_RE.match(base_url):
+            if not self.allow_insecure_http:
+                raise ValueError(
+                    "MetaLlmClientConfig.base_url must be an explicit HTTPS origin "
+                    f'(ADR-0024a §D1); got "{self.base_url}". Set allow_insecure_http=True '
+                    "for local development only."
+                )
+            # ADR-0022 §D3: disabling TLS is allowed only for loopback
+            # development, emits a local warning hook, and cannot be
+            # enabled through a generic environment variable in
+            # production builds.
+            host = _extract_host(base_url)
+            if not host or not _is_loopback_host(host):
+                raise ValueError(
+                    "MetaLlmClientConfig.allow_insecure_http is only permitted for "
+                    f'literal IPv4/IPv6 loopback base URLs (ADR-0022 §D3); got "{self.base_url}". '
+                    'Hostname resolution to loopback (e.g. "localhost") is insufficient.'
+                )
+            _warn_insecure_http_once(base_url)
         self.base_url = base_url
 
 

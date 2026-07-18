@@ -295,13 +295,18 @@ class MetaLlmClient:
         if telemetry is not None:
             telemetry.on_request_start(operation, request_id)
 
+        # ADR-0024a §D1: ``health()`` is process-level response only --
+        # never identity or readiness -- so it must not acquire (or
+        # attempt to acquire) a credential at all when one isn't required.
+        # Only ``whoami``/``models`` (both ``require_credential=True``)
+        # touch ``credential_provider`` here.
         credential: Credential | None = None
-        try:
-            credential = await self._resolve_credential(operation)
-        except AgenticError:
-            raise
-        except Exception as cause:  # pragma: no cover - defensive
-            if require_credential:
+        if require_credential:
+            try:
+                credential = await self._resolve_credential(operation)
+            except AgenticError:
+                raise
+            except Exception as cause:  # pragma: no cover - defensive
                 raise AgenticError(
                     "authentication",
                     f"failed to acquire credential: {cause}",
@@ -312,15 +317,15 @@ class MetaLlmClient:
                     cause=cause,
                 ) from cause
 
-        if require_credential and credential is None:
-            raise AgenticError(
-                "authentication",
-                f"MetaLlmClient.{operation} requires a credential_provider",
-                product=_PRODUCT,
-                operation=operation,
-                request_id=request_id,
-                retryable=False,
-            )
+            if credential is None:
+                raise AgenticError(
+                    "authentication",
+                    f"MetaLlmClient.{operation} requires a credential_provider",
+                    product=_PRODUCT,
+                    operation=operation,
+                    request_id=request_id,
+                    retryable=False,
+                )
 
         headers = {"Accept": "application/json", "X-Cognitum-Request-Id": request_id}
         self._apply_auth(headers, credential)

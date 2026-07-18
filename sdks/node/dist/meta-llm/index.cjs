@@ -26,16 +26,47 @@ __export(meta_llm_exports, {
 module.exports = __toCommonJS(meta_llm_exports);
 
 // src/meta-llm/config.ts
+var warnedInsecureHttp = false;
+function extractHost(url) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
+}
+function isLoopbackHost(hostname) {
+  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (host === "::1") return true;
+  const match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!match) return false;
+  return match.slice(1).every((octet) => Number(octet) >= 0 && Number(octet) <= 255) && Number(match[1]) === 127;
+}
+function warnInsecureHttpOnce(baseUrl) {
+  if (warnedInsecureHttp) return;
+  warnedInsecureHttp = true;
+  console.warn(
+    `[cognitum-sdk/meta-llm] HTTP (non-TLS) transport is ENABLED via allowInsecureHttp for loopback baseUrl "${baseUrl}". Never use this in production \u2014 see ADR-0022 \xA7D3.`
+  );
+}
 function resolveMetaLlmClientConfig(config) {
   if (!config.baseUrl) {
     throw new TypeError("MetaLlmClientConfig.baseUrl is required");
   }
   const trimmed = config.baseUrl.replace(/\/+$/, "");
   const isHttps = /^https:\/\//i.test(trimmed);
-  if (!isHttps && !config.allowInsecureHttp) {
-    throw new TypeError(
-      `MetaLlmClientConfig.baseUrl must be an explicit HTTPS origin (ADR-0024a \xA7D1); got "${config.baseUrl}". Set allowInsecureHttp: true for local development only.`
-    );
+  if (!isHttps) {
+    if (!config.allowInsecureHttp) {
+      throw new TypeError(
+        `MetaLlmClientConfig.baseUrl must be an explicit HTTPS origin (ADR-0024a \xA7D1); got "${config.baseUrl}". Set allowInsecureHttp: true for local development only.`
+      );
+    }
+    const host = extractHost(trimmed);
+    if (!host || !isLoopbackHost(host)) {
+      throw new TypeError(
+        `MetaLlmClientConfig.allowInsecureHttp is only permitted for literal IPv4/IPv6 loopback base URLs (ADR-0022 \xA7D3); got "${config.baseUrl}". Hostname resolution to loopback (e.g. "localhost") is insufficient.`
+      );
+    }
+    warnInsecureHttpOnce(trimmed);
   }
   return { ...config, baseUrl: trimmed };
 }
@@ -224,26 +255,24 @@ var MetaLlmClient = class {
     const requestId = options?.requestContext?.requestId ?? this.config.defaultRequestContext?.requestId ?? newRequestId();
     this.config.telemetry?.onRequestStart?.({ operation, requestId });
     const startedAt = Date.now();
-    const credential = await this.resolveCredential(operation, ["meta-llm.read"]).catch(
-      (cause) => {
-        if (opts.requireCredential) {
-          throw new AgenticError("authentication", `failed to acquire credential: ${cause}`, {
-            product: PRODUCT,
-            operation,
-            requestId,
-            retryable: false,
-            cause
-          });
-        }
-        return void 0;
+    let credential;
+    if (opts.requireCredential) {
+      credential = await this.resolveCredential(operation, ["meta-llm.read"]).catch((cause) => {
+        throw new AgenticError("authentication", `failed to acquire credential: ${cause}`, {
+          product: PRODUCT,
+          operation,
+          requestId,
+          retryable: false,
+          cause
+        });
+      });
+      if (!credential) {
+        throw new AgenticError(
+          "authentication",
+          `MetaLlmClient.${operation} requires a credential_provider`,
+          { product: PRODUCT, operation, requestId, retryable: false }
+        );
       }
-    );
-    if (opts.requireCredential && !credential) {
-      throw new AgenticError(
-        "authentication",
-        `MetaLlmClient.${operation} requires a credential_provider`,
-        { product: PRODUCT, operation, requestId, retryable: false }
-      );
     }
     const headers = {
       Accept: "application/json",

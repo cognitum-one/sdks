@@ -6,6 +6,8 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::net::{Ipv4Addr, Ipv6Addr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -106,6 +108,49 @@ impl MetaLlmClientConfig {
     }
 }
 
+/// One-shot latch so the `allow_insecure_http` escape hatch only ever
+/// warns once per process, matching `seed`'s `SeedTls::Insecure` pattern
+/// (`crate::seed::client::INSECURE_WARN`).
+static INSECURE_HTTP_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// Best-effort extraction of the host (no scheme, no port, no path) from an
+/// already-trimmed `scheme://host[:port][/path]` URL. Deliberately does not
+/// pull in the optional `url` crate (not available under the `meta-llm`
+/// feature) — this is a literal-string check, not general URL parsing.
+fn extract_host(url: &str) -> Option<&str> {
+    let after_scheme = url.split_once("://")?.1;
+    let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
+    if let Some(rest) = host_port.strip_prefix('[') {
+        // IPv6 literal, e.g. "[::1]:8443".
+        return rest.split(']').next();
+    }
+    Some(host_port.split(':').next().unwrap_or(host_port))
+}
+
+/// `true` only for a literal IPv4/IPv6 loopback address. Hostname
+/// resolution (e.g. "localhost") is deliberately excluded — ADR-0022 §D3:
+/// "Hostname resolution to loopback is insufficient for the default-safe
+/// mode because rebinding can change the destination."
+fn is_loopback_host(host: &str) -> bool {
+    if let Ok(ip) = host.parse::<Ipv4Addr>() {
+        return ip.is_loopback();
+    }
+    if let Ok(ip) = host.parse::<Ipv6Addr>() {
+        return ip.is_loopback();
+    }
+    false
+}
+
+fn warn_insecure_http_once(base_url: &str) {
+    if !INSECURE_HTTP_WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "cognitum-rs meta-llm: HTTP (non-TLS) transport is ENABLED via \
+             allow_insecure_http for loopback base_url \"{base_url}\". Never use \
+             this in production — see ADR-0022 §D3."
+        );
+    }
+}
+
 /// Validate and normalize a [`MetaLlmClientConfig`]. Pure function, no I/O —
 /// construction MUST stay side-effect free (ADR-0024a §D1, ADR-0019 §D3).
 #[allow(clippy::result_large_err)]
@@ -120,16 +165,35 @@ pub(crate) fn resolve_config(
     }
     let trimmed = config.base_url.trim_end_matches('/').to_owned();
     let is_https = trimmed.to_ascii_lowercase().starts_with("https://");
-    if !is_https && !config.allow_insecure_http {
-        return Err(AgenticError::new(
-            AgenticErrorKind::Configuration,
-            format!(
-                "MetaLlmClientConfig.base_url must be an explicit HTTPS origin \
-                 (ADR-0024a §D1); got \"{}\". Set allow_insecure_http: true for \
-                 local development only.",
-                config.base_url
-            ),
-        ));
+    if !is_https {
+        if !config.allow_insecure_http {
+            return Err(AgenticError::new(
+                AgenticErrorKind::Configuration,
+                format!(
+                    "MetaLlmClientConfig.base_url must be an explicit HTTPS origin \
+                     (ADR-0024a §D1); got \"{}\". Set allow_insecure_http: true for \
+                     local development only.",
+                    config.base_url
+                ),
+            ));
+        }
+        // ADR-0022 §D3: disabling TLS is allowed only for loopback
+        // development, emits a local warning hook, and cannot be enabled
+        // through a generic environment variable in production builds.
+        let host = extract_host(&trimmed).unwrap_or("");
+        if !is_loopback_host(host) {
+            return Err(AgenticError::new(
+                AgenticErrorKind::Configuration,
+                format!(
+                    "MetaLlmClientConfig.allow_insecure_http is only permitted for \
+                     literal IPv4/IPv6 loopback base URLs (ADR-0022 §D3); got \"{}\". \
+                     Hostname resolution to loopback (e.g. \"localhost\") is \
+                     insufficient.",
+                    config.base_url
+                ),
+            ));
+        }
+        warn_insecure_http_once(&trimmed);
     }
     Ok(MetaLlmClientConfig {
         base_url: trimmed,

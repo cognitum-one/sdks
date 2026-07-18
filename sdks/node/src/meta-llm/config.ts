@@ -93,6 +93,49 @@ export interface ResolvedMetaLlmClientConfig extends MetaLlmClientConfig {
 }
 
 /**
+ * One-shot latch so the `allowInsecureHttp` escape hatch only ever warns
+ * once per process, matching the seed module's `tls.insecure` pattern
+ * (`../seed/transport.js`'s `warnedInsecure`).
+ */
+let warnedInsecureHttp = false;
+
+/** Test-only hook to reset the one-shot warning latch between test cases. */
+export function __resetMetaLlmInsecureHttpWarnLatch(): void {
+  warnedInsecureHttp = false;
+}
+
+function extractHost(url: string): string | null {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `true` only for a literal IPv4/IPv6 loopback address. Hostname
+ * resolution (e.g. "localhost") is deliberately excluded — ADR-0022 §D3:
+ * "Hostname resolution to loopback is insufficient for the default-safe
+ * mode because rebinding can change the destination."
+ */
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (host === "::1") return true;
+  const match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!match) return false;
+  return match.slice(1).every((octet) => Number(octet) >= 0 && Number(octet) <= 255) && Number(match[1]) === 127;
+}
+
+function warnInsecureHttpOnce(baseUrl: string): void {
+  if (warnedInsecureHttp) return;
+  warnedInsecureHttp = true;
+  console.warn(
+    `[cognitum-sdk/meta-llm] HTTP (non-TLS) transport is ENABLED via allowInsecureHttp ` +
+      `for loopback baseUrl "${baseUrl}". Never use this in production — see ADR-0022 §D3.`,
+  );
+}
+
+/**
  * Validate and normalize a {@link MetaLlmClientConfig}. Pure function, no
  * I/O — construction MUST stay side-effect free (ADR-0024a §D1, ADR-0019 §D3).
  */
@@ -104,11 +147,25 @@ export function resolveMetaLlmClientConfig(
   }
   const trimmed = config.baseUrl.replace(/\/+$/, "");
   const isHttps = /^https:\/\//i.test(trimmed);
-  if (!isHttps && !config.allowInsecureHttp) {
-    throw new TypeError(
-      `MetaLlmClientConfig.baseUrl must be an explicit HTTPS origin (ADR-0024a §D1); ` +
-        `got "${config.baseUrl}". Set allowInsecureHttp: true for local development only.`,
-    );
+  if (!isHttps) {
+    if (!config.allowInsecureHttp) {
+      throw new TypeError(
+        `MetaLlmClientConfig.baseUrl must be an explicit HTTPS origin (ADR-0024a §D1); ` +
+          `got "${config.baseUrl}". Set allowInsecureHttp: true for local development only.`,
+      );
+    }
+    // ADR-0022 §D3: disabling TLS is allowed only for loopback
+    // development, emits a local warning hook, and cannot be enabled
+    // through a generic environment variable in production builds.
+    const host = extractHost(trimmed);
+    if (!host || !isLoopbackHost(host)) {
+      throw new TypeError(
+        `MetaLlmClientConfig.allowInsecureHttp is only permitted for literal IPv4/IPv6 ` +
+          `loopback base URLs (ADR-0022 §D3); got "${config.baseUrl}". Hostname resolution ` +
+          `to loopback (e.g. "localhost") is insufficient.`,
+      );
+    }
+    warnInsecureHttpOnce(trimmed);
   }
   return { ...config, baseUrl: trimmed };
 }

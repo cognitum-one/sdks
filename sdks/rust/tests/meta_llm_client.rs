@@ -1,11 +1,16 @@
 #![cfg(feature = "meta-llm")]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use cognitum_one::agentic::static_api_key_provider::{
     StaticApiKeyCredentialProvider, StaticApiKeyCredentialProviderOptions,
 };
-use cognitum_one::agentic::{AgenticErrorKind, CapabilitySet, CapabilitySource};
+use cognitum_one::agentic::{
+    AgenticError, AgenticErrorKind, CapabilitySet, CapabilitySource, Credential,
+    CredentialAuthority, CredentialProvider, CredentialRequest, RedactedSecret,
+};
 use cognitum_one::meta_llm::{MetaLlmClient, MetaLlmClientConfig};
 use serde_json::json;
 use wiremock::matchers::{header, header_exists, method, path};
@@ -24,6 +29,63 @@ fn credential_provider(base_url: &str) -> Arc<StaticApiKeyCredentialProvider> {
         )
         .expect("provider should construct"),
     )
+}
+
+/// Spy `CredentialProvider` that counts `acquire()` calls, so tests can
+/// prove `health()` (ADR-0024a §D1: process-level response only) never
+/// attempts credential acquisition even when a provider IS configured.
+#[derive(Debug, Default)]
+struct SpyCredentialProvider {
+    acquire_calls: AtomicUsize,
+}
+
+#[async_trait]
+impl CredentialProvider for SpyCredentialProvider {
+    async fn describe_authority(
+        &self,
+        request: &CredentialRequest,
+    ) -> Result<CredentialAuthority, AgenticError> {
+        Ok(CredentialAuthority {
+            provider_fingerprint: "spy".to_owned(),
+            product: request.product.clone(),
+            normalized_origin: request.normalized_origin.clone(),
+            audience: request.audience.clone(),
+            principal: None,
+            tenant: None,
+            delegated_subtenant: None,
+            effective_scopes: None,
+            plan: None,
+        })
+    }
+
+    async fn acquire(&self, request: &CredentialRequest) -> Result<Credential, AgenticError> {
+        self.acquire_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(Credential {
+            scheme: "X-API-Key".to_owned(),
+            secret: RedactedSecret::new("sk-spy-canary"),
+            expires_at: None,
+            granted_scopes: None,
+            audience: request.audience.clone(),
+            source: "spy".to_owned(),
+            authority: CredentialAuthority {
+                provider_fingerprint: "spy".to_owned(),
+                product: request.product.clone(),
+                normalized_origin: request.normalized_origin.clone(),
+                audience: request.audience.clone(),
+                principal: None,
+                tenant: None,
+                delegated_subtenant: None,
+                effective_scopes: None,
+                plan: None,
+            },
+        })
+    }
+
+    fn identity(&self) -> String {
+        "spy-credential-provider".to_owned()
+    }
+
+    async fn invalidate(&self, _reason: &str) {}
 }
 
 /// Config pointed at a wiremock `http://` server. `allow_insecure_http` is
@@ -63,6 +125,32 @@ fn allows_non_https_base_url_when_opted_in() {
 fn rejects_missing_base_url() {
     let config = MetaLlmClientConfig::new("");
     assert!(MetaLlmClient::new(config).is_err());
+}
+
+#[test]
+fn allow_insecure_http_rejects_non_loopback_host() {
+    // ADR-0022 §D3: disabling TLS is allowed only for loopback development.
+    let mut config = MetaLlmClientConfig::new("http://example.com:9999");
+    config.allow_insecure_http = true;
+    let err = MetaLlmClient::new(config).unwrap_err();
+    assert_eq!(err.kind, AgenticErrorKind::Configuration);
+}
+
+#[test]
+fn allow_insecure_http_rejects_hostname_resolving_to_loopback() {
+    // ADR-0022 §D3: hostname resolution to loopback (e.g. "localhost") is
+    // insufficient — only a literal IPv4/IPv6 loopback address qualifies.
+    let mut config = MetaLlmClientConfig::new("http://localhost:9999");
+    config.allow_insecure_http = true;
+    let err = MetaLlmClient::new(config).unwrap_err();
+    assert_eq!(err.kind, AgenticErrorKind::Configuration);
+}
+
+#[test]
+fn allow_insecure_http_accepts_literal_ipv6_loopback() {
+    let mut config = MetaLlmClientConfig::new("http://[::1]:9999");
+    config.allow_insecure_http = true;
+    assert!(MetaLlmClient::new(config).is_ok());
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +196,35 @@ async fn health_maps_503_to_retryable_transport_error() {
     assert_eq!(err.status, Some(503));
 }
 
+#[tokio::test]
+async fn health_never_acquires_a_credential_even_when_a_provider_is_configured() {
+    // FIX 3 regression test: ADR-0024a §D1 says health() is process-level
+    // response only. Before the fix, `get_json` called
+    // `resolve_credential` (and thus `provider.acquire()`) unconditionally
+    // regardless of `require_credential`, only discarding the result for
+    // health(). A SpyCredentialProvider proves acquire() is now skipped
+    // entirely rather than acquired-and-discarded.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/health"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
+        .mount(&server)
+        .await;
+
+    let spy = Arc::new(SpyCredentialProvider::default());
+    let mut config = insecure_config(server.uri());
+    config.credential_provider = Some(spy.clone());
+    let client = MetaLlmClient::new(config).unwrap();
+
+    let result = client.health().await.unwrap();
+    assert_eq!(result.data.status, "ok");
+    assert_eq!(
+        spy.acquire_calls.load(Ordering::SeqCst),
+        0,
+        "health() must not acquire a credential even when one is configured"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // whoami()
 // ---------------------------------------------------------------------------
@@ -139,6 +256,37 @@ async fn whoami_fails_closed_without_credential_provider() {
     let server = MockServer::start().await;
     // Deliberately no Mock registered: a request would panic/fail the test.
     let config = insecure_config(server.uri());
+    let client = MetaLlmClient::new(config).unwrap();
+
+    let err = client.whoami().await.unwrap_err();
+    assert_eq!(err.kind, AgenticErrorKind::Authentication);
+}
+
+#[tokio::test]
+async fn whoami_rejects_credential_provider_bound_to_a_different_origin() {
+    // FIX 4 regression test: a CredentialProvider constructed for a
+    // DIFFERENT origin than the client's own base_url must be refused
+    // (ADR-0022 §D3: "Credential providers are bound to the normalized
+    // origin selected during client construction"). Deliberately no Mock
+    // registered on the server — a request escaping to the wire would
+    // panic/fail the test, proving no credential leaked to the wrong
+    // origin either.
+    let server = MockServer::start().await;
+    let mismatched_provider = Arc::new(
+        StaticApiKeyCredentialProvider::new(
+            "meta-llm",
+            "https://a-completely-different-origin.example.com",
+            "https://a-completely-different-origin.example.com",
+            StaticApiKeyCredentialProviderOptions {
+                api_key: Some("sk-wrong-origin-canary".to_owned()),
+                ..Default::default()
+            },
+        )
+        .expect("provider should construct"),
+    );
+
+    let mut config = insecure_config(server.uri());
+    config.credential_provider = Some(mismatched_provider);
     let client = MetaLlmClient::new(config).unwrap();
 
     let err = client.whoami().await.unwrap_err();

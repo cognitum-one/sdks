@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 
 import { MetaLlmClient } from "../src/meta-llm/client.js";
+import { __resetMetaLlmInsecureHttpWarnLatch } from "../src/meta-llm/config.js";
 import { StaticApiKeyCredentialProvider } from "../src/agentic/static-api-key-provider.js";
 import { AgenticError } from "../src/agentic/errors.js";
+import type { CredentialProvider } from "../src/agentic/credentials.js";
 
 const BASE_URL = "https://meta-llm.test.cognitum.one";
 
@@ -30,7 +32,34 @@ function makeCredentialProvider(): StaticApiKeyCredentialProvider {
   });
 }
 
+/** Spy `CredentialProvider` so tests can assert `acquire()` call counts. */
+function makeSpyCredentialProvider(): { provider: CredentialProvider; acquire: ReturnType<typeof vi.fn> } {
+  const acquire = vi.fn().mockResolvedValue({
+    scheme: "X-API-Key",
+    secret: { reveal: () => "sk-spy-canary" },
+    audience: BASE_URL,
+    source: "spy",
+    authority: {
+      providerFingerprint: "spy",
+      product: "meta-llm",
+      normalizedOrigin: BASE_URL,
+      audience: BASE_URL,
+    },
+  });
+  const provider: CredentialProvider = {
+    acquire,
+    describeAuthority: vi.fn(),
+    identity: () => "spy-credential-provider",
+    invalidate: vi.fn(),
+  };
+  return { provider, acquire };
+}
+
 describe("MetaLlmClient construction", () => {
+  afterEach(() => {
+    __resetMetaLlmInsecureHttpWarnLatch();
+  });
+
   it("performs no I/O and requires an explicit HTTPS base URL", () => {
     const fetchSpy = vi.fn();
     const client = new MetaLlmClient({ baseUrl: BASE_URL, transport: fetchSpy });
@@ -52,6 +81,25 @@ describe("MetaLlmClient construction", () => {
 
   it("throws for a missing base URL", () => {
     expect(() => new MetaLlmClient({ baseUrl: "" })).toThrow(TypeError);
+  });
+
+  it("rejects allowInsecureHttp against a non-loopback host (ADR-0022 §D3)", () => {
+    expect(
+      () => new MetaLlmClient({ baseUrl: "http://example.com:9999", allowInsecureHttp: true }),
+    ).toThrow(TypeError);
+  });
+
+  it("rejects allowInsecureHttp against a hostname that merely resolves to loopback", () => {
+    // ADR-0022 §D3: hostname resolution to loopback is insufficient — only
+    // a literal IPv4/IPv6 loopback address qualifies.
+    expect(
+      () => new MetaLlmClient({ baseUrl: "http://localhost:9999", allowInsecureHttp: true }),
+    ).toThrow(TypeError);
+  });
+
+  it("allows allowInsecureHttp against a literal IPv6 loopback address", () => {
+    const client = new MetaLlmClient({ baseUrl: "http://[::1]:9999", allowInsecureHttp: true });
+    expect(client).toBeInstanceOf(MetaLlmClient);
   });
 });
 
@@ -80,6 +128,26 @@ describe("MetaLlmClient.health()", () => {
       status: 503,
     });
   });
+
+  it("never acquires a credential even when a provider is configured (ADR-0024a §D1)", async () => {
+    // FIX 3 regression test: before the fix, `getJson` called
+    // `resolveCredential` (and thus `provider.acquire()`) unconditionally
+    // regardless of `requireCredential`, only discarding the result for
+    // health(). A spy provider proves acquire() is now skipped entirely
+    // rather than acquired-and-discarded.
+    const fetchSpy = mockFetch(200, { status: "ok" });
+    const { provider, acquire } = makeSpyCredentialProvider();
+    const client = new MetaLlmClient({
+      baseUrl: BASE_URL,
+      transport: fetchSpy,
+      credentialProvider: provider,
+    });
+
+    const result = await client.health();
+
+    expect(result.data).toEqual({ status: "ok" });
+    expect(acquire).not.toHaveBeenCalled();
+  });
 });
 
 describe("MetaLlmClient.whoami()", () => {
@@ -102,6 +170,30 @@ describe("MetaLlmClient.whoami()", () => {
   it("fails closed when no credential provider is configured", async () => {
     const fetchSpy = vi.fn();
     const client = new MetaLlmClient({ baseUrl: BASE_URL, transport: fetchSpy });
+
+    await expect(client.whoami()).rejects.toMatchObject({ kind: "authentication" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects a credential provider bound to a different origin", async () => {
+    // FIX 4 regression test: a CredentialProvider constructed for a
+    // DIFFERENT origin than the client's own baseUrl must be refused
+    // (ADR-0022 §D3: "Credential providers are bound to the normalized
+    // origin selected during client construction"). Asserts the request
+    // never reached the wire either, proving no credential leaked to the
+    // wrong origin.
+    const fetchSpy = vi.fn();
+    const mismatchedProvider = new StaticApiKeyCredentialProvider({
+      apiKey: "sk-wrong-origin-canary",
+      product: "meta-llm",
+      normalizedOrigin: "https://a-completely-different-origin.example.com",
+      audience: "https://a-completely-different-origin.example.com",
+    });
+    const client = new MetaLlmClient({
+      baseUrl: BASE_URL,
+      transport: fetchSpy,
+      credentialProvider: mismatchedProvider,
+    });
 
     await expect(client.whoami()).rejects.toMatchObject({ kind: "authentication" });
     expect(fetchSpy).not.toHaveBeenCalled();
