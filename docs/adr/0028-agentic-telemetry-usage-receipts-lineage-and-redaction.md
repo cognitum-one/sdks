@@ -375,6 +375,70 @@ on completion/close. The SDK does not create disk logs or telemetry spools by
 default. A configured adapter owns export retention and MUST receive the data
 classification map in its documentation.
 
+### D13. Redaction sentinel scanning
+
+D1's guarantee that "callers receive already-redacted events" is enforced by a
+recursive sentinel scan, not by the D3 allow-list alone. The allow-list
+constrains which fixed attributes exist; D12 constrains which content
+categories are excluded by convention; neither inspects the free-form values
+inside `TelemetryEvent.attributes`, `TelemetryEvent.measurements`,
+`ExecutionReceiptV1.artifact_digests`, diagnostic manifests (D10), OpenTelemetry
+adapter exports (D1), or exception/dropped-event paths (`telemetry.dropped`),
+where a secret could leak through a field, or a nested value inside one, that
+is not itself named on the allow-list.
+
+A **sentinel** is a compiled matcher set applied to every string leaf value it
+visits:
+
+- fixed-format matchers for known credential/token shapes (bearer tokens, JWTs,
+  PEM `BEGIN ... PRIVATE KEY` blocks, cloud-provider access-key patterns,
+  pre-signed URL query parameters);
+- an entropy matcher: Shannon entropy >= 4.0 bits/char over any contiguous
+  token of >= 20 characters, evaluated only after the fixed-format matchers, so
+  a match is classified by pattern first and by entropy only as a fallback;
+- a key-name check against the D12 category list (prompts, messages, tool
+  arguments/results, source, repository URLs, patches, credentials,
+  environment values, webhook bodies, signed URLs, raw tenant/user
+  identifiers), since D3 and D12 constrain keys and categories but not nested
+  values.
+
+Traversal algorithm:
+
+1. Depth-first walk starting at each of: `TelemetryEvent.attributes`,
+   `TelemetryEvent.measurements`, `ExecutionReceiptV1.artifact_digests`, the
+   diagnostic manifest payload defined by `DiagnosticPolicy` (D10), and the
+   content-free diagnostic emitted through the D1 fallback hook for
+   `telemetry.dropped`.
+2. Every map/object value and every array/list element is visited; string
+   leaves are tested against the matcher set above.
+3. Traversal depth is bounded at 8. A value at depth 9 or deeper is replaced
+   with a fixed `[max-depth-exceeded]` marker and never emitted; the
+   truncation is recorded as a boolean flag, not the truncated content.
+4. Cycles are broken by an object-identity visited-set; a detected cycle is
+   replaced with `[cyclic-reference]` and flagged the same way as a depth
+   violation.
+5. Any leaf that matches a sentinel is replaced with a fixed
+   `[redacted:<category>]` marker, where `<category>` is one of the D12
+   categories, or `secret-pattern`/`high-entropy` for value-only matches; the
+   original value is never retained, logged, or forwarded to a fallback hook.
+
+Pipeline placement, relative to D1's "already-redacted" guarantee:
+
+- for `TelemetrySink.emit()`, the scan completes and all matches are replaced
+  before `emit()` is invoked on the caller's sink, and before an official
+  OpenTelemetry adapter (D1) maps the event onto an OTel span or metric export
+  call;
+- for diagnostic bundles (D10), the scan runs before the redaction report is
+  generated and before the bundle is written to the local sink path — the
+  redaction report lists categories redacted and counts, never values;
+- for the dropped-event fallback diagnostic (D1) and any exception path that
+  surfaces `cognitum.error.kind` context, the same scan and marker substitution
+  applies before the diagnostic reaches its caller-visible surface.
+
+A sink or adapter MUST NOT receive an event, receipt, or diagnostic bundle that
+has not completed this scan. Sink failure, timeout, or backpressure (D1) does
+not exempt an event from scanning.
+
 ## Consequences
 
 ### Positive
@@ -436,8 +500,9 @@ Required conformance checks:
 11. public-webhook, pod-HMAC, and HarnessaaS-verifier separation;
 12. diagnostic preview, byte limit, local-only default, digest, and forbidden
     secret categories;
-13. recursive sentinel scanning of events, adapter exports, diagnostic manifests,
-    exception paths, and dropped-event diagnostics.
+13. recursive sentinel scanning (D13) of events, adapter exports, diagnostic
+    manifests, exception paths, and dropped-event diagnostics, including
+    max-depth truncation and cycle-detection fixtures.
 
 ### Acceptance test
 
@@ -460,3 +525,9 @@ usable as data but can never satisfy a cryptographic verification requirement.
 - ADR-0025: Meta Proxy local control, routing, and failover
 - ADR-0026: MetaHarness local process bridge and supply chain
 - ADR-0027: HarnessaaS jobs, events, approvals, artifacts, and isolation
+- Source: `sdks/node/package.json:2-67` — no declared SDK telemetry surface or
+  adapter
+- Source: `sdks/python/pyproject.toml:5-25` — no declared SDK telemetry surface
+  or adapter
+- Source: `sdks/rust/Cargo.toml:1-73` — no declared SDK telemetry surface or
+  adapter

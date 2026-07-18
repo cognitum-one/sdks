@@ -38,7 +38,8 @@ docs/adr/                           # this directory — shared / cross-cutting
 ├── 0027a-harnessaas-jobs-events-approvals-and-artifacts.md
 ├── 0027b-harnessaas-isolation-evidence-webhooks-and-ga-gates.md
 ├── 0028-agentic-telemetry-usage-receipts-lineage-and-redaction.md
-├── 0029-language-packaging-features-and-cli.md
+├── 0029a-node-python-rust-packaging-and-feature-boundaries.md
+├── 0029b-cli-scope-compatibility-and-rollout-gates.md
 ├── 0030a-conformance-ci-and-release-evidence.md
 ├── 0030b-migration-rollout-and-publication.md
 └── ddd/
@@ -125,9 +126,10 @@ are referenced by each SDK's architecture + implementation ADRs.
 24. [`0028-agentic-telemetry-usage-receipts-lineage-and-redaction.md`](0028-agentic-telemetry-usage-receipts-lineage-and-redaction.md) —
     Cross-product observability, cost observations, receipts, lineage, evidence
     verification, and recursive redaction.
-25. [`0029-language-packaging-features-and-cli.md`](0029-language-packaging-features-and-cli.md) —
+25. [`0029a-node-python-rust-packaging-and-feature-boundaries.md`](0029a-node-python-rust-packaging-and-feature-boundaries.md)
+    and [`0029b-cli-scope-compatibility-and-rollout-gates.md`](0029b-cli-scope-compatibility-and-rollout-gates.md) —
     Node, Python, and Rust package boundaries, optional features, canonical
-    symbols, CLI behavior, and implementation layout.
+    symbols, CLI behavior, compatibility/migration, and implementation layout.
 26. [`0030a-conformance-ci-and-release-evidence.md`](0030a-conformance-ci-and-release-evidence.md)
     and [`0030b-migration-rollout-and-publication.md`](0030b-migration-rollout-and-publication.md) —
     Twelve-binding conformance, adversarial CI, migration, unique work

@@ -368,13 +368,22 @@ Stable client promotion requires:
 7. preserve budget and rate-limit categories;
 8. contract models/identity cloud-only behavior;
 9. prove `critical` and absent-consent fail closed;
-10. pass ADR-0025b's paired version, config, ledger, and lifecycle gates.
+10. pass ADR-0025b's paired version, config, ledger, and lifecycle gates;
+11. for explicit Cognitum-cloud chat and Messages specifically: confirm that
+    ADR-0024a's D9 serving GA gates (1-10) have passed for the exact Meta LLM
+    protocol version being relayed, covering at minimum the published wire
+    schema and SSE grammars (gate 2), the `IdempotencyBindingV1` implementation
+    (gate 4), and consistent protocol/request identifiers on success, error,
+    and terminal stream paths (gate 9) — the Proxy method may not reach Stable
+    while the underlying serving operation it reuses (D7) is still Preview.
 
 Rollout begins status-only, then explicit local chat/Messages, then explicit
-Cognitum cloud after receipt/forwarding gates. Passthrough, power saver, and
-sponsor remain preview. Two consecutive paired releases must pass before stable
-promotion. Existing externally-started Proxies may adopt the client without the
-manager. No migration changes a data plane silently.
+Cognitum cloud after receipt/forwarding gates **and** after gate 11 above
+confirms the corresponding ADR-0024a serving operation has itself reached
+Stable. Passthrough, power saver, and sponsor remain preview. Two consecutive
+paired releases must pass before stable promotion. Existing externally-started
+Proxies may adopt the client without the manager. No migration changes a data
+plane silently.
 
 ## Consequences
 

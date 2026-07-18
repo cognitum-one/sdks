@@ -393,6 +393,10 @@ invalidates that evidence.
 
 ## References
 
+- Source: `sdks/node/package.json:2-67` — Node manifest/test baseline
+- Source: `sdks/python/pyproject.toml:5-25` — Python manifest/test baseline
+- Source: `sdks/rust/Cargo.toml:1-73` — Rust manifest/test baseline
+- Source: `.github/workflows/security.yml:1-20` — verified CI workflow
 - ADR-0004: cross-cutting error taxonomy
 - ADR-0005: retry and rate-limit backoff
 - ADR-0006: cross-cutting versioning

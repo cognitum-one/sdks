@@ -144,12 +144,24 @@ state. A status code alone is never sufficient.
 ### D4. Default transient policy
 
 For a retry-safe operation, default maximum attempts are four total: the first
-attempt and up to three retries. The delay uses equal jitter:
+attempt and up to three retries. The delay uses the same equal-jitter backoff
+formula as ADR-0005 verbatim — this ADR does not narrow or override it, and
+agentic modules MUST NOT diverge from it:
 
 ```text
-raw = min(500 ms * 2^retry_index, 30 s)
-delay = raw / 2 + random(0, raw / 2)
+delay_ms(attempt) = min(
+    cap_ms,
+    max(
+        server_hint_ms,                     # Retry-After if present
+        base_ms * 2 ** attempt + jitter
+    )
+)
 ```
+
+- `base_ms = 500`
+- `cap_ms = 30000` (30 s)
+- `jitter = uniform(0, base_ms)` — equal-jitter
+- `attempt` starts at 0
 
 The default aggregate retry-sleep budget is 60 seconds and is independent of
 the request's total deadline. The next attempt runs only if its scheduled delay
@@ -403,5 +415,7 @@ job retrievable.
 - ADR-0020: contract source of truth and code generation
 - ADR-0021: service configuration, transports, and capabilities
 - ADR-0022: authentication, tenant, budget, secret, and consent isolation
-- ADR-0024: Meta LLM dual-protocol inference and governance
-- ADR-0027: HarnessaaS jobs, events, approvals, artifacts, and isolation
+- ADR-0024a: Meta LLM serving protocols and streaming
+- ADR-0024b: Meta LLM platform resources, routing, and usage
+- ADR-0027a: HarnessaaS jobs, events, approvals, and artifacts
+- ADR-0027b: HarnessaaS isolation, evidence, webhooks, and GA gates

@@ -93,8 +93,9 @@ bounded-context clients in its own repository, but that policy does not enter
 the general SDK.
 
 The subpath MAY export `MetaHarnessProxyLifecycleProvider`, a separate
-ADR-0025b adapter explicitly injected into `MetaProxyManager`. Its provider
-JSONL request/result/event schemas come only from the pinned ADR-0025b lifecycle
+ADR-0026a adapter explicitly injected into `MetaProxyManager`. It implements,
+but never owns, the ADR-0025b lifecycle-provider schema: provider JSONL
+request/result/event schemas come only from the pinned ADR-0025b lifecycle
 contract bundle, not this bridge. Provider capabilities remain separate; it is
 not a `MetaHarnessClient` method and Meta Proxy never imports it.
 

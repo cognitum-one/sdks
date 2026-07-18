@@ -143,7 +143,15 @@ distribution.
 
 The SDK does not implicitly install Node. It selects an exact caller-provided or
 SDK-configured executable satisfying the locked range and records its version.
-A future Node installer requires a separate signed lock and explicit consent.
+An optional `interpreterDigest` field lets a caller or session policy pin the
+selected executable's own file hash; when supplied, the SDK verifies the
+resolved Node binary's digest once per process before first use and refuses a
+mismatch. When omitted, the interpreter is trusted at the caller-supplied path
+and version range alone: the SDK does not otherwise attest that binary's
+authenticity, so a version-satisfying but compromised or malicious Node
+executable still runs the verified bridge with full interpreter trust — see
+Consequences for this residual risk. A future Node installer requires a
+separate signed lock and explicit consent.
 
 ### D3. Process environment, limits, and ownership
 
@@ -350,6 +358,15 @@ existing MetaHarness process. Interactive `npx` behavior remains independent.
 - Crash-recoverable mutation and cross-platform recovery are estimated at five to
   ten engineering days beyond the bridge work.
 - Refusing EXDEV copy means some mounted/network filesystems remain read-only.
+- Interpreter trust is bounded, not eliminated: unless a caller supplies
+  `interpreterDigest` (D2), the Node executable itself is verified only by
+  path and version range, not by hash or signature, while every package,
+  dependency, and entrypoint digest downstream of it is pinned and
+  revalidated. A version-satisfying but tampered or malicious Node binary is
+  therefore the one unresolved link in an otherwise fully digest-pinned
+  chain. Closing this without a caller-supplied pin would require OS
+  package-manager attestation or a bundled interpreter, both out of this
+  ADR's scope.
 
 ### Biggest failure mode and mitigation
 

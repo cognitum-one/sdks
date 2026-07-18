@@ -302,7 +302,12 @@ Webhook subscriptions are tenant resources under `/v1/webhooks` with explicit
 event allowlist, HTTPS destination, retention consent, and optional filter.
 V1 supports current events `gate.decision`, `business.promotion`, and
 `acceptance.completed` plus capability-declared `job.terminal`,
-`approval.required`, and `artifact.available`.
+`approval.required`, and `artifact.available`. Approval *outcomes* are
+intentionally excluded from the webhook allowlist — unlike `approval.required`,
+there is no `approval.resolved` webhook counterpart to the SSE event in
+ADR-0027a D7; callers observe the resolution via `SolveHandle.events` or by
+polling the approval resource, avoiding webhook fan-out for a decision that is
+typically consumed synchronously by the same session that requested it.
 
 The versioned envelope contains:
 

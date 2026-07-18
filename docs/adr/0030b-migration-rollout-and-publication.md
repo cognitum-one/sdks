@@ -371,6 +371,10 @@ stable claim, missing migration row, or changed artifact blocks publication.
 
 ## References
 
+- Source: `sdks/node/src/client.ts:238-255` — current environment-key resolution
+- Source: `sdks/python/cognitum/client.py:39-51` — required Python credentials
+- Source: `sdks/python/cognitum/_http.py:97-160` — retry behavior
+- Source: `sdks/rust/src/client.rs:28-36,297-365` — secret/retry risk
 - ADR-0004: cross-cutting error taxonomy
 - ADR-0005: retry and rate-limit backoff
 - ADR-0006: cross-cutting versioning

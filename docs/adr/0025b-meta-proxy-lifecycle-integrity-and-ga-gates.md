@@ -318,8 +318,9 @@ No manager operation becomes stable until applicable gates pass:
 
 1. publish Proxy lifecycle, config, status, credential disposition, and artifact
    schemas in the ADR-0020 bundle;
-2. publish the shared lifecycle-provider schema and a versioned ADR-0026a
-   MetaHarness adapter operation for every stable manager method;
+2. publish the ADR-0025b-owned lifecycle-provider schema and a versioned
+   ADR-0026a MetaHarness adapter operation that consumes it for every stable
+   manager method;
 3. align Cargo, binary status, README, signed release assets, distribution
    mirror, and MetaHarness compatibility versions;
 4. make installed local-only configuration an executable invariant;

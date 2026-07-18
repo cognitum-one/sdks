@@ -231,6 +231,19 @@ Kinds include, when supported:
 - `training_data_contribution`;
 - `external_webhook_delivery`.
 
+Consent enforcement mirrors D6: a locally recorded grant is a caller-side
+convenience, not proof the server will honor it. For consequential kinds
+(`sponsored_inference`, `training_data_contribution`, `source_upload`,
+`artifact_retention`, and `external_webhook_delivery`), an unsigned, purely
+local record is not sufficient. These kinds require either a signed grant the
+SDK can verify offline, or a persisted grant whose issuing service can attest
+its signature and origin on request; the SDK re-checks that attestation before
+the gated call rather than trusting its own cache alone. The unsigned, locally
+recorded path is reserved for the remaining low-stakes kinds, `power_saver_routing`
+and `cloud_fallback`, where a forged or stale grant only mis-routes a call
+rather than exfiltrating data, creating third-party financial liability, or
+persisting content the caller cannot later disclaim.
+
 The grant must match product, origin, subject, and action. Consent for sponsored
 inference does not imply cloud fallback or training contribution. Consent is
 never inferred from the presence of credentials, a previous operation on
@@ -239,8 +252,10 @@ another origin, environment variables, or a retry policy.
 Headless SDKs return `ConsentRequiredError` with a machine-readable required
 kind. They do not open a browser or prompt unless the caller explicitly supplies
 an interactive consent handler. Meta Proxy sponsored calls use a distinct method
-and require a matching grant on every new client session or a verifiable
-unexpired persisted grant.
+and, because `sponsored_inference` is a consequential kind, require either a
+matching signed grant on every new client session or a persisted grant the
+issuing service attests as unexpired and unrevoked, never an unsigned local
+record.
 
 ### D8. Subprocess secret boundary
 

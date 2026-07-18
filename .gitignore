@@ -18,6 +18,7 @@ node_modules/
 CLAUDE.local.md
 .claude-flow/
 /tmp-swarm/
+.mission/
 
 # Python build artifacts
 *.egg-info/

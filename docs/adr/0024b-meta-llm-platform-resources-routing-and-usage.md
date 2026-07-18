@@ -185,8 +185,9 @@ and step limits are independent. Client `BudgetPolicy` from ADR-0022 is an
 additional guard, never accounting authority.
 
 The SDK never raises tier, enables escalation, changes cache, selects best
-effort, or changes payer during retry. `402` remains budget or upgrade failure;
-plan degradation and reset information are preserved.
+effort, or changes payer during retry — see ADR-0024a D6 for the full `402`
+semantics; this applies identically to platform-resource endpoints. Plan
+degradation and reset information are preserved.
 
 Safety is typed and capability/scope checked. Input block may occur before
 provider work. Output block occurs after provider spend and metering, so a

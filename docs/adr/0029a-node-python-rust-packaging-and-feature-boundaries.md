@@ -1,9 +1,9 @@
-# ADR 0029: Language Packaging, Features, and CLI Boundaries
+# ADR 0029a: Node, Python, and Rust Packaging and Feature Boundaries
 
 - **Status:** Proposed
 - **Date:** 2026-07-18
 - **Deciders:** Cognitum SDK Working Group, Developer Experience, Release Engineering, Security, MetaHarness owner
-- **Scope:** cross-cutting (`sdks/node`, `sdks/python`, `sdks/rust`)
+- **Scope:** cross-cutting (`sdks/node`, `sdks/python`, `sdks/rust`) — registry package identity, subpath/module/feature boundaries, and per-language build artifacts
 
 ## Context
 
@@ -13,7 +13,10 @@ compatibility design, not a final publishing detail. A dependency imported for
 local MetaHarness execution must not appear in a browser Meta LLM bundle. A
 Rust feature selected for HarnessaaS must not silently compile Meta Proxy or
 Seed support. Importing the Python package must not launch Node, probe a local
-proxy, or pay the import-time cost of every product.
+proxy, or pay the import-time cost of every product. This ADR owns that
+per-language packaging and feature-boundary decision set (D1-D6). The
+companion ADR-0029b owns the CLI surface, compatibility/migration guarantees,
+and phased delivery gates built on top of these boundaries.
 
 The current package baseline on `main` is:
 
@@ -270,144 +273,6 @@ event implementation, not the Seed module.
 `Debug`. ADR-0022's redacting credential provider applies before new product
 features are released.
 
-### D7. CLI scope and stability
-
-The canonical multi-product CLI remains the Node package's existing
-`cognitum` binary. `cognitum-sdk` remains an alias during `0.3.x` for backward
-compatibility. Python receives no console script and Rust receives no binary in
-`0.3.0`; three separately evolving CLIs would triple process, output, and
-credential behavior without adding SDK coverage.
-
-New commands are namespaced:
-
-```text
-cognitum agentic capabilities
-cognitum meta-llm models|chat|usage
-cognitum meta-proxy status|start|stop
-cognitum metaharness capabilities|templates|hosts|analyze|score|plan|scaffold|validate|verify
-cognitum harnessaas submit|status|events|approvals|approve|deny|cancel|artifacts
-```
-
-The command list is illustrative; ADRs 0024 through 0027, accepted contract
-manifests, operation maturity, and injected lifecycle providers determine which
-commands ship. Preview commands remain hidden unless the caller explicitly opts
-into preview surfaces. Meta Proxy `start` and `stop` exist only when a verified
-lifecycle provider is configured. The CLI MUST remain a thin
-caller of public SDK methods. It cannot contain an alternative transport,
-error mapping, retry loop, capability table, or policy engine.
-
-Canonical Node facade spellings are fixed by the owning product ADR. Python and
-Rust adapt only casing and async conventions, never semantic synonyms:
-
-| Product | Canonical Node facade method | CLI command | Exposure prerequisite |
-|---------|------------------------------|-------------|-----------------------|
-| Shared | each configured client's `capabilities()` | `agentic capabilities` | At least one configured product |
-| Meta LLM | `models.list`, `chat.completions.create`, `usage.list` | `meta-llm models`, `meta-llm chat`, `meta-llm usage` | Operation maturity from contract |
-| Meta Proxy | `status()` | `meta-proxy status` | Authenticated local client |
-| Meta Proxy manager | `start()`, `stop()` | `meta-proxy start`, `meta-proxy stop` | Injected verified lifecycle provider |
-| MetaHarness | `capabilities()`, `listTemplates()`, `listHosts()`, `analyzeRepository()`, `scoreRepository()`, `planScaffold()`, `scaffold()`, `validateHarness()`, `verifyWitness()` | Corresponding command under `metaharness` | Exact bridge capability and runtime |
-| HarnessaaS | `submitSolve()`, `getSolve()`, `SolveHandle.events()`, `listApprovals()`, `approve()`, `deny()`, `SolveHandle.cancel()`, `listArtifacts()` | Corresponding `submit`, `status`, `events`, `approvals`, `approve`, `deny`, `cancel`, or `artifacts` command | Exact job/evidence capability |
-
-`whoami` is the canonical authenticated identity probe on product clients;
-`identity()` remains the credential-provider fingerprint method in ADR-0022.
-The canonical local-runtime failure is `UnsupportedRuntimeError` in every
-language. Internal reload, signing, publishing, and recovery operations never
-become CLI commands merely because an upstream binary contains similarly named
-commands.
-
-Every automation-safe command supports `--output json`. In JSON mode stdout
-contains exactly one versioned result or newline-delimited event stream; logs,
-warnings, progress, and diagnostics go to stderr. Exit codes are stable:
-
-| Exit | Meaning |
-|------|---------|
-| `0` | Successful terminal result |
-| `2` | Invalid local configuration or arguments |
-| `3` | Authentication, authorization, tenant, budget, or consent rejection |
-| `4` | Unsupported capability or incompatible protocol |
-| `5` | Remote operation failed |
-| `6` | Local process or sandbox failed |
-| `7` | Cancelled or timed out |
-| `8` | Receipt, lineage, signature, or artifact verification failed |
-
-New agentic commands MUST NOT accept secrets in command-line flags. They use a
-credential provider, documented environment variable, OS-managed credential
-source, or explicit `--credential-stdin`. The existing `--key` cloud option is
-deprecated in `0.3.0`, warns without echoing the value, and remains for one
-minor release under ADR-0006. It MUST never be forwarded into MetaHarness or
-Meta Proxy child-process arguments.
-
-CLI commands do not silently install MetaHarness, start Meta Proxy, fall back
-from local to cloud, approve a job, download an artifact, or increase a budget.
-Each state-changing action requires its named command and the consent rules in
-ADRs 0022, 0025, 0026, and 0027.
-
-### D8. Compatibility and migration
-
-The integration is additive at the package namespace level. Existing users of
-the root cloud client, Seed subpath/module/feature, and MCP transports need not
-change code for `0.3.0`.
-
-The migration guide MUST state:
-
-1. use the new product namespace rather than adding a product base URL to the
-   existing cloud client;
-2. Meta Proxy is not a Meta LLM base-URL alias and has a narrower capability
-   set under ADR-0025;
-3. local MetaHarness execution requires Node 20 regardless of the calling SDK
-   language;
-4. browser consumers may use only the explicitly browser-safe remote surfaces
-   with delegated credentials;
-5. Python modules remain sync and async where the product contract supports
-   both;
-6. Rust consumers opt into only the named product features and import the
-   crate as `cognitum_one`;
-7. old Node and Rust package names are abandoned, not aliases to install;
-8. CLI secret flags are deprecated in favor of providers or stdin.
-
-Every example is compiled or executed in CI. Search-based checks reject the
-old `@cognitum/sdk`, `cognitum-rs`, and `use cognitum_rs` names outside an
-explicit migration-history allowlist.
-
-### D9. Phased dependency gates
-
-Implementation proceeds through dependency gates. A later gate cannot merge
-into a release branch until the previous gate passes:
-
-| Gate | Deliverable | Dependency rule | Authoritative work package |
-|------|-------------|-----------------|----------------------------|
-| P0 | Correct current manifests, docs, examples, cloud auth/redaction/retry baseline | No new product dependency | W0 |
-| P1 | Shared `agentic` contracts and generated internal wire models | No process, installer, or telemetry SDK in base imports | W1 and W2 |
-| P2 | Meta LLM, Meta Proxy client, and HarnessaaS remote subpaths/modules/features | Reuse existing HTTP stack; product features remain independent | W3, W4, and W5 |
-| P3 | MetaHarness bridge and Meta Proxy manager | Optional local-only dependencies; Node 20 checked at execution | W6 and W7 |
-| P4 | CLI, browser/WASM boundaries, artifact packaging, and migration docs | Public clients only; no duplicate protocol code | W8 |
-
-ADR-0030b owns the unique work breakdown and estimates. Product-level figures
-elsewhere explain local complexity but overlap contracts, language facades,
-fixtures, and review; they are not additive program budgets.
-
-### D10. Expected implementation layout
-
-The implementation uses one directory per bounded context. This layout is
-normative unless a language owner records an equivalent layout in the
-implementation pull request:
-
-| Concern | Node | Python | Rust |
-|---------|------|--------|------|
-| Shared handwritten contracts | `sdks/node/src/agentic/` | `sdks/python/cognitum/agentic/` | `sdks/rust/src/agentic/` |
-| Generated wire models | `sdks/node/src/generated/agentic/<product>/v1/` | `sdks/python/cognitum/_generated/agentic/<product>/v1/` | `sdks/rust/src/generated/agentic/<product>/v1/` |
-| Meta LLM facade | `sdks/node/src/meta-llm/` | `sdks/python/cognitum/meta_llm/` | `sdks/rust/src/meta_llm/` |
-| Meta Proxy facade/manager | `sdks/node/src/meta-proxy/` | `sdks/python/cognitum/meta_proxy/` | `sdks/rust/src/meta_proxy/` |
-| MetaHarness bridge | `sdks/node/src/metaharness/` | `sdks/python/cognitum/metaharness/` | `sdks/rust/src/metaharness/` |
-| HarnessaaS facade | `sdks/node/src/harnessaas/` | `sdks/python/cognitum/harnessaas/` | `sdks/rust/src/harnessaas/` |
-| Product tests | `sdks/node/tests/agentic/<product>/` | `sdks/python/tests/agentic/<product>/` | `sdks/rust/tests/agentic/<product>/` |
-
-Product directories may import shared `agentic` and generated wire modules,
-but not another product directory. Root entry files export only public facade
-symbols and MUST NOT instantiate clients. Generated directories are replaced
-only by ADR-0020 tooling and contain a header with contract version, source
-revision, and bundle digest.
-
 ## Consequences
 
 ### Positive
@@ -418,8 +283,6 @@ revision, and bundle digest.
   local execution code.
 - Python preserves its low-cost lazy import design.
 - Rust consumers pay compile time only for explicitly-selected products.
-- One canonical CLI keeps machine output, consent, and credentials consistent
-  across products.
 
 ### Negative and trade-offs
 
@@ -448,7 +311,6 @@ zero mandatory MetaHarness dependency, and bundle/import conformance tests.
 | Raise all Node SDK users to Node 20 | Simple engine declaration | Breaks unrelated Node 18 cloud and Seed consumers | Only MetaHarness requires Node 20 |
 | Publish four packages per language | Strongest release isolation | Twelve new registry identities, discovery and versioning fragmentation | Existing subpath/module/feature architecture already isolates dependencies |
 | Install MetaHarness as a mandatory dependency | First run appears simple | Large dependency and supply-chain impact for every user | Exact, consented, optional execution is safer |
-| Add Python and Rust CLIs immediately | Surface symmetry | Three parsers, output contracts, credential paths, and release targets | Language SDK parity does not require CLI duplication |
 | Put all Rust products behind one `agentic` feature | Small manifest | Prevents minimal builds and hides product dependencies | ADR-0019 requires independent contexts |
 | Allow browser access to loopback Meta Proxy | Potential local web UI | CORS, token, consent, and local-process boundary are not defined for browsers | Browser access requires a separate product contract and threat model |
 
@@ -467,10 +329,7 @@ CI MUST verify:
    supported combinations compile, and `wasm32` excludes local process code;
 7. package contents contain no credential, test fixture secret, private source,
    unreviewed generated file, npm cache, or local binary;
-8. root imports do not load product implementations;
-9. CLI JSON output contains no log line and secret values never appear in
-   argv, stdout, stderr, process environment snapshots, or error strings;
-10. all examples use current package and crate names.
+8. root imports do not load product implementations.
 
 ### Acceptance test
 
@@ -484,6 +343,9 @@ bridge fixture. Rebuild checked-in Node artifacts and require an empty diff.
 
 ## References
 
+- Source: `sdks/node/package.json:2-67` — Node manifest baseline
+- Source: `sdks/python/pyproject.toml:5-25` — Python manifest baseline
+- Source: `sdks/rust/Cargo.toml:1-73` — Rust manifest baseline
 - ADR-0006: cross-cutting versioning
 - ADR-0007: cross-cutting security model
 - ADR-0011: cloud and Seed package topology
@@ -491,10 +353,9 @@ bridge fixture. Rebuild checked-in Node artifacts and require an empty diff.
 - ADR-0020: agentic contract source of truth and code generation
 - ADR-0021: agentic service configuration, transports, and capabilities
 - ADR-0022: authentication, tenant, budget, secret, and consent isolation
-- ADR-0023: errors, retries, idempotency, cancellation, and time budgets
 - ADR-0024: Meta LLM dual protocol, streaming, routing, and usage
 - ADR-0025: Meta Proxy local control, routing, and failover
 - ADR-0026: MetaHarness local process bridge and npx supply chain
 - ADR-0027: HarnessaaS jobs, events, approvals, artifacts, and isolation
-- ADR-0028: telemetry, traces, usage, receipts, lineage, and redaction
-- ADR-0030: conformance, release, migration, and rollout
+- ADR-0029b: CLI scope, compatibility, and rollout gates for this packaging
+  design
