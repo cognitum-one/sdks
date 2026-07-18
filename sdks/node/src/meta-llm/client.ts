@@ -35,6 +35,8 @@ import {
 } from "./config.js";
 import type { MetaLlmHealth, MetaLlmModelList, MetaLlmWhoAmI } from "./discovery.js";
 import type { MetaLlmResult, MetaLlmResponseMeta } from "./envelope.js";
+import { mapMetaLlmHttpError } from "./http-errors.js";
+import { postJsonIdempotent, type NonstreamDeps } from "./nonstream.js";
 import type {
   AnthropicMessage,
   AnthropicMessageRequest,
@@ -159,10 +161,24 @@ export class MetaLlmClient {
   // ---------------------------------------------------------------------
 
   readonly chat = {
+    /**
+     * `POST /v1/chat/completions` (OpenAI-style). Real HTTP call logic
+     * (issue #58 / M2 continuation): idempotency-key generation, bounded
+     * 429/502/503 retry, and a single 401-refresh — see `./nonstream.js`.
+     * Streaming (`request.stream = true`) is not validated against here —
+     * this pass only implements the nonstream path (§D5 is a follow-up
+     * issue).
+     */
     completions: (
-      _request: ChatCompletionRequest,
-      _options?: MetaLlmCallOptions,
-    ): Promise<MetaLlmResult<ChatCompletion>> => notImplemented("chat.completions"),
+      request: ChatCompletionRequest,
+      options?: MetaLlmCallOptions,
+    ): Promise<MetaLlmResult<ChatCompletion>> =>
+      postJsonIdempotent<ChatCompletion>(
+        this.nonstreamDeps(options),
+        "/v1/chat/completions",
+        "chat.completions",
+        request,
+      ),
   };
 
   completions(
@@ -173,10 +189,21 @@ export class MetaLlmClient {
   }
 
   readonly messages = {
+    /**
+     * `POST /v1/messages` (Anthropic-style). Real HTTP call logic (issue
+     * #58 / M2 continuation) — see `chat.completions`'s doc comment and
+     * `./nonstream.js` for the shared idempotency/retry logic.
+     */
     create: (
-      _request: AnthropicMessageRequest,
-      _options?: MetaLlmCallOptions,
-    ): Promise<MetaLlmResult<AnthropicMessage>> => notImplemented("messages.create"),
+      request: AnthropicMessageRequest,
+      options?: MetaLlmCallOptions,
+    ): Promise<MetaLlmResult<AnthropicMessage>> =>
+      postJsonIdempotent<AnthropicMessage>(
+        this.nonstreamDeps(options),
+        "/v1/messages",
+        "messages.create",
+        request,
+      ),
     countTokens: (
       _request: CountTokensRequest,
       _options?: MetaLlmCallOptions,
@@ -209,8 +236,21 @@ export class MetaLlmClient {
   }
 
   // ---------------------------------------------------------------------
-  // Internal HTTP glue shared by health/whoami/models
+  // Internal HTTP glue shared by health/whoami/models, chat.completions,
+  // and messages.create
   // ---------------------------------------------------------------------
+
+  /** Build the dependency bag `postJsonIdempotent` (`./nonstream.js`) needs. */
+  private nonstreamDeps(options?: MetaLlmCallOptions): NonstreamDeps {
+    const tenant = options?.requestContext?.tenant ?? this.config.defaultRequestContext?.tenant;
+    return {
+      baseUrl: this.config.baseUrl,
+      transport: this.config.transport ?? fetch,
+      credentialProvider: this.config.credentialProvider,
+      defaultRequestContext: tenant ? { tenant } : this.config.defaultRequestContext,
+      telemetry: this.config.telemetry,
+    };
+  }
 
   private async resolveCredential(
     operation: string,
@@ -317,7 +357,7 @@ export class MetaLlmClient {
     });
 
     if (!response.ok) {
-      throw await this.mapHttpError(response, operation, requestId);
+      throw await mapMetaLlmHttpError(response, operation, requestId);
     }
 
     const data = (await response.json()) as T;
@@ -327,53 +367,5 @@ export class MetaLlmClient {
       protocolVersion: response.headers.get("x-cognitum-protocol-version") ?? undefined,
     };
     return { data, meta };
-  }
-
-  private async mapHttpError(
-    response: Response,
-    operation: string,
-    requestId: string,
-  ): Promise<AgenticError> {
-    const status = response.status;
-    const bodyText = await response.text().catch(() => "");
-    const fields = { product: PRODUCT, operation, status, requestId };
-
-    switch (status) {
-      case 401:
-        return new AgenticError("authentication", bodyText || "authentication failed", {
-          ...fields,
-          retryable: false,
-        });
-      case 403:
-        return new AgenticError("permission_denied", bodyText || "permission denied", {
-          ...fields,
-          retryable: false,
-        });
-      case 404:
-        return new AgenticError("not_found", bodyText || "not found", {
-          ...fields,
-          retryable: false,
-        });
-      case 429: {
-        const retryAfterHeader = response.headers.get("retry-after");
-        const retryAfterMs = retryAfterHeader ? Number(retryAfterHeader) * 1000 : undefined;
-        return new AgenticError("rate_limited", bodyText || "rate limited", {
-          ...fields,
-          retryable: true,
-          retryAfterMs,
-        });
-      }
-      case 502:
-      case 503:
-        return new AgenticError("transport", bodyText || `upstream error ${status}`, {
-          ...fields,
-          retryable: true,
-        });
-      default:
-        return new AgenticError("protocol", bodyText || `unexpected status ${status}`, {
-          ...fields,
-          retryable: false,
-        });
-    }
   }
 }

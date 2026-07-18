@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -38,13 +39,21 @@ from cognitum.meta_llm.discovery import (
     MetaLlmWhoAmI,
 )
 from cognitum.meta_llm.envelope import MetaLlmResult
+from cognitum.meta_llm.http_errors import map_meta_llm_http_error
+from cognitum.meta_llm.nonstream import post_json_idempotent
+from cognitum.meta_llm.types import (
+    AnthropicMessage,
+    AnthropicUsage,
+    ChatCompletion,
+    ChatCompletionChoice,
+    ChatCompletionUsage,
+    ChatMessage,
+)
 
 if TYPE_CHECKING:
     from cognitum.agentic import Credential
     from cognitum.meta_llm.types import (
-        AnthropicMessage,
         AnthropicMessageRequest,
-        ChatCompletion,
         ChatCompletionRequest,
         CountTokensRequest,
         CountTokensResult,
@@ -71,6 +80,60 @@ def _not_implemented(operation: str) -> None:
     )
 
 
+def _parse_chat_completion(data: dict[str, Any]) -> ChatCompletion:
+    usage_data = data.get("usage")
+    usage = (
+        ChatCompletionUsage(
+            prompt_tokens=usage_data["prompt_tokens"],
+            completion_tokens=usage_data["completion_tokens"],
+            total_tokens=usage_data["total_tokens"],
+        )
+        if usage_data
+        else None
+    )
+    choices = [
+        ChatCompletionChoice(
+            index=c["index"],
+            message=ChatMessage(
+                role=c["message"]["role"],
+                content=c["message"].get("content"),
+                name=c["message"].get("name"),
+                tool_call_id=c["message"].get("tool_call_id"),
+                tool_calls=c["message"].get("tool_calls"),
+            ),
+            finish_reason=c.get("finish_reason"),
+            logprobs=c.get("logprobs"),
+        )
+        for c in data.get("choices", [])
+    ]
+    return ChatCompletion(
+        id=data["id"],
+        object=data.get("object", "chat.completion"),
+        created=data["created"],
+        model=data["model"],
+        choices=choices,
+        usage=usage,
+        system_fingerprint=data.get("system_fingerprint"),
+    )
+
+
+def _parse_anthropic_message(data: dict[str, Any]) -> AnthropicMessage:
+    usage_data = data["usage"]
+    return AnthropicMessage(
+        id=data["id"],
+        type=data.get("type", "message"),
+        role=data["role"],
+        content=data.get("content", []),
+        model=data["model"],
+        stop_reason=data.get("stop_reason"),
+        usage=AnthropicUsage(
+            input_tokens=usage_data["input_tokens"],
+            output_tokens=usage_data["output_tokens"],
+        ),
+        stop_sequence=data.get("stop_sequence"),
+    )
+
+
 class _ChatNamespace:
     def __init__(self, client: MetaLlmClient) -> None:
         self._client = client
@@ -78,8 +141,22 @@ class _ChatNamespace:
     async def completions(
         self, request: ChatCompletionRequest, **_kwargs: Any
     ) -> MetaLlmResult[ChatCompletion]:
-        _not_implemented("chat.completions")
-        raise AssertionError("unreachable")
+        """``POST /v1/chat/completions`` (OpenAI-style). Real HTTP call
+        logic (issue #58 / M2 continuation): idempotency-key generation,
+        bounded 429/502/503 retry, and a single 401-refresh -- see
+        ``nonstream.py``. Streaming (``request.stream = True``) is not
+        validated against here -- this pass only implements the nonstream
+        path (§D5 is a follow-up issue).
+        """
+        body = asdict(request)
+        data, meta = await post_json_idempotent(
+            self._client._config,
+            self._client._transport,
+            "/v1/chat/completions",
+            "chat.completions",
+            body,
+        )
+        return MetaLlmResult(data=_parse_chat_completion(data), meta=meta)
 
 
 class _MessagesNamespace:
@@ -89,8 +166,19 @@ class _MessagesNamespace:
     async def create(
         self, request: AnthropicMessageRequest, **_kwargs: Any
     ) -> MetaLlmResult[AnthropicMessage]:
-        _not_implemented("messages.create")
-        raise AssertionError("unreachable")
+        """``POST /v1/messages`` (Anthropic-style). Real HTTP call logic
+        (issue #58 / M2 continuation) -- see ``_ChatNamespace.completions``'s
+        docstring and ``nonstream.py`` for the shared idempotency/retry logic.
+        """
+        body = asdict(request)
+        data, meta = await post_json_idempotent(
+            self._client._config,
+            self._client._transport,
+            "/v1/messages",
+            "messages.create",
+            body,
+        )
+        return MetaLlmResult(data=_parse_anthropic_message(data), meta=meta)
 
     async def count_tokens(
         self, request: CountTokensRequest, **_kwargs: Any
@@ -370,42 +458,11 @@ class MetaLlmClient:
 
     @staticmethod
     def _map_http_error(response: httpx.Response, operation: str, request_id: str) -> AgenticError:
-        status = response.status_code
-        body_text = response.text
-        common: dict[str, Any] = {
-            "product": _PRODUCT,
-            "operation": operation,
-            "status": status,
-            "request_id": request_id,
-        }
-
-        if status == 401:
-            return AgenticError(
-                "authentication", body_text or "authentication failed", retryable=False, **common
-            )
-        if status == 403:
-            return AgenticError(
-                "permission_denied", body_text or "permission denied", retryable=False, **common
-            )
-        if status == 404:
-            return AgenticError("not_found", body_text or "not found", retryable=False, **common)
-        if status == 429:
-            retry_after_header = response.headers.get("retry-after")
-            retry_after_ms = int(float(retry_after_header) * 1000) if retry_after_header else None
-            return AgenticError(
-                "rate_limited",
-                body_text or "rate limited",
-                retryable=True,
-                retry_after_ms=retry_after_ms,
-                **common,
-            )
-        if status in (502, 503):
-            return AgenticError(
-                "transport", body_text or f"upstream error {status}", retryable=True, **common
-            )
-        return AgenticError(
-            "protocol", body_text or f"unexpected status {status}", retryable=False, **common
-        )
+        # Delegates to the shared ADR-0024a §D6 table in ``http_errors.py``,
+        # which also backs the idempotent-with-key POST path in
+        # ``nonstream.py`` -- see that module for the full status list
+        # (this pass added 400/409/402/422).
+        return map_meta_llm_http_error(response, operation, request_id)
 
 
 __all__ = ["MetaLlmClient"]

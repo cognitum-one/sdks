@@ -294,22 +294,16 @@ describe("MetaLlmClient protocol placeholders", () => {
     vi.restoreAllMocks();
   });
 
-  it("chat.completions is not implemented yet", async () => {
-    await expect(
-      client.chat.completions({ model: "m", messages: [] }),
-    ).rejects.toMatchObject({ kind: "unsupported_capability" });
-  });
-
+  // `chat.completions` and `messages.create` now have real HTTP call logic
+  // (issue #58 / M2 continuation) — see `meta-llm-nonstream.test.ts`. The
+  // other three protocol operations remain follow-up-issue placeholders.
   it("completions is not implemented yet", async () => {
     await expect(client.completions({ model: "m", prompt: "hi" })).rejects.toMatchObject({
       kind: "unsupported_capability",
     });
   });
 
-  it("messages.create and messages.countTokens are not implemented yet", async () => {
-    await expect(
-      client.messages.create({ model: "m", messages: [], maxTokens: 16 }),
-    ).rejects.toMatchObject({ kind: "unsupported_capability" });
+  it("messages.countTokens is not implemented yet", async () => {
     await expect(
       client.messages.countTokens({ model: "m", messages: [] }),
     ).rejects.toMatchObject({ kind: "unsupported_capability" });

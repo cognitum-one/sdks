@@ -661,11 +661,24 @@ declare class MetaLlmClient {
      */
     ready(feature: string): Promise<never>;
     readonly chat: {
-        completions: (_request: ChatCompletionRequest, _options?: MetaLlmCallOptions) => Promise<MetaLlmResult<ChatCompletion>>;
+        /**
+         * `POST /v1/chat/completions` (OpenAI-style). Real HTTP call logic
+         * (issue #58 / M2 continuation): idempotency-key generation, bounded
+         * 429/502/503 retry, and a single 401-refresh — see `./nonstream.js`.
+         * Streaming (`request.stream = true`) is not validated against here —
+         * this pass only implements the nonstream path (§D5 is a follow-up
+         * issue).
+         */
+        completions: (request: ChatCompletionRequest, options?: MetaLlmCallOptions) => Promise<MetaLlmResult<ChatCompletion>>;
     };
     completions(_request: LegacyCompletionRequest, _options?: MetaLlmCallOptions): Promise<MetaLlmResult<LegacyCompletion>>;
     readonly messages: {
-        create: (_request: AnthropicMessageRequest, _options?: MetaLlmCallOptions) => Promise<MetaLlmResult<AnthropicMessage>>;
+        /**
+         * `POST /v1/messages` (Anthropic-style). Real HTTP call logic (issue
+         * #58 / M2 continuation) — see `chat.completions`'s doc comment and
+         * `./nonstream.js` for the shared idempotency/retry logic.
+         */
+        create: (request: AnthropicMessageRequest, options?: MetaLlmCallOptions) => Promise<MetaLlmResult<AnthropicMessage>>;
         countTokens: (_request: CountTokensRequest, _options?: MetaLlmCallOptions) => Promise<MetaLlmResult<CountTokensResult>>;
     };
     responses(_request: ResponsesRequest, _options?: MetaLlmCallOptions): Promise<MetaLlmResult<ResponsesResponse>>;
@@ -676,10 +689,11 @@ declare class MetaLlmClient {
      * credential (ADR-0024a §D1).
      */
     close(): Promise<void>;
+    /** Build the dependency bag `postJsonIdempotent` (`./nonstream.js`) needs. */
+    private nonstreamDeps;
     private resolveCredential;
     private applyAuth;
     private getJson;
-    private mapHttpError;
 }
 
 export { type AnthropicContentBlock, type AnthropicMessage, type AnthropicMessageParam, type AnthropicMessageRequest, type AnthropicToolChoice, type AnthropicToolDefinition, type AnthropicUsage, type ChatCompletion, type ChatCompletionChoice, type ChatCompletionRequest, type ChatCompletionUsage, type ChatContentPart, type ChatMessage, type ChatToolCall, type ChatToolChoice, type ChatToolDefinition, type CountTokensRequest, type CountTokensResult, type EmbeddingDatum, type EmbeddingRequest, type EmbeddingResponse, type EmbeddingUsage, type LegacyCompletion, type LegacyCompletionChoice, type LegacyCompletionRequest, type MetaLlmCallOptions, MetaLlmClient, type MetaLlmClientConfig, type MetaLlmHealth, type MetaLlmModelInfo, type MetaLlmModelList, type MetaLlmReceipt, type MetaLlmResponseMeta, type MetaLlmResult, type MetaLlmRoutingControls, type MetaLlmSafetyControl, type MetaLlmTelemetryEvent, type MetaLlmTelemetryHooks, type MetaLlmTransport, type MetaLlmWhoAmI, type ResolvedMetaLlmClientConfig, type ResponsesOutputItem, type ResponsesRequest, type ResponsesResponse, resolveMetaLlmClientConfig };

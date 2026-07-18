@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 
-use crate::agentic::{AgenticError, CapabilitySet};
+use crate::agentic::{AgenticError, AgenticErrorKind, CapabilitySet};
 
 use super::config::{resolve_config, MetaLlmClientConfig};
 use super::discovery::{MetaLlmHealth, MetaLlmModelInfo, MetaLlmModelList, MetaLlmWhoAmI};
@@ -187,12 +187,41 @@ impl MetaLlmClient {
     // D3: protocol-specific wire types only this pass — placeholders below
     // ---------------------------------------------------------------------
 
-    #[allow(clippy::result_large_err, unused_variables)]
+    /// `POST /v1/chat/completions` (OpenAI-style). Real HTTP call logic
+    /// (issue #58 / M2 continuation): idempotency-key generation, bounded
+    /// 429/502/503 retry, and a single 401-refresh — see `./nonstream.rs`.
+    /// Streaming (`request.stream = Some(true)`) is not validated against
+    /// here — this pass only implements the nonstream path (§D5 is a
+    /// follow-up issue).
+    #[allow(clippy::result_large_err)]
     pub async fn chat_completions(
         &self,
         request: &ChatCompletionRequest,
     ) -> Result<MetaLlmResult<ChatCompletion>, AgenticError> {
-        Err(not_implemented("chat_completions"))
+        let body = serde_json::to_value(request).map_err(|cause| AgenticError {
+            product: Some(PRODUCT.to_owned()),
+            operation: Some("chat_completions".to_owned()),
+            ..AgenticError::new(
+                AgenticErrorKind::Validation,
+                format!("chat_completions request failed to serialize: {cause}"),
+            )
+        })?;
+        let (data, meta) = self
+            .post_json_idempotent("/v1/chat/completions", "chat_completions", body)
+            .await?;
+        let parsed: ChatCompletion = serde_json::from_value(data).map_err(|cause| AgenticError {
+            product: Some(PRODUCT.to_owned()),
+            operation: Some("chat_completions".to_owned()),
+            request_id: Some(meta.request_id.clone()),
+            ..AgenticError::new(
+                AgenticErrorKind::Protocol,
+                format!("chat_completions response did not match the expected shape: {cause}"),
+            )
+        })?;
+        Ok(MetaLlmResult {
+            data: parsed,
+            meta,
+        })
     }
 
     #[allow(clippy::result_large_err, unused_variables)]
@@ -203,12 +232,38 @@ impl MetaLlmClient {
         Err(not_implemented("completions"))
     }
 
-    #[allow(clippy::result_large_err, unused_variables)]
+    /// `POST /v1/messages` (Anthropic-style). Real HTTP call logic (issue
+    /// #58 / M2 continuation) — see `chat_completions`'s doc comment and
+    /// `./nonstream.rs` for the shared idempotency/retry logic.
+    #[allow(clippy::result_large_err)]
     pub async fn messages_create(
         &self,
         request: &AnthropicMessageRequest,
     ) -> Result<MetaLlmResult<AnthropicMessage>, AgenticError> {
-        Err(not_implemented("messages_create"))
+        let body = serde_json::to_value(request).map_err(|cause| AgenticError {
+            product: Some(PRODUCT.to_owned()),
+            operation: Some("messages_create".to_owned()),
+            ..AgenticError::new(
+                AgenticErrorKind::Validation,
+                format!("messages_create request failed to serialize: {cause}"),
+            )
+        })?;
+        let (data, meta) = self
+            .post_json_idempotent("/v1/messages", "messages_create", body)
+            .await?;
+        let parsed: AnthropicMessage = serde_json::from_value(data).map_err(|cause| AgenticError {
+            product: Some(PRODUCT.to_owned()),
+            operation: Some("messages_create".to_owned()),
+            request_id: Some(meta.request_id.clone()),
+            ..AgenticError::new(
+                AgenticErrorKind::Protocol,
+                format!("messages_create response did not match the expected shape: {cause}"),
+            )
+        })?;
+        Ok(MetaLlmResult {
+            data: parsed,
+            meta,
+        })
     }
 
     #[allow(clippy::result_large_err, unused_variables)]
