@@ -1,0 +1,61 @@
+{
+  "$schema_note": "Cross-language conformance fixture for the `cognitum-canonical-json-v1` receipt/lineage canonicalization scheme (ADR-0028 D7-D9). Golden values were computed once (see `sha256sums.txt` in this directory for how to regenerate/verify) and are pinned here. Each of the Node, Python, and Rust SDK test suites builds its own native ExecutionReceipt/LineageReference from `logicalReceipt`/`logicalLineageEntry` below, computes its own canonical bytes/SHA-256 digest/HMAC-SHA256 signature independently, and asserts the result matches the pinned `expected*` fields byte-for-byte. This is the test that catches a cross-SDK canonicalization regression (e.g. wrong key casing, inconsistent number formatting, or wrong key ordering) -- unlike each language's own internal round-trip tests, which only ever check a language against itself.",
+  "bugContext": "Found in independent review of PR #84 (issue #56): Node/Rust canonicalize the signable receipt payload as camelCase (receiptId, contractVersion, subject.requestId); Python's `dataclasses.asdict(r)` emitted snake_case (receipt_id, contract_version, subject.request_id) with no rename step, so identical logical receipts canonicalized to different bytes in Python vs Node/Rust and cross-SDK digest/signature verification failed 100% of the time. A second, independent mismatch was found in the same review pass: Rust's `serde_json` and Python's `json` module both preserve the float/int distinction and render a whole-valued cost amount as `10.0`, while JavaScript's single `number` type makes `JSON.stringify` render it as `10` -- so a receipt with a whole-number cost amount would ALSO fail cross-SDK verification even after the casing fix. `logicalReceipt.costs[0].amount` is deliberately a whole number (100) to exercise this.",
+  "canonicalizationVersion": "cognitum-canonical-json-v1",
+  "hmacKeyUtf8": "cognitum-conformance-test-key",
+
+  "logicalReceipt": {
+    "schema": "cognitum.execution-receipt.v1",
+    "receiptId": "rcpt_conformance_0001",
+    "product": "meta-llm",
+    "contractVersion": "1.0.0",
+    "subject": {
+      "requestId": "req_conformance_abc123",
+      "operationId": "op_conformance_xyz789",
+      "tenantHash": "th_deadbeefcafefeed"
+    },
+    "startedAt": "2026-01-01T00:00:00.000Z",
+    "completedAt": "2026-01-01T00:00:05.250Z",
+    "usage": {
+      "prompt_tokens": 128,
+      "completion_tokens": 64,
+      "cacheHitRatio": 0.5
+    },
+    "costs": [
+      { "source": "openrouter", "amount": 100, "currency": "USD", "finality": "invoiced" },
+      { "source": "meta-llm", "amount": 12.34, "currency": "USD", "finality": "estimate" }
+    ],
+    "outcome": "success",
+    "artifactDigests": [
+      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    ],
+    "lineageRoot": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "canonicalization": "cognitum-canonical-json-v1",
+    "issuer": "cognitum-one/meta-llm",
+    "keyId": "key-2026-01"
+  },
+  "_logicalReceiptNote": "`usage` is an opaque caller-supplied blob (deliberately mixed-case keys: prompt_tokens/completion_tokens/cacheHitRatio) -- it must be canonicalized verbatim (sorted, but NOT re-keyed) in all 3 languages, proving the camelCase rename only applies to the receipt's own schema fields, never to opaque nested data. `signature` and `verification` are intentionally absent: they are excluded from the signable/digestible payload by all 3 SDKs.",
+  "expectedCanonicalJson": "{\"artifactDigests\":[\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"],\"canonicalization\":\"cognitum-canonical-json-v1\",\"completedAt\":\"2026-01-01T00:00:05.250Z\",\"contractVersion\":\"1.0.0\",\"costs\":[{\"amount\":100,\"currency\":\"USD\",\"finality\":\"invoiced\",\"source\":\"openrouter\"},{\"amount\":12.34,\"currency\":\"USD\",\"finality\":\"estimate\",\"source\":\"meta-llm\"}],\"issuer\":\"cognitum-one/meta-llm\",\"keyId\":\"key-2026-01\",\"lineageRoot\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"outcome\":\"success\",\"product\":\"meta-llm\",\"receiptId\":\"rcpt_conformance_0001\",\"schema\":\"cognitum.execution-receipt.v1\",\"startedAt\":\"2026-01-01T00:00:00.000Z\",\"subject\":{\"operationId\":\"op_conformance_xyz789\",\"requestId\":\"req_conformance_abc123\",\"tenantHash\":\"th_deadbeefcafefeed\"},\"usage\":{\"cacheHitRatio\":0.5,\"completion_tokens\":64,\"prompt_tokens\":128}}",
+  "expectedSha256Hex": "aa3a3fb7108210440a780a5a062671264d52bb9e9c08f9cdd9fa3c5193bec406",
+  "expectedHmacSha256Hex": "99b3d632e55864107c253ec4d5f5786947bfc41254687c6db6ce776036ffadfc",
+
+  "logicalLineageEntry": {
+    "schema": "cognitum.lineage-reference.v1",
+    "subject": {
+      "requestId": "req_conformance_abc123",
+      "operationId": "op_conformance_xyz789"
+    },
+    "leaf": "leaf-conformance-0",
+    "root": "root-conformance-0",
+    "sequence": 0,
+    "previousCheckpoint": null,
+    "checkpointTime": "2026-01-01T00:00:00.000Z",
+    "canonicalization": "cognitum-canonical-json-v1",
+    "issuer": "cognitum-one/meta-llm",
+    "keyId": "key-2026-01"
+  },
+  "expectedLineageCanonicalJson": "{\"canonicalization\":\"cognitum-canonical-json-v1\",\"checkpointTime\":\"2026-01-01T00:00:00.000Z\",\"issuer\":\"cognitum-one/meta-llm\",\"keyId\":\"key-2026-01\",\"leaf\":\"leaf-conformance-0\",\"previousCheckpoint\":null,\"root\":\"root-conformance-0\",\"schema\":\"cognitum.lineage-reference.v1\",\"sequence\":0,\"subject\":{\"operationId\":\"op_conformance_xyz789\",\"requestId\":\"req_conformance_abc123\"}}",
+  "expectedLineageSha256Hex": "f772f577cf35338558bd6181ce7888274f907a90b03c690c93b8f25b09579b11",
+  "expectedLineageHmacSha256Hex": "3b3e88bbad95ae364966c5e5b80f1123ab9008b1308eac8a266d48d99cf9d190"
+}

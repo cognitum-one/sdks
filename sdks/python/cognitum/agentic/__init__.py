@@ -68,6 +68,18 @@ from cognitum.agentic.operations import (
     PageRequest,
     WaitOptions,
 )
+from cognitum.agentic.receipt_verification import (
+    LineageChainVerification,
+    VerifyLineageChainOptions,
+    VerifyReceiptOptions,
+    build_execution_receipt,
+    canonical_json,
+    sha256_hex,
+    shape_check_execution_receipt,
+    shape_check_lineage_reference,
+    verify_execution_receipt,
+    verify_lineage_chain,
+)
 from cognitum.agentic.receipts import (
     CostFinality,
     CostObservation,
@@ -124,7 +136,7 @@ __all__ = [
     "OperationEvent",
     "PageRequest",
     "Page",
-    # Receipts / lineage (ADR-0028, issue #56 builds these out further)
+    # Receipts / lineage (ADR-0028)
     "VerificationLevel",
     "VerificationResult",
     "CostFinality",
@@ -136,4 +148,15 @@ __all__ = [
     # Concrete credential provider (issue #53)
     "StaticApiKeyCredentialProvider",
     "DEFAULT_API_KEY_ENV_VAR",
+    # Receipt/lineage construction + verification (issue #56)
+    "build_execution_receipt",
+    "shape_check_execution_receipt",
+    "shape_check_lineage_reference",
+    "verify_execution_receipt",
+    "verify_lineage_chain",
+    "canonical_json",
+    "sha256_hex",
+    "VerifyReceiptOptions",
+    "VerifyLineageChainOptions",
+    "LineageChainVerification",
 ]

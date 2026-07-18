@@ -24,6 +24,7 @@ pub mod context;
 pub mod credentials;
 pub mod errors;
 pub mod operations;
+pub mod receipt_verification;
 pub mod receipts;
 pub mod static_api_key_provider;
 pub mod sentinel;
@@ -43,6 +44,12 @@ pub use errors::{
 pub use operations::{
     EventStreamOptions, OperationEvent, OperationEventStream, OperationHandle, OperationSnapshot,
     OperationState, Page, PageRequest, WaitOptions,
+};
+pub use receipt_verification::{
+    build_execution_receipt, canonical_json, shape_check_execution_receipt,
+    shape_check_lineage_reference, sha256_hex, verify_execution_receipt, verify_lineage_chain,
+    BuildExecutionReceiptInput, KeyResolver, LineageChainVerification, VerifyLineageChainOptions,
+    VerifyReceiptOptions,
 };
 pub use receipts::{
     CostFinality, CostObservation, ExecutionReceipt, LineageReference, LineageSubject,

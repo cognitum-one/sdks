@@ -5,10 +5,13 @@
 use serde::{Deserialize, Serialize};
 
 /// Ordered guarantee levels for any artifact/witness/receipt/lineage check
-/// (ADR-0028 §D8).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// (ADR-0028 §D8). Declaration order is the guarantee order (`None` weakest,
+/// `Anchored` strongest); `PartialOrd`/`Ord` derive from that order so
+/// `receipt_verification` can compare achieved-vs-required levels directly.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VerificationLevel {
+    #[default]
     None,
     Shape,
     Digest,

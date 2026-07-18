@@ -69,6 +69,10 @@ mdns-sd = { version = "0.19", optional = true, default-features = false }
 # `rustls-tls` feature, we surface them here so our custom
 # `ServerCertVerifier` sees the same rustls 0.23 types reqwest does.
 sha2 = { version = "0.10", default-features = false }
+# HMAC-SHA256 receipt/lineage signing (ADR-0028 §D7/§D9, issue #56). Symmetric
+# HMAC is a deliberate scope limit vs. an asymmetric PKI — see
+# `agentic::receipt_verification` module docs.
+hmac = { version = "0.12", default-features = false }
 rustls = { version = "0.23", default-features = false }
 webpki-roots = "1.0"
 
