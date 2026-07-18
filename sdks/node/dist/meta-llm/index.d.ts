@@ -609,24 +609,28 @@ interface CountTokensResult {
 }
 
 /**
- * MetaLlmClient (ADR-0024a). Issue #58 / M2 start.
+ * MetaLlmClient (ADR-0024a). Issue #58 / M2.
  *
- * This pass:
- *  - implements real, HTTP-backed `health()`, `whoami()`, and `models()` —
- *    the "Stable-track, simplest" group per §D2's maturity table;
- *  - implements `capabilities()` from the static compatibility snapshot
- *    (no I/O — no runtime capabilities endpoint is published yet, §D9
- *    gate #3);
+ * M2 start (PR #85):
+ *  - real, HTTP-backed `health()`, `whoami()`, and `models()` — the
+ *    "Stable-track, simplest" group per §D2's maturity table;
+ *  - `capabilities()` from the static compatibility snapshot (no I/O — no
+ *    runtime capabilities endpoint is published yet, §D9 gate #3);
  *  - fails closed on `ready(feature)` (dependency readiness is only
- *    published "when published", §D1 — nothing is published yet);
- *  - freezes typed placeholders for `chat.completions`, `completions`,
- *    `messages.create`, `messages.countTokens`, `responses`, and
- *    `embeddings` that reject with `AgenticError` until their HTTP logic
- *    lands in a follow-up issue.
+ *    published "when published", §D1 — nothing is published yet).
+ *
+ * M2 continuation (PR #86): real HTTP call logic for `chat.completions`
+ * and `messages.create` — idempotency-key generation, bounded 429/502/503
+ * retry, and a single 401-refresh (`./nonstream.js`).
+ *
+ * This pass (issue #58 / M2 continuation): the same real HTTP call logic
+ * for the remaining direct nonstream operations named in ADR-0024a §D7 —
+ * `completions` (legacy OpenAI completions), `responses`, `embeddings`,
+ * and `messages.countTokens` — reusing `./nonstream.js`'s
+ * `postJsonIdempotent` verbatim rather than a per-operation reimplementation.
  *
  * Explicitly out of scope this pass (see PR description): streaming
- * (§D5), the five protocol operations' HTTP logic, and ADR-0024b routing
- * controls.
+ * (§D5) and ADR-0024b routing controls (issue #59).
  */
 
 /** Options accepted by every operation method. */
@@ -671,7 +675,15 @@ declare class MetaLlmClient {
          */
         completions: (request: ChatCompletionRequest, options?: MetaLlmCallOptions) => Promise<MetaLlmResult<ChatCompletion>>;
     };
-    completions(_request: LegacyCompletionRequest, _options?: MetaLlmCallOptions): Promise<MetaLlmResult<LegacyCompletion>>;
+    /**
+     * `POST /v1/completions` (legacy OpenAI completions). Real HTTP call
+     * logic (issue #58 / M2 continuation) — this is a "direct nonstream
+     * call whose accepted contract declares safe replay" per ADR-0024a §D7,
+     * the same class as `chat.completions`/`messages.create`, so it reuses
+     * `postJsonIdempotent` from `./nonstream.js` verbatim (idempotency-key
+     * generation, bounded 429/502/503 retry, single 401-refresh).
+     */
+    completions(request: LegacyCompletionRequest, options?: MetaLlmCallOptions): Promise<MetaLlmResult<LegacyCompletion>>;
     readonly messages: {
         /**
          * `POST /v1/messages` (Anthropic-style). Real HTTP call logic (issue
@@ -679,10 +691,30 @@ declare class MetaLlmClient {
          * `./nonstream.js` for the shared idempotency/retry logic.
          */
         create: (request: AnthropicMessageRequest, options?: MetaLlmCallOptions) => Promise<MetaLlmResult<AnthropicMessage>>;
-        countTokens: (_request: CountTokensRequest, _options?: MetaLlmCallOptions) => Promise<MetaLlmResult<CountTokensResult>>;
+        /**
+         * `POST /v1/messages/count_tokens`. Same "direct nonstream call"
+         * class as `messages.create` (ADR-0024a §D7) — reuses
+         * `postJsonIdempotent` verbatim.
+         */
+        countTokens: (request: CountTokensRequest, options?: MetaLlmCallOptions) => Promise<MetaLlmResult<CountTokensResult>>;
     };
-    responses(_request: ResponsesRequest, _options?: MetaLlmCallOptions): Promise<MetaLlmResult<ResponsesResponse>>;
-    embeddings(_request: EmbeddingRequest, _options?: MetaLlmCallOptions): Promise<MetaLlmResult<EmbeddingResponse>>;
+    /**
+     * `POST /v1/responses`. Current server is stateless: callers resend
+     * conversation input. `previousResponseId` is preview and MUST NOT be
+     * described as recovery (ADR-0024a §D3) — this method does not restore
+     * or synthesize any prior conversation state; it only sends `request`
+     * as given. Real HTTP call logic (issue #58 / M2 continuation) reuses
+     * `postJsonIdempotent` verbatim, same as `chat.completions`.
+     */
+    responses(request: ResponsesRequest, options?: MetaLlmCallOptions): Promise<MetaLlmResult<ResponsesResponse>>;
+    /**
+     * `POST /v1/embeddings`. Real HTTP call logic (issue #58 / M2
+     * continuation) reuses `postJsonIdempotent` verbatim — infrastructure is
+     * identical to the other direct nonstream operations even though
+     * embeddings has its own separate maturity gate criteria in ADR-0024a
+     * §D2 ("input limits, dimensions, usage, errors and auth published").
+     */
+    embeddings(request: EmbeddingRequest, options?: MetaLlmCallOptions): Promise<MetaLlmResult<EmbeddingResponse>>;
     /**
      * Close local connections and wait only. Never cancels a remote
      * operation, stops a pod, releases a reservation, or revokes a

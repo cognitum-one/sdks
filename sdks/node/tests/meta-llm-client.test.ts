@@ -287,37 +287,43 @@ describe("MetaLlmClient.ready()", () => {
   });
 });
 
-describe("MetaLlmClient protocol placeholders", () => {
+describe("MetaLlmClient remaining direct nonstream operations", () => {
+  // `chat.completions` and `messages.create` got real HTTP call logic in
+  // issue #58 / M2's continuation (PR #86) — see `meta-llm-nonstream.test.ts`.
+  // `completions`, `responses`, `embeddings`, and `messages.countTokens` are
+  // no longer follow-up-issue placeholders either (this pass) — see
+  // `meta-llm-completions-responses-embeddings.test.ts` for their success,
+  // error-mapping, and idempotency-retry coverage. Without a
+  // `credentialProvider` configured they now fail closed the same way
+  // `chat.completions`/`messages.create` already did, not with
+  // `unsupported_capability`.
   const client = new MetaLlmClient({ baseUrl: BASE_URL });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  // `chat.completions` and `messages.create` now have real HTTP call logic
-  // (issue #58 / M2 continuation) — see `meta-llm-nonstream.test.ts`. The
-  // other three protocol operations remain follow-up-issue placeholders.
-  it("completions is not implemented yet", async () => {
+  it("completions fails closed without a credentialProvider", async () => {
     await expect(client.completions({ model: "m", prompt: "hi" })).rejects.toMatchObject({
-      kind: "unsupported_capability",
+      kind: "authentication",
     });
   });
 
-  it("messages.countTokens is not implemented yet", async () => {
+  it("messages.countTokens fails closed without a credentialProvider", async () => {
     await expect(
       client.messages.countTokens({ model: "m", messages: [] }),
-    ).rejects.toMatchObject({ kind: "unsupported_capability" });
+    ).rejects.toMatchObject({ kind: "authentication" });
   });
 
-  it("responses is not implemented yet", async () => {
+  it("responses fails closed without a credentialProvider", async () => {
     await expect(client.responses({ model: "m", input: "hi" })).rejects.toMatchObject({
-      kind: "unsupported_capability",
+      kind: "authentication",
     });
   });
 
-  it("embeddings is not implemented yet", async () => {
+  it("embeddings fails closed without a credentialProvider", async () => {
     await expect(client.embeddings({ model: "m", input: "hi" })).rejects.toMatchObject({
-      kind: "unsupported_capability",
+      kind: "authentication",
     });
   });
 });

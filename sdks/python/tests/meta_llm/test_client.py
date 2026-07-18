@@ -335,46 +335,56 @@ async def test_ready_fails_closed() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Protocol placeholders
+# Remaining direct nonstream operations
 # ---------------------------------------------------------------------------
 
 
-# `chat.completions` and `messages.create` now have real HTTP call logic
-# (issue #58 / M2 continuation) -- see `test_nonstream.py`. The other
-# three protocol operations remain follow-up-issue placeholders.
+# `chat.completions` and `messages.create` got real HTTP call logic in
+# issue #58 / M2's continuation (PR #86) -- see `test_nonstream.py`.
+# `completions`, `responses`, `embeddings`, and `messages.count_tokens` are
+# no longer follow-up-issue placeholders either (this pass) -- see
+# `test_completions_responses_embeddings.py` for their success,
+# error-mapping, and idempotency-retry coverage. Without a
+# `credential_provider` configured they now fail closed the same way
+# `chat.completions`/`messages.create` already did, not with
+# `unsupported_capability`.
 
 
 @pytest.mark.asyncio
-async def test_completions_not_implemented() -> None:
+async def test_completions_fails_closed_without_credential_provider() -> None:
     from cognitum.meta_llm import LegacyCompletionRequest
 
     client = MetaLlmClient(MetaLlmClientConfig(base_url=BASE_URL))
-    with pytest.raises(AgenticError):
+    with pytest.raises(AgenticError) as exc_info:
         await client.completions(LegacyCompletionRequest(model="m", prompt="hi"))
+    assert exc_info.value.kind == "authentication"
 
 
 @pytest.mark.asyncio
-async def test_messages_count_tokens_not_implemented() -> None:
+async def test_messages_count_tokens_fails_closed_without_credential_provider() -> None:
     from cognitum.meta_llm import CountTokensRequest
 
     client = MetaLlmClient(MetaLlmClientConfig(base_url=BASE_URL))
-    with pytest.raises(AgenticError):
+    with pytest.raises(AgenticError) as exc_info:
         await client.messages.count_tokens(CountTokensRequest(model="m", messages=[]))
+    assert exc_info.value.kind == "authentication"
 
 
 @pytest.mark.asyncio
-async def test_responses_not_implemented() -> None:
+async def test_responses_fails_closed_without_credential_provider() -> None:
     from cognitum.meta_llm import ResponsesRequest
 
     client = MetaLlmClient(MetaLlmClientConfig(base_url=BASE_URL))
-    with pytest.raises(AgenticError):
+    with pytest.raises(AgenticError) as exc_info:
         await client.responses(ResponsesRequest(model="m", input="hi"))
+    assert exc_info.value.kind == "authentication"
 
 
 @pytest.mark.asyncio
-async def test_embeddings_not_implemented() -> None:
+async def test_embeddings_fails_closed_without_credential_provider() -> None:
     from cognitum.meta_llm import EmbeddingRequest
 
     client = MetaLlmClient(MetaLlmClientConfig(base_url=BASE_URL))
-    with pytest.raises(AgenticError):
+    with pytest.raises(AgenticError) as exc_info:
         await client.embeddings(EmbeddingRequest(model="m", input="hi"))
+    assert exc_info.value.kind == "authentication"

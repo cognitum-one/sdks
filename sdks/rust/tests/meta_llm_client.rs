@@ -407,11 +407,11 @@ async fn ready_fails_closed() {
 }
 
 // ---------------------------------------------------------------------------
-// Protocol placeholders
+// Remaining direct nonstream operations
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn protocol_operations_are_not_implemented_yet() {
+async fn remaining_direct_nonstream_operations_fail_closed_without_credential_provider() {
     use cognitum_one::meta_llm::types::{
         CountTokensRequest, EmbeddingRequest, LegacyCompletionRequest, ResponsesRequest,
     };
@@ -419,10 +419,16 @@ async fn protocol_operations_are_not_implemented_yet() {
     let config = MetaLlmClientConfig::new("https://meta-llm.test.cognitum.one");
     let client = MetaLlmClient::new(config).unwrap();
 
-    // `chat_completions` and `messages_create` now have real HTTP call
-    // logic (issue #58 / M2 continuation) — see the dedicated
-    // `chat_completions_*` / `messages_create_*` tests below. The other
-    // three protocol operations remain follow-up-issue placeholders.
+    // `chat_completions` and `messages_create` got real HTTP call logic in
+    // issue #58 / M2's continuation (PR #86) — see the dedicated
+    // `chat_completions_*` / `messages_create_*` tests below.
+    // `completions`/`messages_count_tokens`/`responses`/`embeddings` are no
+    // longer follow-up-issue placeholders either (this pass) — see
+    // `meta_llm_nonstream.rs` for their success, error-mapping, and
+    // idempotency-retry coverage. Without a `credential_provider`
+    // configured they now fail closed the same way
+    // `chat_completions`/`messages_create` already did, not with
+    // `UnsupportedCapability`.
     let completions_err = client
         .completions(&LegacyCompletionRequest {
             model: "m".into(),
@@ -443,10 +449,7 @@ async fn protocol_operations_are_not_implemented_yet() {
         })
         .await
         .unwrap_err();
-    assert_eq!(
-        completions_err.kind,
-        AgenticErrorKind::UnsupportedCapability
-    );
+    assert_eq!(completions_err.kind, AgenticErrorKind::Authentication);
 
     let count_tokens_err = client
         .messages_count_tokens(&CountTokensRequest {
@@ -457,10 +460,7 @@ async fn protocol_operations_are_not_implemented_yet() {
         })
         .await
         .unwrap_err();
-    assert_eq!(
-        count_tokens_err.kind,
-        AgenticErrorKind::UnsupportedCapability
-    );
+    assert_eq!(count_tokens_err.kind, AgenticErrorKind::Authentication);
 
     let responses_err = client
         .responses(&ResponsesRequest {
@@ -478,7 +478,7 @@ async fn protocol_operations_are_not_implemented_yet() {
         })
         .await
         .unwrap_err();
-    assert_eq!(responses_err.kind, AgenticErrorKind::UnsupportedCapability);
+    assert_eq!(responses_err.kind, AgenticErrorKind::Authentication);
 
     let embeddings_err = client
         .embeddings(&EmbeddingRequest {
@@ -490,5 +490,5 @@ async fn protocol_operations_are_not_implemented_yet() {
         })
         .await
         .unwrap_err();
-    assert_eq!(embeddings_err.kind, AgenticErrorKind::UnsupportedCapability);
+    assert_eq!(embeddings_err.kind, AgenticErrorKind::Authentication);
 }

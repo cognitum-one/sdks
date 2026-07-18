@@ -1,20 +1,27 @@
-"""MetaLlmClient (ADR-0024a). Issue #58 / M2 start.
+"""MetaLlmClient (ADR-0024a). Issue #58 / M2.
 
-This pass:
+M2 start (PR #85):
 
-- implements real, HTTP-backed ``health()``, ``whoami()``, and ``models()``
-  -- the "Stable-track, simplest" group per §D2's maturity table;
-- implements ``capabilities()`` from the static compatibility snapshot (no
-  I/O -- no runtime capabilities endpoint is published yet, §D9 gate #3);
+- real, HTTP-backed ``health()``, ``whoami()``, and ``models()`` -- the
+  "Stable-track, simplest" group per §D2's maturity table;
+- ``capabilities()`` from the static compatibility snapshot (no I/O -- no
+  runtime capabilities endpoint is published yet, §D9 gate #3);
 - fails closed on ``ready(feature)`` (dependency readiness is only
-  published "when published", §D1 -- nothing is published yet);
-- freezes typed placeholders for ``chat.completions``, ``completions``,
-  ``messages.create``, ``messages.count_tokens``, ``responses``, and
-  ``embeddings`` that reject with :class:`AgenticError` until their HTTP
-  logic lands in a follow-up issue.
+  published "when published", §D1 -- nothing is published yet).
 
-Explicitly out of scope this pass (see PR description): streaming (§D5),
-the five protocol operations' HTTP logic, and ADR-0024b routing controls.
+M2 continuation (PR #86): real HTTP call logic for ``chat.completions`` and
+``messages.create`` -- idempotency-key generation, bounded 429/502/503
+retry, and a single 401-refresh (``nonstream.py``).
+
+This pass (issue #58 / M2 continuation): the same real HTTP call logic for
+the remaining direct nonstream operations named in ADR-0024a §D7 --
+``completions`` (legacy OpenAI completions), ``responses``, ``embeddings``,
+and ``messages.count_tokens`` -- reusing ``nonstream.py``'s
+``post_json_idempotent`` verbatim rather than a per-operation
+reimplementation.
+
+Explicitly out of scope this pass (see PR description): streaming (§D5)
+and ADR-0024b routing controls (issue #59).
 
 This client is async-only (mirrors Node's Promise-native design and Rust's
 async-only ``Client``) -- a sync facade may follow in a later issue if
@@ -41,19 +48,21 @@ from cognitum.meta_llm.discovery import (
 from cognitum.meta_llm.envelope import MetaLlmResult
 from cognitum.meta_llm.http_errors import map_meta_llm_http_error
 from cognitum.meta_llm.nonstream import post_json_idempotent
-from cognitum.meta_llm.types import (
-    AnthropicMessage,
-    AnthropicUsage,
-    ChatCompletion,
-    ChatCompletionChoice,
-    ChatCompletionUsage,
-    ChatMessage,
+from cognitum.meta_llm.parsing import (
+    parse_anthropic_message,
+    parse_chat_completion,
+    parse_count_tokens_result,
+    parse_embedding_response,
+    parse_legacy_completion,
+    parse_responses_response,
 )
 
 if TYPE_CHECKING:
     from cognitum.agentic import Credential
     from cognitum.meta_llm.types import (
+        AnthropicMessage,
         AnthropicMessageRequest,
+        ChatCompletion,
         ChatCompletionRequest,
         CountTokensRequest,
         CountTokensResult,
@@ -67,71 +76,6 @@ if TYPE_CHECKING:
 
 _PRODUCT = "meta-llm"
 _DEFAULT_CAPABILITY_VERSION = "0.0.0"
-
-
-def _not_implemented(operation: str) -> None:
-    raise AgenticError(
-        "unsupported_capability",
-        f"MetaLlmClient.{operation} is not implemented yet (ADR-0024a §D2/§D3 wire "
-        "types only landed in issue #58 / M2 -- HTTP logic is a follow-up issue)",
-        product=_PRODUCT,
-        operation=operation,
-        retryable=False,
-    )
-
-
-def _parse_chat_completion(data: dict[str, Any]) -> ChatCompletion:
-    usage_data = data.get("usage")
-    usage = (
-        ChatCompletionUsage(
-            prompt_tokens=usage_data["prompt_tokens"],
-            completion_tokens=usage_data["completion_tokens"],
-            total_tokens=usage_data["total_tokens"],
-        )
-        if usage_data
-        else None
-    )
-    choices = [
-        ChatCompletionChoice(
-            index=c["index"],
-            message=ChatMessage(
-                role=c["message"]["role"],
-                content=c["message"].get("content"),
-                name=c["message"].get("name"),
-                tool_call_id=c["message"].get("tool_call_id"),
-                tool_calls=c["message"].get("tool_calls"),
-            ),
-            finish_reason=c.get("finish_reason"),
-            logprobs=c.get("logprobs"),
-        )
-        for c in data.get("choices", [])
-    ]
-    return ChatCompletion(
-        id=data["id"],
-        object=data.get("object", "chat.completion"),
-        created=data["created"],
-        model=data["model"],
-        choices=choices,
-        usage=usage,
-        system_fingerprint=data.get("system_fingerprint"),
-    )
-
-
-def _parse_anthropic_message(data: dict[str, Any]) -> AnthropicMessage:
-    usage_data = data["usage"]
-    return AnthropicMessage(
-        id=data["id"],
-        type=data.get("type", "message"),
-        role=data["role"],
-        content=data.get("content", []),
-        model=data["model"],
-        stop_reason=data.get("stop_reason"),
-        usage=AnthropicUsage(
-            input_tokens=usage_data["input_tokens"],
-            output_tokens=usage_data["output_tokens"],
-        ),
-        stop_sequence=data.get("stop_sequence"),
-    )
 
 
 class _ChatNamespace:
@@ -156,7 +100,7 @@ class _ChatNamespace:
             "chat.completions",
             body,
         )
-        return MetaLlmResult(data=_parse_chat_completion(data), meta=meta)
+        return MetaLlmResult(data=parse_chat_completion(data), meta=meta)
 
 
 class _MessagesNamespace:
@@ -178,13 +122,24 @@ class _MessagesNamespace:
             "messages.create",
             body,
         )
-        return MetaLlmResult(data=_parse_anthropic_message(data), meta=meta)
+        return MetaLlmResult(data=parse_anthropic_message(data), meta=meta)
 
     async def count_tokens(
         self, request: CountTokensRequest, **_kwargs: Any
     ) -> MetaLlmResult[CountTokensResult]:
-        _not_implemented("messages.count_tokens")
-        raise AssertionError("unreachable")
+        """``POST /v1/messages/count_tokens``. Same "direct nonstream
+        call" class as ``messages.create`` (ADR-0024a §D7) -- reuses
+        ``post_json_idempotent`` verbatim.
+        """
+        body = asdict(request)
+        data, meta = await post_json_idempotent(
+            self._client._config,
+            self._client._transport,
+            "/v1/messages/count_tokens",
+            "messages.count_tokens",
+            body,
+        )
+        return MetaLlmResult(data=parse_count_tokens_result(data), meta=meta)
 
 
 class MetaLlmClient:
@@ -301,26 +256,58 @@ class MetaLlmClient:
         )
 
     # ------------------------------------------------------------------
-    # D3: protocol-specific wire types only this pass -- placeholders below
+    # D3/D7: remaining direct nonstream operations -- real HTTP call logic
+    # (issue #58 / M2 continuation), reusing `post_json_idempotent` verbatim
     # ------------------------------------------------------------------
 
     async def completions(
         self, request: LegacyCompletionRequest, **_kwargs: Any
     ) -> MetaLlmResult[LegacyCompletion]:
-        _not_implemented("completions")
-        raise AssertionError("unreachable")
+        """``POST /v1/completions`` (legacy OpenAI completions). Real HTTP
+        call logic (issue #58 / M2 continuation) -- this is a "direct
+        nonstream call whose accepted contract declares safe replay" per
+        ADR-0024a §D7, the same class as ``chat.completions``/
+        ``messages.create``, so it reuses ``post_json_idempotent`` from
+        ``nonstream.py`` verbatim.
+        """
+        body = asdict(request)
+        data, meta = await post_json_idempotent(
+            self._config, self._transport, "/v1/completions", "completions", body
+        )
+        return MetaLlmResult(data=parse_legacy_completion(data), meta=meta)
 
     async def responses(
         self, request: ResponsesRequest, **_kwargs: Any
     ) -> MetaLlmResult[ResponsesResponse]:
-        _not_implemented("responses")
-        raise AssertionError("unreachable")
+        """``POST /v1/responses``. Current server is stateless: callers
+        resend conversation input. ``previous_response_id`` is preview and
+        MUST NOT be described as recovery (ADR-0024a §D3) -- this method
+        does not restore or synthesize any prior conversation state; it
+        only sends ``request`` as given. Real HTTP call logic (issue #58 /
+        M2 continuation) reuses ``post_json_idempotent`` verbatim, same as
+        ``chat.completions``.
+        """
+        body = asdict(request)
+        data, meta = await post_json_idempotent(
+            self._config, self._transport, "/v1/responses", "responses", body
+        )
+        return MetaLlmResult(data=parse_responses_response(data), meta=meta)
 
     async def embeddings(
         self, request: EmbeddingRequest, **_kwargs: Any
     ) -> MetaLlmResult[EmbeddingResponse]:
-        _not_implemented("embeddings")
-        raise AssertionError("unreachable")
+        """``POST /v1/embeddings``. Real HTTP call logic (issue #58 / M2
+        continuation) reuses ``post_json_idempotent`` verbatim --
+        infrastructure is identical to the other direct nonstream
+        operations even though embeddings has its own separate maturity
+        gate criteria in ADR-0024a §D2 ("input limits, dimensions, usage,
+        errors and auth published").
+        """
+        body = asdict(request)
+        data, meta = await post_json_idempotent(
+            self._config, self._transport, "/v1/embeddings", "embeddings", body
+        )
+        return MetaLlmResult(data=parse_embedding_response(data), meta=meta)
 
     async def aclose(self) -> None:
         """Close local connections and wait only.
