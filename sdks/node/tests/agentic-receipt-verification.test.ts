@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { createHash, createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import {
   buildExecutionReceipt,
   verifyExecutionReceipt,
@@ -14,6 +17,16 @@ import type {
 const KEY = new TextEncoder().encode("test-signing-key");
 const resolveKey = (issuer: string, keyId: string) =>
   issuer === "cognitum-one" && keyId === "key-1" ? KEY : undefined;
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const FIXTURE_PATH = path.join(
+  __dirname,
+  "../../fixtures/receipt-canonicalization/execution-receipt-v1.json",
+);
+
+function loadFixture(): any {
+  return JSON.parse(readFileSync(FIXTURE_PATH, "utf8"));
+}
 
 function makeReceipt(overrides: Partial<Parameters<typeof buildExecutionReceipt>[0]> = {}) {
   return buildExecutionReceipt({
@@ -177,5 +190,108 @@ describe("verifyLineageChain", () => {
 
     const strict = verifyLineageChain(chain, { minLevel: "digest" });
     expect(strict.valid).toBe(false);
+  });
+
+  it(
+    "a mixed-level chain (shape-only genesis, cryptographic entries 2-3) " +
+      "reports the chain level as cryptographic, not capped by the genesis entry",
+    () => {
+      // Regression test for issue #56 / PR #84 review: the prior
+      // implementation's self-report claimed this coverage existed but it
+      // did not. The genesis entry (index 0) has no predecessor to link
+      // against, so it can only ever reach "shape" on its own -- that's
+      // expected, not a weak link -- and it must NOT cap the chain's
+      // overall reported level once later entries reach "cryptographic".
+      // The genesis-exclusion fix itself was already verified correct by
+      // the reviewer; this closes the missing-test-coverage gap.
+      const chain = makeChain();
+      const signed: LineageReference[] = [chain[0]]; // genesis stays unsigned
+      for (const entry of chain.slice(1)) {
+        const withIssuer: LineageReference = {
+          ...entry,
+          issuer: "cognitum-one",
+          keyId: "key-1",
+        };
+        const { signature: _s, verification: _v, ...signable } = withIssuer;
+        const payload = canonicalJson(signable);
+        const signature = createHmac("sha256", Buffer.from(KEY))
+          .update(payload, "utf8")
+          .digest("hex");
+        signed.push({ ...withIssuer, signature });
+      }
+
+      const result = verifyLineageChain(signed, {
+        minLevel: "cryptographic",
+        resolveKey,
+      });
+
+      expect(result.valid).toBe(true);
+      expect(result.level).toBe("cryptographic");
+      expect(result.results).toHaveLength(3);
+      expect(result.results[0].level).toBe("shape");
+      expect(result.results[1].level).toBe("cryptographic");
+      expect(result.results[2].level).toBe("cryptographic");
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Cross-language canonicalization conformance (issue #56 / PR #84 review)
+// ---------------------------------------------------------------------------
+//
+// Independent review of PR #84 found that Node/Rust canonicalize the
+// signable receipt payload as camelCase, while Python's
+// `dataclasses.asdict(r)` emitted snake_case with no rename step --
+// identical logical receipts canonicalized to different bytes, so
+// cross-SDK SHA-256 digest/HMAC-SHA256 signature verification silently
+// failed 100% of the time. A second, independent mismatch was found in the
+// same pass: Rust's `serde_json` and Python's `json` module both preserve
+// the float/int distinction and render a whole-valued cost amount as
+// `10.0`, while `JSON.stringify` renders it as `10`.
+//
+// These tests load the golden fixture shared with the Python and Rust
+// suites (`sdks/fixtures/receipt-canonicalization/`) and assert this SDK's
+// own canonical bytes/digest/signature match the pinned values
+// byte-for-byte -- the test that would have caught both bugs.
+describe("cross-language canonicalization conformance", () => {
+  it("receipt canonical bytes match the cross-language golden fixture", () => {
+    const fixture = loadFixture();
+    const canonical = canonicalJson(fixture.logicalReceipt);
+
+    expect(canonical).toBe(fixture.expectedCanonicalJson);
+    expect(createHash("sha256").update(canonical, "utf8").digest("hex")).toBe(
+      fixture.expectedSha256Hex,
+    );
+
+    const sig = createHmac("sha256", Buffer.from(fixture.hmacKeyUtf8, "utf8"))
+      .update(canonical, "utf8")
+      .digest("hex");
+    expect(sig).toBe(fixture.expectedHmacSha256Hex);
+  });
+
+  it("lineage entry canonical bytes match the cross-language golden fixture", () => {
+    const fixture = loadFixture();
+    const canonical = canonicalJson(fixture.logicalLineageEntry);
+
+    expect(canonical).toBe(fixture.expectedLineageCanonicalJson);
+    expect(createHash("sha256").update(canonical, "utf8").digest("hex")).toBe(
+      fixture.expectedLineageSha256Hex,
+    );
+
+    const sig = createHmac("sha256", Buffer.from(fixture.hmacKeyUtf8, "utf8"))
+      .update(canonical, "utf8")
+      .digest("hex");
+    expect(sig).toBe(fixture.expectedLineageHmacSha256Hex);
+  });
+
+  it("leaves the opaque usage blob's keys untouched (sorted, never renamed)", () => {
+    const fixture = loadFixture();
+    const canonical = canonicalJson(fixture.logicalReceipt);
+    const parsed = JSON.parse(canonical);
+    expect(parsed.usage).toEqual({
+      prompt_tokens: 128,
+      completion_tokens: 64,
+      cacheHitRatio: 0.5,
+    });
   });
 });

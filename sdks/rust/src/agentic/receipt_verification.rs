@@ -38,6 +38,13 @@ pub use verify::{
 #[path = "receipt_verification/tests.rs"]
 mod tests;
 
+/// Cross-SDK canonicalization conformance tests (issue #56 / PR #84 review
+/// fix) -- see `sdks/fixtures/receipt-canonicalization/` for the shared
+/// golden fixture consumed identically by the Node and Python suites.
+#[cfg(test)]
+#[path = "receipt_verification/conformance_tests.rs"]
+mod conformance_tests;
+
 const CANONICALIZATION_VERSION: &str = "cognitum-canonical-json-v1";
 
 fn level_label(level: VerificationLevel) -> &'static str {
@@ -140,11 +147,52 @@ fn now_iso() -> String {
 // Canonical bytes + digests
 // ---------------------------------------------------------------------------
 
-/// Deterministic JSON: `serde_json`'s default `Map` is a `BTreeMap` (this
-/// crate does not enable the `preserve_order` feature), so `to_string`
-/// already emits recursively sorted object keys with no whitespace.
+/// Recursively normalizes JSON-bound numbers so identical logical values
+/// produce identical canonical bytes across languages (fix for a bug found
+/// in review of #84). JavaScript has a single `number` type, so
+/// `JSON.stringify` always renders a whole-valued float without a trailing
+/// `.0` (e.g. `10`, not `10.0`). `serde_json` (like Python's `json` module)
+/// preserves the float/int distinction and would otherwise render `10.0`
+/// for the exact same logical receipt -- diverging from Node's canonical
+/// bytes whenever a cost amount happens to be a whole number. This walks
+/// the whole value tree, including opaque blobs like `usage`, since any
+/// JSON number appearing in the canonical bytes must format consistently.
+fn normalize_numbers(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Number(n) => {
+            if n.is_f64() {
+                if let Some(f) = n.as_f64() {
+                    // JS's safe-integer range (`Number.isSafeInteger`); outside
+                    // it, whole-number float formatting is already a lossy
+                    // edge case in JS itself, so we leave serde_json's
+                    // representation as-is rather than risk misrepresenting it.
+                    if f.is_finite() && f.fract() == 0.0 && f.abs() < 9_007_199_254_740_992.0 {
+                        return serde_json::Value::Number(serde_json::Number::from(f as i64));
+                    }
+                }
+            }
+            serde_json::Value::Number(n)
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.into_iter().map(normalize_numbers).collect())
+        }
+        serde_json::Value::Object(obj) => serde_json::Value::Object(
+            obj.into_iter()
+                .map(|(k, v)| (k, normalize_numbers(v)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+/// Deterministic JSON matching the `cognitum-canonical-json-v1` scheme
+/// shared with the Node/Python SDKs: `serde_json`'s default `Map` is a
+/// `BTreeMap` (this crate does not enable the `preserve_order` feature), so
+/// `to_string` already emits recursively sorted object keys with no
+/// whitespace; [`normalize_numbers`] additionally matches JS-compatible
+/// numeric formatting.
 pub fn canonical_json(value: &serde_json::Value) -> String {
-    serde_json::to_string(value).unwrap_or_default()
+    serde_json::to_string(&normalize_numbers(value.clone())).unwrap_or_default()
 }
 
 pub fn sha256_hex(bytes: &str) -> String {

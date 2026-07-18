@@ -12,6 +12,26 @@ Deliberate scope limits (documented rather than silently skipped):
   it does not implement or assume any specific anchor/ledger service.
 - Checkpoint "freshness" (D9) is a parseable-timestamp + optional max-age
   check, not a live clock-skew/NTP protocol.
+
+Cross-language canonicalization note (fix for a bug found in review of #84):
+the ``cognitum-canonical-json-v1`` scheme is shared with the Node and Rust
+SDKs, which both canonicalize receipt/lineage fields as camelCase (Node's
+types are natively camelCase; Rust's ``ExecutionReceipt``/``LineageReference``
+carry ``#[serde(rename_all = "camelCase")]``). Python's dataclasses stay
+snake_case (matching Python convention -- ``receipt.contract_version``, not
+``receipt.contractVersion``), but the *signable/digestible* payload built by
+``_signable_value`` below renames known schema field names to camelCase
+before serializing, so the canonical bytes -- and therefore SHA-256 digests
+and HMAC-SHA256 signatures -- match byte-for-byte across all three SDKs for
+the same logical receipt. Opaque caller-supplied blobs (``usage``) are
+intentionally NOT renamed: Node and Rust pass them through verbatim too, so
+renaming them here would itself introduce a new cross-language mismatch.
+``canonical_json`` additionally normalizes whole-valued floats (``10.0`` ->
+``10``) to match JavaScript's single ``number`` type, which is what
+``JSON.stringify`` on the Node side already produces -- Rust's ``serde_json``
+and Python's ``json`` module both default to preserving the float/int
+distinction and would otherwise diverge from Node's canonical bytes whenever
+a cost amount happens to be a whole number.
 """
 
 from __future__ import annotations
@@ -19,8 +39,9 @@ from __future__ import annotations
 import hashlib
 import hmac as hmac_lib
 import json
+import math
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -69,9 +90,57 @@ def _parse_timestamp(value: str) -> datetime | None:
 # ---------------------------------------------------------------------------
 
 
+def _normalize_numbers(value: Any) -> Any:
+    """Recursively normalizes JSON-bound numbers to match JavaScript's
+    canonical numeric formatting (see module docstring): a whole-valued
+    float (``10.0``) collapses to an int (``10``) so ``json.dumps`` renders
+    it identically to Node's ``JSON.stringify``. Applies to the *whole*
+    value tree, including opaque blobs like ``usage``, since any JSON
+    number appearing in the canonical bytes must format consistently, not
+    just the receipt's own schema fields.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        if math.isfinite(value) and value.is_integer():
+            return int(value)
+        return value
+    if isinstance(value, dict):
+        return {k: _normalize_numbers(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_normalize_numbers(v) for v in value]
+    return value
+
+
+def _camel_case(name: str) -> str:
+    """Converts a ``snake_case`` field name to ``camelCase``."""
+    head, *rest = name.split("_")
+    return head + "".join(part[:1].upper() + part[1:] for part in rest)
+
+
+def _signable_value(value: Any) -> Any:
+    """Recursively converts dataclass instances into JSON-ready values with
+    camelCase keys (matching the Node/Rust canonical wire format). Only
+    known dataclass fields are renamed -- opaque caller-supplied dict blobs
+    (e.g. ``usage``) are returned unchanged, matching how Node/Rust pass
+    them through verbatim rather than re-keying their contents.
+    """
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            _camel_case(f.name): _signable_value(getattr(value, f.name))
+            for f in fields(value)
+        }
+    if isinstance(value, (list, tuple)):
+        return [_signable_value(item) for item in value]
+    return value
+
+
 def canonical_json(value: Any) -> str:
-    """Deterministic JSON: recursively sorted object keys, no whitespace."""
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    """Deterministic JSON matching the ``cognitum-canonical-json-v1`` scheme
+    shared with the Node/Rust SDKs: recursively sorted object keys, no
+    whitespace, and JS-compatible numeric formatting (see
+    ``_normalize_numbers``)."""
+    return json.dumps(_normalize_numbers(value), sort_keys=True, separators=(",", ":"))
 
 
 def sha256_hex(text: str) -> str:
@@ -89,14 +158,14 @@ def _constant_time_hex_equal(a: str, b: str) -> bool:
 
 
 def _receipt_signable_dict(r: ExecutionReceipt) -> dict[str, Any]:
-    d = asdict(r)
+    d = _signable_value(r)
     d.pop("signature", None)
     d.pop("verification", None)
     return d
 
 
 def _lineage_signable_dict(l: LineageReference) -> dict[str, Any]:  # noqa: E741
-    d = asdict(l)
+    d = _signable_value(l)
     d.pop("signature", None)
     d.pop("verification", None)
     return d

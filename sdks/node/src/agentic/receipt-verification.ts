@@ -55,7 +55,19 @@ function sortKeysDeep(value: unknown): unknown {
   return value;
 }
 
-/** Deterministic JSON: recursively sorted object keys, no whitespace. */
+/**
+ * Deterministic JSON: recursively sorted object keys, no whitespace.
+ *
+ * This is the reference canonicalization for `cognitum-canonical-json-v1`,
+ * shared with the Rust and Python SDKs: field names are natively camelCase
+ * here (matching `ExecutionReceipt`/`LineageReference`'s TS types and
+ * Rust's `#[serde(rename_all = "camelCase")]`; Python renames its
+ * snake_case dataclass fields to camelCase only for this signable payload),
+ * and `JSON.stringify` already renders whole-valued numbers without a
+ * trailing `.0` (JS has a single `number` type) -- Rust's `serde_json` and
+ * Python's `json` module both normalize their float/int-preserving output
+ * to match this before canonicalizing, so no change was needed here.
+ */
 export function canonicalJson(value: unknown): string {
   return JSON.stringify(sortKeysDeep(value));
 }

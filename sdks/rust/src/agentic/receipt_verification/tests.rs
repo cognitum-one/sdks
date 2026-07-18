@@ -222,6 +222,42 @@ fn rejects_a_chain_whose_sequence_does_not_strictly_increase() {
     assert!(result.failure.unwrap().contains("sequence"));
 }
 
+/// Regression test for the mixed-verification-level lineage chain claim
+/// (issue #56 / PR #84 review): the prior implementation's self-report
+/// claimed this coverage existed but it did not. The genesis entry (index
+/// 0) has no predecessor to link against, so it can only ever reach
+/// `shape` on its own -- that's expected, not a weak link -- and it must
+/// NOT cap the chain's overall reported level once later entries reach
+/// `cryptographic`. The genesis-exclusion fix itself was already verified
+/// correct by the reviewer; this closes the missing-test-coverage gap.
+#[test]
+fn mixed_level_chain_reports_cryptographic_not_capped_by_shape_only_genesis() {
+    let mut chain = make_chain();
+    // Genesis (index 0) is intentionally left unsigned: shape-only is
+    // correct for a chain root with no predecessor. Entries 1 and 2 are
+    // signed and must lift the chain's overall level to `cryptographic`.
+    for entry in chain.iter_mut().skip(1) {
+        entry.issuer = Some("cognitum-one".to_string());
+        entry.key_id = Some("key-1".to_string());
+        let payload = canonical_json(&lineage_signable_value(entry));
+        entry.signature = Some(sign(&payload));
+    }
+
+    let opts = VerifyLineageChainOptions {
+        min_level: VerificationLevel::Cryptographic,
+        resolve_key: Some(&resolve_key),
+        ..Default::default()
+    };
+    let result = verify_lineage_chain(&chain, &opts);
+
+    assert!(result.valid);
+    assert_eq!(result.level, VerificationLevel::Cryptographic);
+    assert_eq!(result.results.len(), 3);
+    assert_eq!(result.results[0].level, VerificationLevel::Shape);
+    assert_eq!(result.results[1].level, VerificationLevel::Cryptographic);
+    assert_eq!(result.results[2].level, VerificationLevel::Cryptographic);
+}
+
 #[test]
 fn iso_round_trip_matches_civil_to_unix_seconds() {
     let known = civil_to_unix_seconds(2026, 7, 18, 0, 0, 5).unwrap();
