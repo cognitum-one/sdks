@@ -78,11 +78,11 @@ from cognitum.agentic.receipts import (
     VerificationLevel,
     VerificationResult,
 )
+from cognitum.agentic.sentinel import D12Category, SentinelSecretRedactor
 from cognitum.agentic.static_api_key_provider import (
     DEFAULT_API_KEY_ENV_VAR,
     StaticApiKeyCredentialProvider,
 )
-from cognitum.agentic.sentinel import D12Category, SentinelSecretRedactor
 
 __all__ = [
     # Capability negotiation
