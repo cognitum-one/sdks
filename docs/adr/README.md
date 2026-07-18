@@ -19,6 +19,25 @@ docs/adr/                           # this directory — shared / cross-cutting
 ├── 0012-sdk-typescript-supersession.md     # Executed — sdk-typescript/ removed
 ├── 0016a-seed-client-configuration-single-and-mesh-decisions.md
 ├── 0016b-seed-client-configuration-signatures-and-lifecycle.md
+├── 0017-phase-1-5-mesh-implementation-plan.md
+├── 0018-sd-card-flashing-tool.md
+├── 0019-agentic-platform-bounded-contexts.md
+├── 0020-agentic-contract-source-of-truth-and-code-generation.md
+├── 0021-agentic-service-configuration-transports-and-capabilities.md
+├── 0022-agentic-auth-tenant-budget-secret-and-consent-isolation.md
+├── 0023-agentic-errors-retries-idempotency-cancellation-and-time-budgets.md
+├── 0024a-meta-llm-serving-protocols-and-streaming.md
+├── 0024b-meta-llm-platform-resources-routing-and-usage.md
+├── 0025a-meta-proxy-client-routing-and-consent.md
+├── 0025b-meta-proxy-lifecycle-integrity-and-ga-gates.md
+├── 0026a-oss-metaharness-identity-bridge-and-api.md
+├── 0026b-metaharness-process-filesystem-and-npx-supply-chain.md
+├── 0027a-harnessaas-jobs-events-approvals-and-artifacts.md
+├── 0027b-harnessaas-isolation-evidence-webhooks-and-ga-gates.md
+├── 0028-agentic-telemetry-usage-receipts-lineage-and-redaction.md
+├── 0029-language-packaging-features-and-cli.md
+├── 0030a-conformance-ci-and-release-evidence.md
+├── 0030b-migration-rollout-and-publication.md
 └── ddd/
     └── seed-domain.md                       # read this first
 
@@ -68,6 +87,47 @@ are referenced by each SDK's architecture + implementation ADRs.
     **Proposed** — new first-party `cognitum-seed-flash` Rust binary
     tool codifying the seed-image flashing recipe from project
     `CLAUDE.md`; thin `seed.images.*` read-only helpers in each SDK.
+15. [`0019-agentic-platform-bounded-contexts.md`](0019-agentic-platform-bounded-contexts.md) —
+    Separate bounded contexts and public namespaces for Meta LLM, Meta Proxy,
+    OSS MetaHarness, and HarnessaaS.
+16. [`0020-agentic-contract-source-of-truth-and-code-generation.md`](0020-agentic-contract-source-of-truth-and-code-generation.md) —
+    Immutable contract bundles, protocol identity, internal code generation,
+    and source-drift reconciliation.
+17. [`0021-agentic-service-configuration-transports-and-capabilities.md`](0021-agentic-service-configuration-transports-and-capabilities.md) —
+    Product-specific origins, transport metadata, capability expressions,
+    concurrency, and fail-closed preconditions.
+18. [`0022-agentic-auth-tenant-budget-secret-and-consent-isolation.md`](0022-agentic-auth-tenant-budget-secret-and-consent-isolation.md) —
+    Credential, tenant, budget, secret, delegated-access, and routing-consent
+    isolation.
+19. [`0023-agentic-errors-retries-idempotency-cancellation-and-time-budgets.md`](0023-agentic-errors-retries-idempotency-cancellation-and-time-budgets.md) —
+    Shared error taxonomy, canonical idempotency binding, retry boundaries,
+    cancellation, and durable-operation handles.
+20. [`0024a-meta-llm-serving-protocols-and-streaming.md`](0024a-meta-llm-serving-protocols-and-streaming.md)
+    and [`0024b-meta-llm-platform-resources-routing-and-usage.md`](0024b-meta-llm-platform-resources-routing-and-usage.md) —
+    Direct Meta LLM serving protocols, streams, platform resources, routing,
+    usage, and GA gates.
+21. [`0025a-meta-proxy-client-routing-and-consent.md`](0025a-meta-proxy-client-routing-and-consent.md)
+    and [`0025b-meta-proxy-lifecycle-integrity-and-ga-gates.md`](0025b-meta-proxy-lifecycle-integrity-and-ga-gates.md) —
+    Narrow loopback Proxy client semantics and an independently injected,
+    integrity-verified lifecycle provider.
+22. [`0026a-oss-metaharness-identity-bridge-and-api.md`](0026a-oss-metaharness-identity-bridge-and-api.md)
+    and [`0026b-metaharness-process-filesystem-and-npx-supply-chain.md`](0026b-metaharness-process-filesystem-and-npx-supply-chain.md) —
+    OSS product identity, a structured process bridge, exact npm distribution
+    integrity, and crash-recoverable workspace mutation.
+23. [`0027a-harnessaas-jobs-events-approvals-and-artifacts.md`](0027a-harnessaas-jobs-events-approvals-and-artifacts.md)
+    and [`0027b-harnessaas-isolation-evidence-webhooks-and-ga-gates.md`](0027b-harnessaas-isolation-evidence-webhooks-and-ga-gates.md) —
+    Asynchronous solves, resumable events, approvals, artifacts, fail-closed
+    execution isolation, signed evidence, and durable webhooks.
+24. [`0028-agentic-telemetry-usage-receipts-lineage-and-redaction.md`](0028-agentic-telemetry-usage-receipts-lineage-and-redaction.md) —
+    Cross-product observability, cost observations, receipts, lineage, evidence
+    verification, and recursive redaction.
+25. [`0029-language-packaging-features-and-cli.md`](0029-language-packaging-features-and-cli.md) —
+    Node, Python, and Rust package boundaries, optional features, canonical
+    symbols, CLI behavior, and implementation layout.
+26. [`0030a-conformance-ci-and-release-evidence.md`](0030a-conformance-ci-and-release-evidence.md)
+    and [`0030b-migration-rollout-and-publication.md`](0030b-migration-rollout-and-publication.md) —
+    Twelve-binding conformance, adversarial CI, migration, unique work
+    breakdown, staged rollout, and coordinated publication.
 
 Then jump into the per-SDK folders:
 
@@ -81,6 +141,9 @@ Then jump into the per-SDK folders:
 
 - ADRs: `NNNN-kebab-title.md` starting at `0001-`.
 - Multi-part ADRs split at ~500 lines: `NNNN{a,b,c}-kebab-title.md`.
+- An unsuffixed family reference such as ADR-0025 means every part of that
+  numbered decision; normative requirements cite the exact part when only one
+  part applies.
 - DDD docs under `ddd/`.
 - Each ADR cites source with `path:line` refs so claims are verifiable.
 
@@ -92,6 +155,25 @@ Then jump into the per-SDK folders:
 | Seed HTTP API at `https://169.254.42.1:8443/api/v1/*` | Direct mesh, cog runtime, OTA internals |
 | Cloud control plane at `https://api.cognitum.one/*` | Stripe payments plumbing (sits behind `orders`) |
 | Shared wire, auth, error, retry, versioning | Internal seed subsystems (see seed repo ADRs) |
+| Direct Meta LLM serving and platform APIs | Meta LLM deployment or provider internals |
+| Authenticated loopback Meta Proxy client and injected lifecycle provider | Treating Meta Proxy as a complete Meta LLM transport |
+| Public OSS `metaharness` structured bridge and verified local execution | Private commercial MetaHarness composition |
+| HarnessaaS jobs, approvals, artifacts, webhooks, receipts, and lineage | Process-only execution of untrusted customer commands |
+
+## Agentic integration source audit log
+
+The agentic ADR series is bound to immutable source revisions. Registry state is
+reported separately because published package identity can differ from source.
+
+| Repository or registry | Audited revision or state | Date |
+|------------------------|---------------------------|------|
+| `cognitum-one/sdks` | `bccae6a3bfd8e0a59bc251738bf992852917a00f` | 2026-07-18 |
+| `ruvnet/metaharness` | `072b95c0a74610de008dca5473343a81619cef20` | 2026-07-18 |
+| `cognitum-one/metaharness` | `fc8845f3bfdb67f1ab6d99547cc98e3b57717029` | 2026-07-18 |
+| `cognitum-one/meta-llm` | `948bd31a67a6daf3cf5888e06be64e732027be13` | 2026-07-18 |
+| `cognitum-one/meta-proxy` | `43427e92ee0527413ca71744b538035537e0b6ef` | 2026-07-18 |
+| `cognitum-one/harnessaas` | `908e4a99332617fd321d6f23a1d5a70e07413ffa` | 2026-07-18 |
+| npm `metaharness` | Published `0.4.0`; reviewed source manifest reports `0.4.1` | 2026-07-18 |
 
 ## Seed release audit log
 
@@ -124,3 +206,10 @@ shipped/verified.
 | OQ-10 | POST idempotency surface: `idempotent=True` kwarg (Python) vs `Idempotency-Key` header. | ADR-0005 | **Answered 2026-04-22** — SDKs expose `idempotent` boolean opt-in per request (attestation); `Idempotency-Key` deferred until the seed or cloud honours it server-side. |
 | OQ-11 | Tailscale-native peer discovery: should `DiscoveryProvider` include a built-in that reads the local tailnet (`tailscale status --json`) and filters for seeds? Seed does not advertise its tailnet name today. | ADR-0016a §D6 | **Answered 2026-04-23** — all three SDKs ship a `TailscaleDiscovery` provider that shells out to `tailscale status --json`, filters by a configurable hostname prefix (`cognitum-` default) or custom predicate, and maps each kept peer to `https://<DNSName>:<port>`. Stdlib-only (Node `child_process.execFile`; Python `subprocess.run`; Rust `std::process::Command` + `spawn_blocking`), no new deps, no feature flag. Tailnet carries no `device_id` / `tls_fingerprint` advertisements, so both stay `None`; callers wanting per-peer TLS pinning should combine with mDNS. Per-SDK impl notes: ADR-0015c §"Phase 3 — Tailscale discovery" (Node), ADR-0013c §"Phase 3 — Tailscale discovery" (Python), ADR-0014c §"Phase 3 — Tailscale discovery" (Rust). |
 | OQ-12 | mDNS service type name: seed uses `_cognitum._tcp.local` (`seed/src/cognitum-agent/src/discovery.rs:99`). Is this the canonical SDK-facing service name, or should the SDK accept a configurable service type for air-gapped deployments that rename it? | ADR-0016a §D6 | **Open** — SDK ships `Mdns` provider with `service_type` as an optional override defaulting to `_cognitum._tcp.local`. No change needed unless an operator files a concrete use case. |
+| OQ-13 | What are the production origins, exact protocol bundles, and stable operation inventories for Meta LLM and HarnessaaS? | Product owners + ADR-0020 | **Open** — SDKs require explicit origins and immutable reviewed bundles; no invented production default or GA claim. |
+| OQ-14 | When will Meta LLM bind idempotency to the full ADR-0023 identity, persist complete replay results, and publish OAuth scope coverage per operation? | Meta LLM owner + ADR-0024a | **Open** — automatic POST replay remains disabled until conformance proves the corrected server contract. |
+| OQ-15 | When will Meta Proxy publish one plane model, forwarding allowlist, authenticated selected-plane evidence, atomic ledger, and readiness challenge? | Meta Proxy owner + ADR-0025a/b | **Open** — affected routing, sponsored streaming, and lifecycle surfaces remain preview or blocked. |
+| OQ-16 | Which exact OSS MetaHarness bridge distribution supersedes the npm `0.4.0` versus source `0.4.1` drift, and when will it publish complete JSONL schemas? | MetaHarness owner + ADR-0026a/b | **Open** — the SDK never parses human CLI prose or invokes mutable `npx` resolution internally. |
+| OQ-17 | When will HarnessaaS publish durable asynchronous jobs, atomic submit idempotency, supported container or microVM isolation, signed evidence keys, and transactional webhooks? | HarnessaaS owner + ADR-0027a/b | **Open** — stable submit fails closed; legacy synchronous solve is preview-only and never executes untrusted commands through a process-only fallback. |
+| OQ-18 | Which product revisions and live staging deployments are the first release candidates for the twelve-binding conformance matrix? | Release Engineering + ADR-0030a/b | **Open** — the signed release manifest must bind exact SDK artifacts, contract digests, product revisions, and deployment evidence before GA. |
+
