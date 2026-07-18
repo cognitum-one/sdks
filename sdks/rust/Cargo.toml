@@ -27,6 +27,11 @@ rustls = ["reqwest/rustls-tls"]
 native-tls = ["reqwest/native-tls"]
 seed = ["dep:url"]
 stream = ["seed", "dep:eventsource-stream"]
+# Meta LLM serving client (ADR-0019 §D2, ADR-0024a). Gates the `meta_llm`
+# module's code and its one new optional dependency (`uuid`, for
+# ADR-0024a §D1 correlation IDs) — matches the ADR-0019 §D2 namespace map
+# (`cognitum_one::meta_llm`, `meta-llm`).
+meta-llm = ["dep:uuid"]
 blocking = ["reqwest/blocking"]
 live-seed-tests = ["seed"]
 # Opt-in mDNS discovery (ADR-0016a §D6, Phase 3). One-shot `_cognitum._tcp.local`
@@ -75,6 +80,11 @@ sha2 = { version = "0.10", default-features = false }
 hmac = { version = "0.12", default-features = false }
 rustls = { version = "0.23", default-features = false }
 webpki-roots = "1.0"
+# Request-ID correlation for the Meta LLM client (ADR-0024a §D1, `meta-llm`
+# feature only). `v4` is the only generator strategy needed — random,
+# non-sequential request IDs, matching the Node SDK's `crypto.randomUUID()`
+# and Python's `uuid.uuid4()`.
+uuid = { version = "1", features = ["v4"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

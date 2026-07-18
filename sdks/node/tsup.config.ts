@@ -47,6 +47,18 @@ export default defineConfig([
     outDir: "dist",
   },
   {
+    // Meta LLM serving client subpath — @cognitum-one/sdk/meta-llm
+    // (ADR-0019 §D2, ADR-0024a). Depends only on the agentic subpath and
+    // `fetch`, so this stays safe for browser-facing bundles too.
+    entry: { "meta-llm/index": "src/meta-llm/index.ts" },
+    format: ["esm", "cjs"],
+    dts: true,
+    clean: false,
+    sourcemap: true,
+    target: "es2022",
+    outDir: "dist",
+  },
+  {
     entry: ["src/cli.ts"],
     format: ["esm"],
     outExtension: () => ({ js: ".mjs" }),

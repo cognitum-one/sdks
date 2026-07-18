@@ -26,6 +26,11 @@
       "types": "./dist/agentic/index.d.ts",
       "import": "./dist/agentic/index.js",
       "require": "./dist/agentic/index.cjs"
+    },
+    "./meta-llm": {
+      "types": "./dist/meta-llm/index.d.ts",
+      "import": "./dist/meta-llm/index.js",
+      "require": "./dist/meta-llm/index.cjs"
     }
   },
   "bin": {
