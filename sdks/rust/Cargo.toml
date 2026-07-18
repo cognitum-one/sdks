@@ -40,6 +40,11 @@ reqwest = { version = "0.12", default-features = false, features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+# Fixed-format sentinel matchers for the ADR-0028 §D13 redaction scan
+# (`agentic::sentinel::SentinelSecretRedactor`) — bearer/JWT/PEM/cloud-key/
+# pre-signed-URL patterns. Already pulled transitively via other deps; named
+# directly here since `agentic::sentinel` depends on it explicitly.
+regex = "1"
 # `process` + `io-util` are required for the MCP stdio transport
 # (OQ-4, src/mcp/stdio.rs): we spawn the MCP server as a tokio subprocess
 # and frame JSON over its stdin/stdout with BufReader::read_line.

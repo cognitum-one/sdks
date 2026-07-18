@@ -82,6 +82,7 @@ from cognitum.agentic.static_api_key_provider import (
     DEFAULT_API_KEY_ENV_VAR,
     StaticApiKeyCredentialProvider,
 )
+from cognitum.agentic.sentinel import D12Category, SentinelSecretRedactor
 
 __all__ = [
     # Capability negotiation
@@ -112,6 +113,8 @@ __all__ = [
     "RedactedSecret",
     "SecretClassification",
     "SecretRedactor",
+    "D12Category",
+    "SentinelSecretRedactor",
     # Operations / pagination
     "OperationState",
     "OperationSnapshot",

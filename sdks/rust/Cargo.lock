@@ -107,6 +107,7 @@ dependencies = [
  "eventsource-stream",
  "mdns-sd",
  "rcgen",
+ "regex",
  "reqwest",
  "rustls",
  "serde",

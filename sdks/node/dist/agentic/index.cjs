@@ -24,6 +24,7 @@ __export(agentic_exports, {
   DEFAULT_API_KEY_ENV_VAR: () => DEFAULT_API_KEY_ENV_VAR,
   DEFAULT_RETRY_POLICY: () => DEFAULT_RETRY_POLICY,
   RedactedSecret: () => RedactedSecret,
+  SentinelSecretRedactor: () => SentinelSecretRedactor,
   StaticApiKeyCredentialProvider: () => StaticApiKeyCredentialProvider,
   UnsupportedCapabilityError: () => UnsupportedCapabilityError,
   equalJitterDelayMs: () => equalJitterDelayMs
@@ -214,12 +215,174 @@ var StaticApiKeyCredentialProvider = class {
     }
   }
 };
+
+// src/agentic/sentinel.ts
+var MAX_DEPTH = 8;
+var ENTROPY_THRESHOLD_BITS_PER_CHAR = 4;
+var ENTROPY_MIN_TOKEN_LEN = 20;
+var MAX_DEPTH_MARKER = "[max-depth-exceeded]";
+var CYCLIC_MARKER = "[cyclic-reference]";
+var KEY_NAME_RULES = [
+  {
+    category: "credentials",
+    classification: "secret",
+    keys: /^(credential|credentials|apikey|clientsecret|secret|token|password|accesskey|authorization)$/
+  },
+  {
+    category: "environment-values",
+    classification: "secret",
+    keys: /^(env|environment|envvars|environmentvalues|environmentvariables)$/
+  },
+  {
+    category: "signed-urls",
+    classification: "secret",
+    keys: /^(signedurl|presignedurl|signedurls)$/
+  },
+  {
+    category: "webhook-bodies",
+    classification: "sensitive",
+    keys: /^(webhookbody|webhookpayload|webhookbodies)$/
+  },
+  {
+    category: "raw-tenant-user-identifiers",
+    classification: "sensitive",
+    keys: /^(userid|tenantid|rawuserid|rawtenantid|accountid)$/
+  },
+  {
+    category: "prompts",
+    classification: "sensitive",
+    keys: /^(prompt|prompts|systemprompt)$/
+  },
+  {
+    category: "messages",
+    classification: "sensitive",
+    keys: /^(message|messages|chatmessages)$/
+  },
+  {
+    category: "tool-arguments-results",
+    classification: "sensitive",
+    keys: /^(toolarguments|toolresults|toolargs|tooloutput)$/
+  },
+  {
+    category: "source",
+    classification: "sensitive",
+    keys: /^(source|sourcecode|sourcefiles)$/
+  },
+  {
+    category: "repository-urls",
+    classification: "sensitive",
+    keys: /^(repositoryurl|repourl|repositoryurls)$/
+  },
+  {
+    category: "patches",
+    classification: "sensitive",
+    keys: /^(patch|patches|diff)$/
+  }
+];
+function normalizeFieldName(fieldName) {
+  return fieldName.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+function keyNameRule(fieldName) {
+  if (!fieldName) return void 0;
+  const normalized = normalizeFieldName(fieldName);
+  return KEY_NAME_RULES.find((rule) => rule.keys.test(normalized));
+}
+var BEARER_TOKEN_RE = /^bearer\s+[a-z0-9._~+/-]{16,}=*$/i;
+var JWT_RE = /^[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}$/i;
+var PEM_PRIVATE_KEY_RE = /-----BEGIN[ A-Z0-9]*PRIVATE KEY-----/;
+var CLOUD_ACCESS_KEY_RE = /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|\bAIza[0-9A-Za-z_-]{35}\b/;
+var PRESIGNED_URL_PARAM_RE = /[?&](?:X-Amz-Signature|X-Amz-Credential|Signature|se)=/i;
+function matchesFixedFormat(value) {
+  return BEARER_TOKEN_RE.test(value) || JWT_RE.test(value) || PEM_PRIVATE_KEY_RE.test(value) || CLOUD_ACCESS_KEY_RE.test(value) || PRESIGNED_URL_PARAM_RE.test(value);
+}
+function shannonEntropy(token) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const ch of token) {
+    counts.set(ch, (counts.get(ch) ?? 0) + 1);
+  }
+  const n = token.length;
+  let entropy = 0;
+  for (const count of counts.values()) {
+    const p = count / n;
+    entropy -= p * Math.log2(p);
+  }
+  return entropy;
+}
+var TOKEN_RE = /[A-Za-z0-9+/=_.~-]+/g;
+function matchesEntropyFallback(value) {
+  const tokens = value.match(TOKEN_RE) ?? [];
+  for (const token of tokens) {
+    if (token.length >= ENTROPY_MIN_TOKEN_LEN && shannonEntropy(token) >= ENTROPY_THRESHOLD_BITS_PER_CHAR) {
+      return true;
+    }
+  }
+  return false;
+}
+function classifyLeaf(fieldName, value) {
+  const rule = keyNameRule(fieldName);
+  if (rule) return rule.category;
+  if (matchesFixedFormat(value)) return "secret-pattern";
+  if (matchesEntropyFallback(value)) return "high-entropy";
+  return void 0;
+}
+var SentinelSecretRedactor = class {
+  classify(fieldName, value) {
+    const rule = keyNameRule(fieldName);
+    if (rule) return rule.classification;
+    if (typeof value === "string") {
+      if (matchesFixedFormat(value)) return "secret";
+      if (matchesEntropyFallback(value)) return "secret";
+    }
+    return "public";
+  }
+  redact(value) {
+    return this.#walk(value, void 0, 0, /* @__PURE__ */ new Set());
+  }
+  #walk(value, fieldName, depth, ancestors) {
+    if (depth > MAX_DEPTH) {
+      return MAX_DEPTH_MARKER;
+    }
+    if (value === null || value === void 0) {
+      return value;
+    }
+    if (typeof value === "string") {
+      const category = classifyLeaf(fieldName, value);
+      return category ? `[redacted:${category}]` : value;
+    }
+    if (typeof value !== "object") {
+      return value;
+    }
+    const obj = value;
+    if (ancestors.has(obj)) {
+      return CYCLIC_MARKER;
+    }
+    const nextAncestors = new Set(ancestors);
+    nextAncestors.add(obj);
+    if (Array.isArray(value)) {
+      return value.map((item) => this.#walk(item, fieldName, depth + 1, nextAncestors));
+    }
+    if (value instanceof Map) {
+      const result2 = /* @__PURE__ */ new Map();
+      for (const [key, val] of value.entries()) {
+        const keyName = typeof key === "string" ? key : void 0;
+        result2.set(key, this.#walk(val, keyName, depth + 1, nextAncestors));
+      }
+      return result2;
+    }
+    const result = {};
+    for (const [key, val] of Object.entries(value)) {
+      result[key] = this.#walk(val, key, depth + 1, nextAncestors);
+    }
+    return result;
+  }
+};
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   AgenticError,
   DEFAULT_API_KEY_ENV_VAR,
   DEFAULT_RETRY_POLICY,
   RedactedSecret,
+  SentinelSecretRedactor,
   StaticApiKeyCredentialProvider,
   UnsupportedCapabilityError,
   equalJitterDelayMs

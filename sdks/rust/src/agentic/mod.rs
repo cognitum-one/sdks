@@ -26,6 +26,7 @@ pub mod errors;
 pub mod operations;
 pub mod receipts;
 pub mod static_api_key_provider;
+pub mod sentinel;
 
 pub use capability::{CapabilitySet, CapabilitySource};
 pub use context::{BudgetPolicy, OnUnknownEstimate, RequestContext, TenantContext};
@@ -33,6 +34,7 @@ pub use credentials::{
     Credential, CredentialAuthority, CredentialProvider, CredentialRequest, RedactedSecret,
     SecretClassification, SecretRedactor,
 };
+pub use sentinel::{D12Category, SentinelSecretRedactor};
 pub use errors::{
     equal_jitter_delay_ms, AgenticError, AgenticErrorKind, CancellationReason, CancellationToken,
     IdempotencyBindingV1, NoopCancellationToken, OperationRetryClass, RetryPolicy, TimeBudget,
