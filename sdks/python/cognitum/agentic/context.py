@@ -58,10 +58,10 @@ class RequestContext:
     correlation_id: str | None = None
     idempotency_key: str | None = None
     tenant: TenantContext | None = None
-    credential_provider: "CredentialProvider | None" = None
+    credential_provider: CredentialProvider | None = None
     budget_policy: BudgetPolicy | None = None
-    time_budget: "TimeBudget | None" = None
-    cancellation: "CancellationToken | None" = None
+    time_budget: TimeBudget | None = None
+    cancellation: CancellationToken | None = None
     #: Optional trace-context carrier (e.g. W3C traceparent/tracestate).
     tracing_carrier: dict[str, str] | None = None
 

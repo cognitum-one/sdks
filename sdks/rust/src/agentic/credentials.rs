@@ -139,12 +139,15 @@ pub enum SecretClassification {
 /// original type. [`redact`](Self::redact) below matches that generic
 /// shape. [`redact_value`](Self::redact_value) is the dyn-safe method
 /// implementors actually provide — generic methods cannot be part of a
-/// trait's vtable, and `SecretRedactor` is intended to be usable as a
-/// trait object (`Arc<dyn SecretRedactor>`), mirroring the
-/// `Arc<dyn CredentialProvider>` / `Arc<dyn CancellationToken>` precedent
-/// already established for sibling traits in this module (see
-/// `RequestContext` in `./context.rs`). `redact`'s default implementation
-/// bridges the two via a JSON round-trip.
+/// trait's vtable, and `SecretRedactor` is written to remain usable as a
+/// trait object (`Arc<dyn SecretRedactor>`) for the same reason
+/// `CredentialProvider` and `CancellationToken` are `Arc<dyn ...>` fields
+/// on `RequestContext` (see `./context.rs`). `RequestContext` does not yet
+/// carry a `secret_redactor` field in any of the 3 languages — that wiring
+/// lands with the concrete redaction implementation in issue #54, not in
+/// this type-only pass — so this trait itself has no `dyn` call site yet;
+/// `redact`'s default implementation bridges the generic and dyn-safe
+/// shapes via a JSON round-trip once one exists.
 pub trait SecretRedactor: Send + Sync {
     fn classify(&self, field_name: &str, value: &serde_json::Value) -> SecretClassification;
 

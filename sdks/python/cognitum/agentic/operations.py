@@ -7,10 +7,10 @@ implementation ships in this pass.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import (
     Any,
-    AsyncIterator,
     Generic,
     Literal,
     Protocol,
