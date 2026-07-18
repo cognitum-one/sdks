@@ -176,3 +176,20 @@ describe("SseParser: empty data buffer on dispatch", () => {
     expect(events).toEqual([]);
   });
 });
+
+describe("SseParser: id: field validation (cross-language parity with Python/Rust)", () => {
+  it("accepts an id: value containing a space", () => {
+    // Only a NUL byte disqualifies an `id:` value (see the doc comment on
+    // `SseEvent.id`) -- a space is ordinary, valid SSE and must pass
+    // through untouched, matching the Python and Rust parsers.
+    const parser = new SseParser();
+    const events = feedAll(parser, ["data: x\nid: has space\n\n"]);
+    expect(events).toEqual([{ event: undefined, data: "x", id: "has space", retry: undefined }]);
+  });
+
+  it("rejects (resets to undefined) an id: value containing a NUL byte", () => {
+    const parser = new SseParser();
+    const events = feedAll(parser, ["data: x\nid: has\x00nul\n\n"]);
+    expect(events).toEqual([{ event: undefined, data: "x", id: undefined, retry: undefined }]);
+  });
+});

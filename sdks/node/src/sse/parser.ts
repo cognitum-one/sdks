@@ -270,7 +270,16 @@ export class SseParser {
         break;
       }
       case "id":
-        if (!value.includes(" ")) this.eventId = value;
+        // Reject only on a NUL byte, matching the doc comment on
+        // `SseEvent.id` above and the Python/Rust parsers — a space in an
+        // `id:` value is valid SSE and must be accepted. (Previously this
+        // NUL check was written as a raw, invisible NUL byte inside the
+        // string literal rather than the `\0` escape — functionally
+        // identical, but indistinguishable from a stray space in most
+        // editors/diff viewers, which is almost certainly why this was
+        // mis-flagged as space-rejecting logic. Written explicitly now to
+        // remove that landmine.)
+        if (!value.includes("\0")) this.eventId = value;
         break;
       case "retry":
         if (/^[0-9]+$/.test(value)) this.retryMs = Number(value);

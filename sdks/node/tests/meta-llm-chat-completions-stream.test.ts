@@ -55,6 +55,42 @@ function streamingResponse(chunks: string[], options: { failAfter?: number } = {
   } as unknown as Response;
 }
 
+/**
+ * Builds a fetch-compatible streaming Response whose body enqueues `chunks`
+ * once (via `start`, not `pull`) and then deliberately NEVER closes or
+ * errors — simulating a server that accepted the connection, sent some
+ * bytes (or none at all, if `chunks` is empty), and then went silent
+ * without ever closing the socket. Also records whether the request's
+ * `AbortSignal` was ever aborted, so the timeout tests can confirm the
+ * fix actually releases the hung connection rather than merely giving up
+ * on reading it.
+ */
+function hangingStreamResponse(
+  chunks: string[],
+  signal: AbortSignal,
+  abortState: { aborted: boolean },
+): Response {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(enc.encode(chunk));
+      // No controller.close() / controller.error() call, ever — the
+      // "hang" is the whole point of this helper.
+    },
+  });
+  signal.addEventListener("abort", () => {
+    abortState.aborted = true;
+  });
+  return {
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    headers: new Headers({ "content-type": "text/event-stream" }),
+    body,
+    text: () => Promise.resolve(""),
+    json: () => Promise.resolve({}),
+  } as unknown as Response;
+}
+
 async function collect<T>(iterable: AsyncGenerator<T, void, void>): Promise<{ values: T[]; error?: unknown }> {
   const values: T[] = [];
   try {
@@ -167,4 +203,77 @@ describe("MetaLlmClient.chat.completionsStream() — no retry after first byte",
       retryable: false,
     });
   });
+});
+
+describe("MetaLlmClient.chat.completionsStream() — idle timeout on a silently-hanging stream", () => {
+  it("errors with a typed idle_timeout after the stream goes silent past idleTimeoutMs, preserving prior events", async () => {
+    // Two valid events land immediately, then the server goes silent
+    // forever without closing the socket — this is exactly the "silently
+    // hanging server" bug: without racing the read against the idle
+    // budget, `reader.read()` blocks forever regardless of idleTimeoutMs.
+    const chunks = [
+      'data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n',
+      'data: {"choices":[{"index":0,"delta":{"content":"before the hang"},"finish_reason":null}]}\n\n',
+    ];
+    const abortState = { aborted: false };
+    const fetchSpy = vi.fn(async (_url: string, init?: RequestInit) =>
+      hangingStreamResponse(chunks, init!.signal as AbortSignal, abortState),
+    );
+    const client = new MetaLlmClient({
+      baseUrl: BASE_URL,
+      transport: fetchSpy,
+      credentialProvider: makeCredentialProvider(),
+    });
+
+    const { values, error } = await collect(
+      client.chat.completionsStream(chatRequest(), {
+        requestContext: { timeBudget: { idleTimeoutMs: 30 } },
+      }),
+    );
+
+    const accumulator = new ChatCompletionsStreamAccumulator();
+    for (const envelope of values) accumulator.absorb(envelope);
+    const snapshot = accumulator.snapshot();
+    expect(snapshot.contentByChoice[0]).toBe("before the hang");
+    expect(snapshot.completed).toBe(false);
+
+    expect(error).toMatchObject({
+      kind: "deadline_exceeded",
+      code: "idle_timeout",
+      retryable: false,
+    });
+    expect((error as { details?: { partial?: boolean } }).details?.partial).toBe(true);
+    expect(abortState.aborted).toBe(true);
+  }, 5000);
+});
+
+describe("MetaLlmClient.chat.completionsStream() — first-byte timeout on a silently-hanging stream", () => {
+  it("errors with a typed first_byte_timeout when no byte ever arrives past firstByteTimeoutMs", async () => {
+    // No chunks at all — the connection is accepted but the server never
+    // sends a single byte.
+    const abortState = { aborted: false };
+    const fetchSpy = vi.fn(async (_url: string, init?: RequestInit) =>
+      hangingStreamResponse([], init!.signal as AbortSignal, abortState),
+    );
+    const client = new MetaLlmClient({
+      baseUrl: BASE_URL,
+      transport: fetchSpy,
+      credentialProvider: makeCredentialProvider(),
+    });
+
+    const { values, error } = await collect(
+      client.chat.completionsStream(chatRequest(), {
+        requestContext: { timeBudget: { firstByteTimeoutMs: 30 } },
+      }),
+    );
+
+    expect(values).toEqual([]);
+    expect(error).toMatchObject({
+      kind: "deadline_exceeded",
+      code: "first_byte_timeout",
+      retryable: false,
+    });
+    expect((error as { details?: { partial?: boolean } }).details?.partial).toBe(true);
+    expect(abortState.aborted).toBe(true);
+  }, 5000);
 });

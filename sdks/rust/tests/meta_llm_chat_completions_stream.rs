@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use cognitum_one::agentic::{
     AgenticError, AgenticErrorKind, StaticApiKeyCredentialProvider,
-    StaticApiKeyCredentialProviderOptions,
+    StaticApiKeyCredentialProviderOptions, TimeBudget,
 };
 use cognitum_one::meta_llm::stream::ChatCompletionsStreamAccumulator;
 use cognitum_one::meta_llm::types::{
@@ -276,4 +276,156 @@ async fn no_retry_after_first_byte_on_mid_stream_disconnect() {
         1,
         "exactly one HTTP attempt -- no retry after the first response byte"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Idle timeout on a silently-hanging stream -- a server that accepts the
+// connection, sends some bytes, then goes silent WITHOUT closing the socket
+// must still be bounded by `idle_timeout_ms`. Raw TCP (like the disconnect
+// test above) so the connection can be held open past the configured
+// timeout without ever completing the response.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn idle_timeout_preserves_partial_state_and_errors() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        if let Ok((mut socket, _)) = listener.accept().await {
+            let mut buf = [0u8; 4096];
+            let _ = socket.read(&mut buf).await;
+
+            let event = "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n{:x}\r\n{}\r\n",
+                event.len(),
+                event
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.flush().await;
+            // Go silent WITHOUT closing -- well past the test's 30ms idle
+            // budget, but bounded so this task doesn't outlive the test
+            // process if something goes wrong.
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            drop(socket);
+        }
+    });
+
+    let base_url = format!("http://{addr}");
+    let mut config = insecure_config(&base_url);
+    config.credential_provider = Some(credential_provider(&base_url));
+    let client = MetaLlmClient::new(config).unwrap();
+
+    let time_budget = TimeBudget {
+        idle_timeout_ms: Some(30),
+        ..Default::default()
+    };
+
+    let mut stream = client
+        .chat_completions_stream(&chat_request(), Some(time_budget), None)
+        .await
+        .unwrap();
+
+    let mut accumulator = ChatCompletionsStreamAccumulator::new();
+    let mut terminal_error: Option<AgenticError> = None;
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            match stream.next_envelope().await {
+                Ok(Some(envelope)) => accumulator.absorb(&envelope),
+                Ok(None) => break,
+                Err(err) => {
+                    terminal_error = Some(err);
+                    break;
+                }
+            }
+        }
+    })
+    .await;
+    assert!(
+        outcome.is_ok(),
+        "next_envelope() never resolved -- the idle timeout was not enforced against the blocking read"
+    );
+
+    let err = terminal_error.expect("expected an idle timeout error");
+    assert_eq!(err.kind, AgenticErrorKind::DeadlineExceeded);
+    assert_eq!(err.code.as_deref(), Some("idle_timeout"));
+    assert!(!err.retryable);
+    let details = err.details.expect("details should be present");
+    assert_eq!(details.get("partial").and_then(|v| v.as_bool()), Some(true));
+}
+
+// ---------------------------------------------------------------------------
+// First-byte timeout on a silently-hanging stream -- a server that accepts
+// the connection and never sends a single byte must be bounded by
+// `first_byte_timeout_ms`.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn first_byte_timeout_errors_when_no_byte_ever_arrives() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        if let Ok((mut socket, _)) = listener.accept().await {
+            let mut buf = [0u8; 4096];
+            let _ = socket.read(&mut buf).await;
+            // Send full HTTP response headers (so the pre-byte connect/send
+            // phase completes normally and `chat_completions_stream()`
+            // returns a live stream) but then never write a single body
+            // chunk -- `first_byte_timeout_ms` governs the wait for the
+            // first BODY byte, not the initial headers.
+            let response =
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n";
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.flush().await;
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            drop(socket);
+        }
+    });
+
+    let base_url = format!("http://{addr}");
+    let mut config = insecure_config(&base_url);
+    config.credential_provider = Some(credential_provider(&base_url));
+    let client = MetaLlmClient::new(config).unwrap();
+
+    let time_budget = TimeBudget {
+        first_byte_timeout_ms: Some(30),
+        ..Default::default()
+    };
+
+    // Headers arrive normally, so `chat_completions_stream()` itself
+    // returns quickly -- the hang (and the fix under test) is entirely
+    // inside `next_envelope()`'s wait for the first body byte. The outer
+    // `tokio::time::timeout` is just a test-suite safety net: if the fix
+    // regresses and this genuinely hangs, the test fails loudly instead of
+    // stalling the whole suite.
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        let mut stream = client
+            .chat_completions_stream(&chat_request(), Some(time_budget), None)
+            .await
+            .expect("stream should open even though the server never answers");
+
+        let mut terminal_error: Option<AgenticError> = None;
+        loop {
+            match stream.next_envelope().await {
+                Ok(Some(_envelope)) => {}
+                Ok(None) => break,
+                Err(err) => {
+                    terminal_error = Some(err);
+                    break;
+                }
+            }
+        }
+        terminal_error
+    })
+    .await;
+
+    let terminal_error = outcome
+        .expect("next_envelope() never resolved -- the first-byte timeout was not enforced")
+        .expect("expected a first-byte timeout error");
+
+    assert_eq!(terminal_error.kind, AgenticErrorKind::DeadlineExceeded);
+    assert_eq!(terminal_error.code.as_deref(), Some("first_byte_timeout"));
+    assert!(!terminal_error.retryable);
 }

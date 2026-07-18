@@ -55,8 +55,10 @@ declare class SseParseError extends Error {
     readonly code: "line_too_long" | "buffer_overflow" | "too_many_malformed_events";
     constructor(code: SseParseError["code"], message: string);
 }
-/** Informational summary returned by {@link SseParser.finish}. */
+/** Result of {@link SseParser.finish}. */
 interface SseParserFinishResult {
+    /** Any final event resolvable only at true end-of-stream (see {@link SseParser.finish}). */
+    events: SseEvent[];
     /** `true` if bytes for an event were buffered but never dispatched (no trailing blank line). */
     hadUndispatchedData: boolean;
     /** Total malformed/oversized lines or events dropped over the parser's lifetime. */
@@ -86,23 +88,33 @@ declare class SseParser {
      */
     feed(chunk: Uint8Array): SseEvent[];
     /**
-     * Signal end of stream (no more bytes will arrive). Any undispatched
-     * partial event/line is dropped, matching the SSE spec: dispatch only
-     * happens on a blank line, and a stream that closes mid-event never
-     * sends one. This does NOT throw — whether an incomplete stream is an
-     * error is protocol-specific (e.g. "did we see `[DONE]`?"), which is the
-     * caller's decision, not this generic parser's.
+     * Signal end of stream (no more bytes will ever arrive). Resolves the one
+     * ambiguity `feed()` cannot: a trailing lone CR with nothing after it is
+     * held back by `feed()` because a following LF (making it CRLF) might
+     * still arrive — at true EOF that ambiguity is resolved (no more bytes
+     * are coming, so a trailing CR IS a terminator), and this may therefore
+     * flush one final event. Any OTHER undispatched partial event/line
+     * (i.e. real data with no terminator at all) is dropped, matching the
+     * SSE spec: dispatch only happens on a blank line, and a stream that
+     * closes mid-event never sends one. This does NOT throw — whether an
+     * incomplete stream is an error is protocol-specific (e.g. "did we see
+     * `[DONE]`?"), which is the caller's decision, not this generic parser's.
      */
     finish(): SseParserFinishResult;
     private appendToBuffer;
     /**
      * Removes and returns the next complete line's raw bytes (terminator
      * excluded), or `undefined` if no complete line is available yet.
-     * Accepts LF, CRLF, and lone CR (SSE/HTML spec line-terminator rule) —
-     * a trailing CR with no following byte yet is NOT treated as a
-     * terminator until either a following LF/non-LF byte or `finish()`
-     * disambiguates it, so a CRLF split exactly at the CR/LF boundary
-     * across two `feed()` calls is handled correctly.
+     * Accepts LF, CRLF, and lone CR (SSE/HTML spec line-terminator rule).
+     *
+     * A trailing CR with no following byte yet is ambiguous — it might be
+     * the first half of a CRLF pair whose LF just hasn't arrived, or it
+     * might be a lone-CR terminator. `feed()` calls this with `atEof=false`
+     * and withholds judgement until a following byte (or true end of
+     * stream) disambiguates it, so a CRLF pair split exactly at the CR/LF
+     * boundary across two `feed()` calls is handled correctly. `finish()`
+     * calls this with `atEof=true`, resolving that same trailing CR as a
+     * valid terminator since no more bytes will ever arrive.
      */
     private takeLine;
     private noteMalformed;

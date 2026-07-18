@@ -265,3 +265,26 @@ fn does_not_dispatch_when_only_event_field_set() {
     let events = feed_all(&mut parser, &[b"event: ping\n\n"]);
     assert!(events.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// id: field validation (cross-language parity with Python/Node)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn id_field_accepts_a_value_containing_a_space() {
+    // Only a NUL byte disqualifies an `id:` value -- a space is ordinary,
+    // valid SSE and must pass through untouched, matching the Python and
+    // Node parsers.
+    let mut parser = SseParser::new();
+    let events = feed_all(&mut parser, &[b"data: x\nid: has space\n\n"]);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].id.as_deref(), Some("has space"));
+}
+
+#[test]
+fn id_field_rejects_a_value_containing_a_nul_byte() {
+    let mut parser = SseParser::new();
+    let events = feed_all(&mut parser, &[b"data: x\nid: has\x00nul\n\n"]);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].id, None);
+}

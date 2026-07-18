@@ -229,9 +229,22 @@ async def _read_sse_body(
                         sequence_box[0],
                     )
 
-            remaining_wait = None
+            # Bound the otherwise-unbounded `body_iter.__anext__()` await
+            # against whichever budget is smallest, so a server that accepts
+            # the connection and then goes silent without closing the
+            # socket cannot hang this generator forever. Previously this
+            # only raced against `idle_limit_ms` -- a caller who set ONLY
+            # `request_deadline_ms` (no idle/first-byte timeout) got no
+            # race at all and could hang past their configured deadline.
+            remaining_wait_candidates: list[float] = []
             if idle_limit_ms is not None:
-                remaining_wait = max(0.0, idle_limit_ms / 1000 - (now - last_byte_at))
+                idle_remaining = idle_limit_ms / 1000 - (now - last_byte_at)
+                remaining_wait_candidates.append(max(0.0, idle_remaining))
+            if time_budget is not None and time_budget.request_deadline_ms is not None:
+                remaining_wait_candidates.append(
+                    max(0.0, time_budget.request_deadline_ms / 1000 - (now - stream_started_at))
+                )
+            remaining_wait = min(remaining_wait_candidates) if remaining_wait_candidates else None
 
             try:
                 if remaining_wait is not None:

@@ -250,6 +250,34 @@ impl ChatCompletionsStream {
         }
     }
 
+    /// The smallest remaining budget (in ms) that must elapse before the
+    /// NEXT chunk read is timed out, or `None` if no relevant budget is
+    /// configured at all. Mirrors whichever of the precise idle/first-byte/
+    /// deadline checks above would fire first -- used only to bound the
+    /// otherwise-unbounded `self.response.chunk().await` call below; the
+    /// precise check re-run (via `continue`) after a timeout is what
+    /// actually decides (and codes) the error, exactly the pattern already
+    /// used by this same method's Python counterpart ("the top-of-loop
+    /// deadline check will raise precisely").
+    fn remaining_budget_ms(&self) -> Option<u64> {
+        let budget = self.time_budget.as_ref()?;
+        let mut candidates: Vec<u64> = Vec::new();
+        if let Some(deadline_ms) = budget.request_deadline_ms {
+            let elapsed_ms = self.stream_started_at.elapsed().as_millis() as u64;
+            candidates.push(deadline_ms.saturating_sub(elapsed_ms));
+        }
+        let idle_limit_ms = if self.received_first_byte {
+            budget.idle_timeout_ms
+        } else {
+            budget.first_byte_timeout_ms
+        };
+        if let Some(idle_limit_ms) = idle_limit_ms {
+            let elapsed_ms = self.last_byte_at.elapsed().as_millis() as u64;
+            candidates.push(idle_limit_ms.saturating_sub(elapsed_ms));
+        }
+        candidates.into_iter().min()
+    }
+
     fn push_envelopes(&mut self, raw_event: &crate::sse::SseEvent) {
         let decoded = decode_openai_sse_event(raw_event);
         for event in decoded.events {
@@ -354,7 +382,34 @@ impl ChatCompletionsStream {
                 }
             }
 
-            match self.response.chunk().await {
+            // Bound the otherwise-unbounded blocking read against whichever
+            // budget is smallest, so a server that accepts the connection
+            // and then goes silent without closing the socket cannot hang
+            // this `next_envelope` call forever (previously the idle/
+            // first-byte/deadline budgets were only checked *before* this
+            // await, never enforced against it).
+            let chunk_result = if let Some(remaining_ms) = self.remaining_budget_ms() {
+                match tokio::time::timeout(
+                    Duration::from_millis(remaining_ms),
+                    self.response.chunk(),
+                )
+                .await
+                {
+                    Ok(inner) => inner,
+                    Err(_elapsed) => {
+                        // Timed out waiting for a chunk. Loop back to the
+                        // top: the precise checks above (using a fresh
+                        // `Instant::now()`) determine and set `self.finished`
+                        // to the correctly-coded error (request_deadline_
+                        // exceeded / idle_timeout / first_byte_timeout).
+                        continue;
+                    }
+                }
+            } else {
+                self.response.chunk().await
+            };
+
+            match chunk_result {
                 Ok(Some(bytes)) => {
                     self.received_first_byte = true;
                     self.last_byte_at = Instant::now();

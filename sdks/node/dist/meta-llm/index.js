@@ -427,7 +427,7 @@ var SseParser = class {
     this.appendToBuffer(chunk);
     const events = [];
     for (; ; ) {
-      const line = this.takeLine();
+      const line = this.takeLine(false);
       if (line === void 0) break;
       const event = this.processLine(line);
       if (event) events.push(event);
@@ -435,15 +435,28 @@ var SseParser = class {
     return events;
   }
   /**
-   * Signal end of stream (no more bytes will arrive). Any undispatched
-   * partial event/line is dropped, matching the SSE spec: dispatch only
-   * happens on a blank line, and a stream that closes mid-event never
-   * sends one. This does NOT throw — whether an incomplete stream is an
-   * error is protocol-specific (e.g. "did we see `[DONE]`?"), which is the
-   * caller's decision, not this generic parser's.
+   * Signal end of stream (no more bytes will ever arrive). Resolves the one
+   * ambiguity `feed()` cannot: a trailing lone CR with nothing after it is
+   * held back by `feed()` because a following LF (making it CRLF) might
+   * still arrive — at true EOF that ambiguity is resolved (no more bytes
+   * are coming, so a trailing CR IS a terminator), and this may therefore
+   * flush one final event. Any OTHER undispatched partial event/line
+   * (i.e. real data with no terminator at all) is dropped, matching the
+   * SSE spec: dispatch only happens on a blank line, and a stream that
+   * closes mid-event never sends one. This does NOT throw — whether an
+   * incomplete stream is an error is protocol-specific (e.g. "did we see
+   * `[DONE]`?"), which is the caller's decision, not this generic parser's.
    */
   finish() {
+    const events = [];
+    for (; ; ) {
+      const line = this.takeLine(true);
+      if (line === void 0) break;
+      const event = this.processLine(line);
+      if (event) events.push(event);
+    }
     return {
+      events,
       hadUndispatchedData: this.dataLines.length > 0 || this.buffer.length > 0,
       malformedEventCount: this.malformedCount
     };
@@ -463,13 +476,18 @@ var SseParser = class {
   /**
    * Removes and returns the next complete line's raw bytes (terminator
    * excluded), or `undefined` if no complete line is available yet.
-   * Accepts LF, CRLF, and lone CR (SSE/HTML spec line-terminator rule) —
-   * a trailing CR with no following byte yet is NOT treated as a
-   * terminator until either a following LF/non-LF byte or `finish()`
-   * disambiguates it, so a CRLF split exactly at the CR/LF boundary
-   * across two `feed()` calls is handled correctly.
+   * Accepts LF, CRLF, and lone CR (SSE/HTML spec line-terminator rule).
+   *
+   * A trailing CR with no following byte yet is ambiguous — it might be
+   * the first half of a CRLF pair whose LF just hasn't arrived, or it
+   * might be a lone-CR terminator. `feed()` calls this with `atEof=false`
+   * and withholds judgement until a following byte (or true end of
+   * stream) disambiguates it, so a CRLF pair split exactly at the CR/LF
+   * boundary across two `feed()` calls is handled correctly. `finish()`
+   * calls this with `atEof=true`, resolving that same trailing CR as a
+   * valid terminator since no more bytes will ever arrive.
    */
-  takeLine() {
+  takeLine(atEof) {
     for (let i = 0; i < this.buffer.length; i += 1) {
       const byte = this.buffer[i];
       if (byte === LF) {
@@ -482,6 +500,11 @@ var SseParser = class {
           const consumed = this.buffer[i + 1] === LF ? i + 2 : i + 1;
           const line = this.buffer.slice(0, i);
           this.buffer = this.buffer.slice(consumed);
+          return line;
+        }
+        if (atEof) {
+          const line = this.buffer.slice(0, i);
+          this.buffer = this.buffer.slice(i + 1);
           return line;
         }
         return void 0;
@@ -664,7 +687,8 @@ async function* chatCompletionsStreamImpl(deps, request, requestContext) {
   const timeBudget = requestContext?.timeBudget;
   const cancellation = requestContext?.cancellation;
   const requestId = requestContext?.requestId ?? newRequestId();
-  const response = await openStreamWithPreByteRetry(deps, request, requestId);
+  const abortController = new AbortController();
+  const response = await openStreamWithPreByteRetry(deps, request, requestId, abortController.signal);
   if (!response.body) {
     throw new AgenticError("protocol", `${OPERATION} response had no readable body`, {
       product: PRODUCT3,
@@ -674,9 +698,9 @@ async function* chatCompletionsStreamImpl(deps, request, requestContext) {
       code: "no_response_body"
     });
   }
-  yield* readSseBody(response.body, requestId, timeBudget, cancellation);
+  yield* readSseBody(response.body, requestId, timeBudget, cancellation, abortController);
 }
-async function openStreamWithPreByteRetry(deps, request, requestId) {
+async function openStreamWithPreByteRetry(deps, request, requestId, signal) {
   let credential = await requireCredential(deps, OPERATION);
   const body = JSON.stringify({ ...request, stream: true });
   const retryPolicy = DEFAULT_RETRY_POLICY;
@@ -693,7 +717,7 @@ async function openStreamWithPreByteRetry(deps, request, requestId) {
     const url = `${deps.baseUrl}/v1/chat/completions`;
     let response;
     try {
-      response = await deps.transport(url, { method: "POST", headers, body });
+      response = await deps.transport(url, { method: "POST", headers, body, signal });
     } catch (cause) {
       throw new AgenticError("transport", `${OPERATION} request failed: ${cause}`, {
         product: PRODUCT3,
@@ -735,7 +759,41 @@ function deadlineError(operation, requestId, code, message, sequence) {
     details: { partial: true, eventsReceived: sequence }
   });
 }
-async function* readSseBody(body, requestId, timeBudget, cancellation) {
+function buildEnvelopes(rawEvent, requestId, nextSequence) {
+  const { events, unknownFields } = decodeOpenAiSseEvent(rawEvent);
+  return events.map((event) => ({
+    event,
+    sequence: nextSequence(),
+    receivedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    requestId,
+    rawEventName: rawEvent.event,
+    unknownFields
+  }));
+}
+function remainingBudgetMs(now, streamStartedAt, lastByteAt, receivedFirstByte, timeBudget) {
+  if (!timeBudget) return void 0;
+  const candidates = [];
+  if (timeBudget.requestDeadlineMs !== void 0) {
+    candidates.push(Math.max(0, timeBudget.requestDeadlineMs - (now - streamStartedAt)));
+  }
+  const idleLimit = receivedFirstByte ? timeBudget.idleTimeoutMs : timeBudget.firstByteTimeoutMs;
+  if (idleLimit !== void 0) {
+    candidates.push(Math.max(0, idleLimit - (now - lastByteAt)));
+  }
+  return candidates.length > 0 ? Math.min(...candidates) : void 0;
+}
+function raceReadAgainstBudget(reader, remainingMs) {
+  const readPromise = reader.read();
+  if (remainingMs === void 0) return readPromise;
+  readPromise.catch(() => {
+  });
+  let timer;
+  const timeoutPromise = new Promise((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), remainingMs);
+  });
+  return Promise.race([readPromise, timeoutPromise]).finally(() => clearTimeout(timer));
+}
+async function* readSseBody(body, requestId, timeBudget, cancellation, abortController) {
   const reader = body.getReader();
   const parser = new SseParser();
   let sequence = 0;
@@ -775,9 +833,15 @@ async function* readSseBody(body, requestId, timeBudget, cancellation) {
           sequence
         );
       }
+      const remainingMs = remainingBudgetMs(now, streamStartedAt, lastByteAt, receivedFirstByte, timeBudget);
       let readResult;
       try {
-        readResult = await reader.read();
+        const raced = await raceReadAgainstBudget(reader, remainingMs);
+        if (raced === "timeout") {
+          abortController.abort();
+          continue;
+        }
+        readResult = raced;
       } catch (cause) {
         throw new AgenticError("transport", `${OPERATION} stream read failed: ${cause}`, {
           product: PRODUCT3,
@@ -807,19 +871,30 @@ async function* readSseBody(body, requestId, timeBudget, cancellation) {
         });
       }
       for (const rawEvent of rawEvents) {
-        const { events, unknownFields } = decodeOpenAiSseEvent(rawEvent);
-        for (const event of events) {
-          sequence += 1;
-          if (event.type === "done" || event.type === "finish_reason") sawTerminal = true;
-          yield {
-            event,
-            sequence,
-            receivedAt: (/* @__PURE__ */ new Date()).toISOString(),
-            requestId,
-            rawEventName: rawEvent.event,
-            unknownFields
-          };
+        for (const envelope of buildEnvelopes(rawEvent, requestId, () => sequence += 1)) {
+          if (envelope.event.type === "done" || envelope.event.type === "finish_reason") sawTerminal = true;
+          yield envelope;
         }
+      }
+    }
+    let finishResult;
+    try {
+      finishResult = parser.finish();
+    } catch (cause) {
+      throw new AgenticError("protocol", `${OPERATION} SSE parse failure at end of stream: ${cause}`, {
+        product: PRODUCT3,
+        operation: OPERATION,
+        requestId,
+        retryable: false,
+        code: "sse_parse_error",
+        details: { partial: true, eventsReceived: sequence },
+        cause
+      });
+    }
+    for (const rawEvent of finishResult.events) {
+      for (const envelope of buildEnvelopes(rawEvent, requestId, () => sequence += 1)) {
+        if (envelope.event.type === "done" || envelope.event.type === "finish_reason") sawTerminal = true;
+        yield envelope;
       }
     }
   } finally {

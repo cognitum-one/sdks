@@ -170,3 +170,21 @@ class TestEmptyDataBufferOnDispatch:
         parser = SseParser()
         events = _feed_all(parser, ["event: ping\n\n"])
         assert events == []
+
+
+class TestIdFieldValidation:
+    """Cross-language parity with Node/Rust: only a NUL byte disqualifies an
+    `id:` value -- a space is ordinary, valid SSE and must be accepted.
+    """
+
+    def test_accepts_a_value_containing_a_space(self) -> None:
+        parser = SseParser()
+        events = _feed_all(parser, ["data: x\nid: has space\n\n"])
+        assert len(events) == 1
+        assert events[0].id == "has space"
+
+    def test_rejects_a_value_containing_a_nul_byte(self) -> None:
+        parser = SseParser()
+        events = _feed_all(parser, ["data: x\nid: has\x00nul\n\n"])
+        assert len(events) == 1
+        assert events[0].id is None

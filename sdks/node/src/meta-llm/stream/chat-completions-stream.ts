@@ -60,7 +60,11 @@ export async function* chatCompletionsStreamImpl(
   const cancellation: CancellationToken | undefined = requestContext?.cancellation;
   const requestId = requestContext?.requestId ?? newRequestId();
 
-  const response = await openStreamWithPreByteRetry(deps, request, requestId);
+  // Owns the underlying HTTP request so a budget timeout (see `readSseBody`)
+  // can actually abort the hung connection rather than merely giving up on
+  // reading it (the socket/response body would otherwise sit open forever).
+  const abortController = new AbortController();
+  const response = await openStreamWithPreByteRetry(deps, request, requestId, abortController.signal);
 
   if (!response.body) {
     throw new AgenticError("protocol", `${OPERATION} response had no readable body`, {
@@ -72,7 +76,7 @@ export async function* chatCompletionsStreamImpl(
     });
   }
 
-  yield* readSseBody(response.body, requestId, timeBudget, cancellation);
+  yield* readSseBody(response.body, requestId, timeBudget, cancellation, abortController);
 }
 
 /**
@@ -85,6 +89,7 @@ async function openStreamWithPreByteRetry(
   deps: NonstreamDeps,
   request: ChatCompletionRequest,
   requestId: string,
+  signal: AbortSignal,
 ): Promise<Response> {
   let credential = await requireCredential(deps, OPERATION);
   const body = JSON.stringify({ ...request, stream: true });
@@ -105,7 +110,7 @@ async function openStreamWithPreByteRetry(
     const url = `${deps.baseUrl}/v1/chat/completions`;
     let response: Response;
     try {
-      response = await deps.transport(url, { method: "POST", headers, body });
+      response = await deps.transport(url, { method: "POST", headers, body, signal });
     } catch (cause) {
       throw new AgenticError("transport", `${OPERATION} request failed: ${cause}`, {
         product: PRODUCT,
@@ -170,12 +175,69 @@ function buildEnvelopes(
   }));
 }
 
+/**
+ * The smallest remaining budget (in ms) that must elapse before the NEXT
+ * chunk read is timed out, or `undefined` if no relevant budget is
+ * configured at all. Mirrors whichever of the top-of-loop precise checks
+ * below would fire first — used only to bound the otherwise-unbounded
+ * `reader.read()` call; the precise check re-run after a race timeout is
+ * what actually decides (and codes) the error.
+ */
+function remainingBudgetMs(
+  now: number,
+  streamStartedAt: number,
+  lastByteAt: number,
+  receivedFirstByte: boolean,
+  timeBudget: TimeBudget | undefined,
+): number | undefined {
+  if (!timeBudget) return undefined;
+  const candidates: number[] = [];
+  if (timeBudget.requestDeadlineMs !== undefined) {
+    candidates.push(Math.max(0, timeBudget.requestDeadlineMs - (now - streamStartedAt)));
+  }
+  const idleLimit = receivedFirstByte ? timeBudget.idleTimeoutMs : timeBudget.firstByteTimeoutMs;
+  if (idleLimit !== undefined) {
+    candidates.push(Math.max(0, idleLimit - (now - lastByteAt)));
+  }
+  return candidates.length > 0 ? Math.min(...candidates) : undefined;
+}
+
+/**
+ * Races `reader.read()` against a timer for `remainingMs` (or reads
+ * unbounded if `remainingMs` is `undefined`, i.e. no budget configured).
+ * Returns `"timeout"` if the timer wins — the caller re-checks the precise
+ * budgets at the top of the loop (with a fresh `Date.now()`) to throw the
+ * correctly-coded error, exactly the pattern already used by the Python
+ * implementation of this same function ("the top-of-loop deadline check
+ * will raise precisely").
+ */
+function raceReadAgainstBudget(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  remainingMs: number | undefined,
+): Promise<ReadableStreamReadResult<Uint8Array> | "timeout"> {
+  const readPromise = reader.read();
+  if (remainingMs === undefined) return readPromise;
+  // A rejection here is otherwise unhandled if the timer wins the race
+  // below — attach a no-op handler so Node doesn't report it, while still
+  // letting `Promise.race` observe (and propagate) the same rejection if
+  // the read settles first.
+  readPromise.catch(() => {});
+
+  let timer: ReturnType<typeof setTimeout>;
+  const timeoutPromise = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), remainingMs);
+  });
+
+  return Promise.race([readPromise, timeoutPromise]).finally(() => clearTimeout(timer));
+}
+
 /** Post-byte phase: read the SSE body, applying idle/first-byte/total budgets and cooperative cancellation. */
 async function* readSseBody(
   body: ReadableStream<Uint8Array>,
   requestId: string,
   timeBudget: TimeBudget | undefined,
   cancellation: CancellationToken | undefined,
+  abortController: AbortController,
 ): AsyncGenerator<MetaLlmStreamEnvelope<OpenAiStreamEvent>, void, void> {
   const reader = body.getReader();
   const parser = new SseParser();
@@ -218,9 +280,27 @@ async function* readSseBody(
         );
       }
 
+      // Bound the otherwise-unbounded blocking read against whichever
+      // budget is smallest, so a server that accepts the connection and
+      // then goes silent without closing the socket cannot hang this
+      // generator forever (issue: idle/first-byte/deadline timeouts were
+      // previously only checked *before* this read, never enforced against
+      // it).
+      const remainingMs = remainingBudgetMs(now, streamStartedAt, lastByteAt, receivedFirstByte, timeBudget);
+
       let readResult: ReadableStreamReadResult<Uint8Array>;
       try {
-        readResult = await reader.read();
+        const raced = await raceReadAgainstBudget(reader, remainingMs);
+        if (raced === "timeout") {
+          // Abort the underlying fetch so the hung connection is actually
+          // released, then loop back to the top: the precise checks above
+          // (now using a fresh `Date.now()`) determine and throw the
+          // correctly-coded error (request_deadline_exceeded / idle_timeout
+          // / first_byte_timeout).
+          abortController.abort();
+          continue;
+        }
+        readResult = raced;
       } catch (cause) {
         throw new AgenticError("transport", `${OPERATION} stream read failed: ${cause}`, {
           product: PRODUCT,
