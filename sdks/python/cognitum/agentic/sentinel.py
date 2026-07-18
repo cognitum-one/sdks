@@ -11,9 +11,16 @@ Faithful to D13's exact mechanism (see
 2. Fixed-format matchers (bearer token, JWT, PEM private-key block,
    cloud-provider access-key pattern, pre-signed URL query parameter) run
    next.
-3. A Shannon-entropy fallback (>= 4.0 bits/char over a contiguous token of
-   >= 20 characters) runs ONLY if no fixed-format matcher hit -- a match is
-   classified by pattern first, entropy only as a fallback.
+3. A Shannon-entropy fallback over a contiguous token of >= 20 characters
+   runs ONLY if no fixed-format matcher hit -- a match is classified by
+   pattern first, entropy only as a fallback. The threshold is scoped to the
+   token's actual character set rather than one global cutoff: a 16-symbol
+   hex-only token (max possible entropy log2(16) = 4.0 bits/char) uses a 3.0
+   bits/char threshold, since real hex-encoded secrets never approach the
+   unreachable theoretical max (empirically 3.4-3.9 bits/char for 32/64-char
+   hex tokens); a broader alphanumeric/base64-like token keeps the original
+   4.0 bits/char threshold. This is the same charset-scoped-threshold
+   technique used by detect-secrets / truffleHog.
 4. Traversal is a bounded-depth-8 DFS: a value reached at depth 9 or deeper
    is replaced with ``[max-depth-exceeded]`` without further recursion.
    Cycles are broken by an object-identity ancestor set and replaced with
@@ -47,7 +54,13 @@ D12Category = Literal[
 ]
 
 _MAX_DEPTH = 8
+# Broader alphanumeric/base64-like alphabets (up to ~64 symbols, max possible
+# entropy ~6.0 bits/char) keep the original cutoff.
 _ENTROPY_THRESHOLD_BITS_PER_CHAR = 4.0
+# Pure hex alphabets (16 symbols, max possible entropy exactly 4.0 bits/char)
+# can never realistically reach 4.0 -- real hex-encoded secrets score
+# 3.4-3.9 bits/char -- so they get a charset-scoped, lower cutoff.
+_ENTROPY_THRESHOLD_HEX_BITS_PER_CHAR = 3.0
 _ENTROPY_MIN_TOKEN_LEN = 20
 
 _MAX_DEPTH_MARKER = "[max-depth-exceeded]"
@@ -140,15 +153,28 @@ _JWT_RE = re.compile(r"^[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}$", re.
 _PEM_PRIVATE_KEY_RE = re.compile(r"-----BEGIN[ A-Z0-9]*PRIVATE KEY-----")
 # AWS access/session key IDs (AKIA.../ASIA...) and Google API keys (AIza...).
 _CLOUD_ACCESS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|\bAIza[0-9A-Za-z_-]{35}\b")
-# Pre-signed URL query parameters (SigV4, generic "Signature=", Azure SAS).
+# Pre-signed URL query parameters (SigV4, generic "Signature="). Azure SAS
+# uses a bare `se=` (signed-expiry) param, which is over-broad matched alone
+# (any URL with a `se` query param would hit) -- require it co-occur with
+# `sig=` (the SAS signature param), which real SAS URLs always carry
+# alongside `se=`. Safe-direction tradeoff: this narrows false positives
+# without risking a missed real SAS URL. (Two plain regexes ANDed rather
+# than one lookahead-based regex, so the same logic ports unchanged to
+# Rust's ``regex`` crate, which has no lookaround support.)
 _PRESIGNED_URL_PARAM_RE = re.compile(
-    r"[?&](?:X-Amz-Signature|X-Amz-Credential|Signature|se)=", re.IGNORECASE
+    r"[?&](?:X-Amz-Signature|X-Amz-Credential|Signature)=", re.IGNORECASE
 )
+_AZURE_SAS_SE_RE = re.compile(r"[?&]se=", re.IGNORECASE)
+_AZURE_SAS_SIG_RE = re.compile(r"[?&]sig=", re.IGNORECASE)
 
 # Maximal runs of token-shaped characters (letters, digits, and the small
 # symbol set typical of base64/URL-safe secrets), used to find contiguous
 # candidates for the entropy fallback without over-matching plain prose.
 _TOKEN_RE = re.compile(r"[A-Za-z0-9+/=_.~-]+")
+
+# A token drawn purely from the 16-symbol hex alphabet gets the lower,
+# charset-scoped entropy threshold (see _ENTROPY_THRESHOLD_HEX_BITS_PER_CHAR).
+_HEX_CHARSET_RE = re.compile(r"^[0-9a-fA-F]+$")
 
 
 def _matches_fixed_format(value: str) -> bool:
@@ -158,6 +184,7 @@ def _matches_fixed_format(value: str) -> bool:
         or _PEM_PRIVATE_KEY_RE.search(value)
         or _CLOUD_ACCESS_KEY_RE.search(value)
         or _PRESIGNED_URL_PARAM_RE.search(value)
+        or (_AZURE_SAS_SE_RE.search(value) is not None and _AZURE_SAS_SIG_RE.search(value))
     )
 
 
@@ -174,10 +201,18 @@ def _shannon_entropy(token: str) -> float:
     return entropy
 
 
+def _entropy_threshold_for(token: str) -> float:
+    return (
+        _ENTROPY_THRESHOLD_HEX_BITS_PER_CHAR
+        if _HEX_CHARSET_RE.match(token)
+        else _ENTROPY_THRESHOLD_BITS_PER_CHAR
+    )
+
+
 def _matches_entropy_fallback(value: str) -> bool:
     for token in _TOKEN_RE.findall(value):
         if len(token) >= _ENTROPY_MIN_TOKEN_LEN and _shannon_entropy(token) >= (
-            _ENTROPY_THRESHOLD_BITS_PER_CHAR
+            _entropy_threshold_for(token)
         ):
             return True
     return False

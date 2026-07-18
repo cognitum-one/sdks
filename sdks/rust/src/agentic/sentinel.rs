@@ -11,9 +11,17 @@
 //! 2. Fixed-format matchers (bearer token, JWT, PEM private-key block,
 //!    cloud-provider access-key pattern, pre-signed URL query parameter)
 //!    run next.
-//! 3. A Shannon-entropy fallback (>= 4.0 bits/char over a contiguous token
-//!    of >= 20 characters) runs ONLY if no fixed-format matcher hit — a
-//!    match is classified by pattern first, entropy only as a fallback.
+//! 3. A Shannon-entropy fallback over a contiguous token of >= 20 characters
+//!    runs ONLY if no fixed-format matcher hit — a match is classified by
+//!    pattern first, entropy only as a fallback. The threshold is scoped to
+//!    the token's actual character set rather than one global cutoff: a
+//!    16-symbol hex-only token (max possible entropy log2(16) = 4.0
+//!    bits/char) uses a 3.0 bits/char threshold, since real hex-encoded
+//!    secrets never approach the unreachable theoretical max (empirically
+//!    3.4-3.9 bits/char for 32/64-char hex tokens); a broader alphanumeric/
+//!    base64-like token keeps the original 4.0 bits/char threshold. This is
+//!    the same charset-scoped-threshold technique used by detect-secrets /
+//!    truffleHog.
 //! 4. Traversal is a bounded-depth-8 DFS: a value reached at depth 9 or
 //!    deeper is replaced with `[max-depth-exceeded]` without further
 //!    recursion. Cycles are broken by an identity visited-set and replaced
@@ -75,7 +83,13 @@ impl D12Category {
 }
 
 const MAX_DEPTH: usize = 8;
+// Broader alphanumeric/base64-like alphabets (up to ~64 symbols, max
+// possible entropy ~6.0 bits/char) keep the original cutoff.
 const ENTROPY_THRESHOLD_BITS_PER_CHAR: f64 = 4.0;
+// Pure hex alphabets (16 symbols, max possible entropy exactly 4.0
+// bits/char) can never realistically reach 4.0 — real hex-encoded secrets
+// score 3.4-3.9 bits/char — so they get a charset-scoped, lower cutoff.
+const ENTROPY_THRESHOLD_HEX_BITS_PER_CHAR: f64 = 3.0;
 const ENTROPY_MIN_TOKEN_LEN: usize = 20;
 
 const MAX_DEPTH_MARKER: &str = "[max-depth-exceeded]";
@@ -145,12 +159,25 @@ static PEM_PRIVATE_KEY_RE: LazyLock<Regex> =
 static CLOUD_ACCESS_KEY_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|\bAIza[0-9A-Za-z_-]{35}\b").unwrap()
 });
-// Pre-signed URL query parameters (SigV4, generic "Signature=", Azure SAS).
+// Pre-signed URL query parameters (SigV4, generic "Signature="). Azure SAS
+// uses a bare `se=` (signed-expiry) param, which is over-broad matched alone
+// (any URL with a `se` query param would hit) — require it co-occur with
+// `sig=` (the SAS signature param), which real SAS URLs always carry
+// alongside `se=`. Safe-direction tradeoff: this narrows false positives
+// without risking a missed real SAS URL. (Two plain regexes ANDed rather
+// than a single lookahead-based regex — the `regex` crate has no
+// lookaround support, so this also keeps the logic identical across all
+// three language implementations.)
 static PRESIGNED_URL_PARAM_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)[?&](?:X-Amz-Signature|X-Amz-Credential|Signature|se)=").unwrap());
+    LazyLock::new(|| Regex::new(r"(?i)[?&](?:X-Amz-Signature|X-Amz-Credential|Signature)=").unwrap());
+static AZURE_SAS_SE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)[?&]se=").unwrap());
+static AZURE_SAS_SIG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)[?&]sig=").unwrap());
 // Maximal runs of token-shaped characters, used to find contiguous
 // candidates for the entropy fallback without over-matching plain prose.
 static TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[A-Za-z0-9+/=_.~-]+").unwrap());
+// A token drawn purely from the 16-symbol hex alphabet gets the lower,
+// charset-scoped entropy threshold (see ENTROPY_THRESHOLD_HEX_BITS_PER_CHAR).
+static HEX_CHARSET_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9a-fA-F]+$").unwrap());
 
 fn matches_fixed_format(value: &str) -> bool {
     BEARER_TOKEN_RE.is_match(value)
@@ -158,6 +185,7 @@ fn matches_fixed_format(value: &str) -> bool {
         || PEM_PRIVATE_KEY_RE.is_match(value)
         || CLOUD_ACCESS_KEY_RE.is_match(value)
         || PRESIGNED_URL_PARAM_RE.is_match(value)
+        || (AZURE_SAS_SE_RE.is_match(value) && AZURE_SAS_SIG_RE.is_match(value))
 }
 
 /// Shannon entropy in bits/char over a string's character distribution.
@@ -180,11 +208,19 @@ fn shannon_entropy(token: &str) -> f64 {
         .sum()
 }
 
+fn entropy_threshold_for(token: &str) -> f64 {
+    if HEX_CHARSET_RE.is_match(token) {
+        ENTROPY_THRESHOLD_HEX_BITS_PER_CHAR
+    } else {
+        ENTROPY_THRESHOLD_BITS_PER_CHAR
+    }
+}
+
 fn matches_entropy_fallback(value: &str) -> bool {
     TOKEN_RE.find_iter(value).any(|m| {
         let token = m.as_str();
         token.chars().count() >= ENTROPY_MIN_TOKEN_LEN
-            && shannon_entropy(token) >= ENTROPY_THRESHOLD_BITS_PER_CHAR
+            && shannon_entropy(token) >= entropy_threshold_for(token)
     })
 }
 
@@ -328,6 +364,15 @@ mod tests {
     // High-entropy but not a recognized fixed format (no dots, no known prefix).
     const HIGH_ENTROPY_UNRECOGNIZED: &str = "Xk92LpQz8vT3mNc7Rw4YbHj1FdEa6Su0";
 
+    // Realistic 32/64-char hex-encoded secrets (e.g. API keys, session
+    // tokens, hashes) -- a very common real-world secret shape. Their
+    // per-string Shannon entropy is 3.46 / 3.68 bits/char: well above the
+    // hex-charset-scoped 3.0 threshold, but nowhere near the unreachable 4.0
+    // theoretical max for a 16-symbol alphabet that the old single global
+    // threshold required.
+    const HEX_SECRET_32: &str = "eee65f53e9421ce50211670eae679f02";
+    const HEX_SECRET_64: &str = "a4c123b1612dd272d1371c17149d439536b3216fdaeeb975729fae923d5a4fd1";
+
     // Long but genuinely low-entropy prose.
     const NORMAL_SENTENCE: &str = "The quick brown fox jumps over the lazy dog in the summer evening.";
 
@@ -411,6 +456,33 @@ mod tests {
         );
         let out = redactor.redact_value(json!({ "description": NORMAL_SENTENCE }));
         assert_eq!(out["description"], json!(NORMAL_SENTENCE));
+    }
+
+    #[test]
+    fn g_redacts_32_char_hex_secret_via_entropy_fallback() {
+        // This is the exact case that was silently failing before: a
+        // hex-only token's entropy (3.46 bits/char here) can never reach the
+        // 4.0 bits/char theoretical max for a 16-symbol alphabet, so a
+        // single global 4.0 threshold never fires for real hex secrets. The
+        // charset-scoped 3.0 threshold catches it.
+        let redactor = SentinelSecretRedactor::new();
+        assert_eq!(
+            redactor.classify("note", &json!(HEX_SECRET_32)),
+            SecretClassification::Secret
+        );
+        let out = redactor.redact_value(json!({ "note": HEX_SECRET_32 }));
+        assert_eq!(out["note"], json!("[redacted:high-entropy]"));
+    }
+
+    #[test]
+    fn h_redacts_64_char_hex_secret_via_entropy_fallback() {
+        let redactor = SentinelSecretRedactor::new();
+        assert_eq!(
+            redactor.classify("note", &json!(HEX_SECRET_64)),
+            SecretClassification::Secret
+        );
+        let out = redactor.redact_value(json!({ "note": HEX_SECRET_64 }));
+        assert_eq!(out["note"], json!("[redacted:high-entropy]"));
     }
 
     #[test]

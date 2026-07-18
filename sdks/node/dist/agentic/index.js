@@ -186,6 +186,7 @@ var StaticApiKeyCredentialProvider = class {
 // src/agentic/sentinel.ts
 var MAX_DEPTH = 8;
 var ENTROPY_THRESHOLD_BITS_PER_CHAR = 4;
+var ENTROPY_THRESHOLD_HEX_BITS_PER_CHAR = 3;
 var ENTROPY_MIN_TOKEN_LEN = 20;
 var MAX_DEPTH_MARKER = "[max-depth-exceeded]";
 var CYCLIC_MARKER = "[cyclic-reference]";
@@ -258,9 +259,11 @@ var BEARER_TOKEN_RE = /^bearer\s+[a-z0-9._~+/-]{16,}=*$/i;
 var JWT_RE = /^[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}$/i;
 var PEM_PRIVATE_KEY_RE = /-----BEGIN[ A-Z0-9]*PRIVATE KEY-----/;
 var CLOUD_ACCESS_KEY_RE = /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|\bAIza[0-9A-Za-z_-]{35}\b/;
-var PRESIGNED_URL_PARAM_RE = /[?&](?:X-Amz-Signature|X-Amz-Credential|Signature|se)=/i;
+var PRESIGNED_URL_PARAM_RE = /[?&](?:X-Amz-Signature|X-Amz-Credential|Signature)=/i;
+var AZURE_SAS_SE_RE = /[?&]se=/i;
+var AZURE_SAS_SIG_RE = /[?&]sig=/i;
 function matchesFixedFormat(value) {
-  return BEARER_TOKEN_RE.test(value) || JWT_RE.test(value) || PEM_PRIVATE_KEY_RE.test(value) || CLOUD_ACCESS_KEY_RE.test(value) || PRESIGNED_URL_PARAM_RE.test(value);
+  return BEARER_TOKEN_RE.test(value) || JWT_RE.test(value) || PEM_PRIVATE_KEY_RE.test(value) || CLOUD_ACCESS_KEY_RE.test(value) || PRESIGNED_URL_PARAM_RE.test(value) || AZURE_SAS_SE_RE.test(value) && AZURE_SAS_SIG_RE.test(value);
 }
 function shannonEntropy(token) {
   const counts = /* @__PURE__ */ new Map();
@@ -276,10 +279,14 @@ function shannonEntropy(token) {
   return entropy;
 }
 var TOKEN_RE = /[A-Za-z0-9+/=_.~-]+/g;
+var HEX_CHARSET_RE = /^[0-9a-fA-F]+$/;
+function entropyThresholdFor(token) {
+  return HEX_CHARSET_RE.test(token) ? ENTROPY_THRESHOLD_HEX_BITS_PER_CHAR : ENTROPY_THRESHOLD_BITS_PER_CHAR;
+}
 function matchesEntropyFallback(value) {
   const tokens = value.match(TOKEN_RE) ?? [];
   for (const token of tokens) {
-    if (token.length >= ENTROPY_MIN_TOKEN_LEN && shannonEntropy(token) >= ENTROPY_THRESHOLD_BITS_PER_CHAR) {
+    if (token.length >= ENTROPY_MIN_TOKEN_LEN && shannonEntropy(token) >= entropyThresholdFor(token)) {
       return true;
     }
   }

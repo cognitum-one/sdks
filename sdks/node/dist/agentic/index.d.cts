@@ -285,9 +285,17 @@ declare class StaticApiKeyCredentialProvider implements CredentialProvider {
  *   2. Fixed-format matchers (bearer token, JWT, PEM private-key block,
  *      cloud-provider access-key pattern, pre-signed URL query parameter)
  *      run next.
- *   3. A Shannon-entropy fallback (>= 4.0 bits/char over a contiguous token
- *      of >= 20 characters) runs ONLY if no fixed-format matcher hit — a
- *      match is classified by pattern first, entropy only as a fallback.
+ *   3. A Shannon-entropy fallback over a contiguous token of >= 20 characters
+ *      runs ONLY if no fixed-format matcher hit — a match is classified by
+ *      pattern first, entropy only as a fallback. The threshold is scoped to
+ *      the token's actual character set rather than one global cutoff: a
+ *      16-symbol hex-only token (max possible entropy log2(16) = 4.0 bits/
+ *      char) uses a 3.0 bits/char threshold, since real hex-encoded secrets
+ *      never approach the unreachable theoretical max (empirically 3.4-3.9
+ *      bits/char for 32/64-char hex tokens); a broader alphanumeric/
+ *      base64-like token keeps the original 4.0 bits/char threshold. This is
+ *      the same charset-scoped-threshold technique used by detect-secrets /
+ *      truffleHog.
  *   4. Traversal is a bounded-depth-8 DFS: a value reached at depth 9 or
  *      deeper is replaced with `[max-depth-exceeded]` without further
  *      recursion. Cycles are broken by an object-identity ancestor set and

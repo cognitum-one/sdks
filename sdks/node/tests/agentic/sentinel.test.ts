@@ -17,6 +17,15 @@ const BEARER_TOKEN = "Bearer AbCdEfGhIjKlMnOpQrStUvWxYz0123456789.-_ABCDEF";
 // High-entropy but not a recognized fixed format (no dots, no known prefix).
 const HIGH_ENTROPY_UNRECOGNIZED = "Xk92LpQz8vT3mNc7Rw4YbHj1FdEa6Su0";
 
+// Realistic 32/64-char hex-encoded secrets (e.g. API keys, session tokens,
+// hashes) -- a very common real-world secret shape. Their per-string Shannon
+// entropy is 3.46 / 3.68 bits/char: well above the hex-charset-scoped 3.0
+// threshold, but nowhere near the unreachable 4.0 theoretical max for a
+// 16-symbol alphabet that the old single global threshold required.
+const HEX_SECRET_32 = "eee65f53e9421ce50211670eae679f02";
+const HEX_SECRET_64 =
+  "a4c123b1612dd272d1371c17149d439536b3216fdaeeb975729fae923d5a4fd1";
+
 // Long but genuinely low-entropy prose.
 const NORMAL_SENTENCE =
   "The quick brown fox jumps over the lazy dog in the summer evening.";
@@ -82,6 +91,23 @@ describe("SentinelSecretRedactor", () => {
     expect(redactor.classify("description", NORMAL_SENTENCE)).toBe("public");
     const out = redactor.redact(input) as typeof input;
     expect(out.description).toBe(NORMAL_SENTENCE);
+  });
+
+  it("(g) redacts a 32-char hex-encoded secret via the entropy fallback (regression: hex never reaches the 4.0 global max)", () => {
+    // This is the exact case that was silently failing before: a hex-only
+    // token's entropy (3.46 bits/char here) can never reach the 4.0 bits/char
+    // theoretical max for a 16-symbol alphabet, so a single global 4.0
+    // threshold never fires for real hex secrets. The charset-scoped 3.0
+    // threshold catches it.
+    expect(redactor.classify("note", HEX_SECRET_32)).toBe("secret");
+    const out = redactor.redact({ note: HEX_SECRET_32 }) as { note: string };
+    expect(out.note).toBe("[redacted:high-entropy]");
+  });
+
+  it("(h) redacts a 64-char hex-encoded secret via the entropy fallback", () => {
+    expect(redactor.classify("note", HEX_SECRET_64)).toBe("secret");
+    const out = redactor.redact({ note: HEX_SECRET_64 }) as { note: string };
+    expect(out.note).toBe("[redacted:high-entropy]");
   });
 
   it("classify() consults the D12 key-name list independent of value shape", () => {
