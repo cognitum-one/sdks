@@ -20,19 +20,13 @@ use super::config::MetaLlmTelemetryEvent;
 use super::envelope::MetaLlmResponseMeta;
 use super::PRODUCT;
 
-/// A placeholder error for the five protocol operations whose HTTP logic
-/// is a follow-up issue (ADR-0024a §D2/§D3).
-pub(super) fn not_implemented(operation: &str) -> AgenticError {
-    unsupported(
-        operation,
-        format!(
-            "MetaLlmClient::{operation} is not implemented yet (ADR-0024a §D2/§D3 wire \
-             types only landed in issue #58 / M2 — HTTP logic is a follow-up issue)"
-        ),
-    )
-}
-
 /// Generic fail-closed `unsupported_capability` error, product/operation-scoped.
+/// Still used by `ready()` (ADR-0024a §D1: "when published" — no readiness
+/// endpoint is published yet). The five protocol operations all have real
+/// HTTP call logic now (`chat_completions`/`messages_create` in PR #86;
+/// `completions`/`responses`/`embeddings`/`messages_count_tokens` this
+/// pass), so the sibling `not_implemented()` placeholder helper that used
+/// to wrap this for them was removed.
 pub(super) fn unsupported(operation: &str, message: impl Into<String>) -> AgenticError {
     AgenticError::new(AgenticErrorKind::UnsupportedCapability, message.into())
         .with_product_operation(PRODUCT, operation)

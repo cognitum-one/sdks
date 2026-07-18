@@ -387,15 +387,6 @@ var PRODUCT3 = "meta-llm";
 function newRequestId2() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `req_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 }
-function notImplemented(operation) {
-  return Promise.reject(
-    new AgenticError(
-      "unsupported_capability",
-      `MetaLlmClient.${operation} is not implemented yet (ADR-0024a \xA7D2/\xA7D3 wire types only landed in issue #58 / M2 \u2014 HTTP logic is a follow-up issue)`,
-      { product: PRODUCT3, operation, retryable: false }
-    )
-  );
-}
 var MetaLlmClient = class {
   config;
   constructor(config) {
@@ -470,8 +461,21 @@ var MetaLlmClient = class {
       request
     )
   };
-  completions(_request, _options) {
-    return notImplemented("completions");
+  /**
+   * `POST /v1/completions` (legacy OpenAI completions). Real HTTP call
+   * logic (issue #58 / M2 continuation) — this is a "direct nonstream
+   * call whose accepted contract declares safe replay" per ADR-0024a §D7,
+   * the same class as `chat.completions`/`messages.create`, so it reuses
+   * `postJsonIdempotent` from `./nonstream.js` verbatim (idempotency-key
+   * generation, bounded 429/502/503 retry, single 401-refresh).
+   */
+  completions(request, options) {
+    return postJsonIdempotent(
+      this.nonstreamDeps(options),
+      "/v1/completions",
+      "completions",
+      request
+    );
   }
   messages = {
     /**
@@ -485,13 +489,48 @@ var MetaLlmClient = class {
       "messages.create",
       request
     ),
-    countTokens: (_request, _options) => notImplemented("messages.countTokens")
+    /**
+     * `POST /v1/messages/count_tokens`. Same "direct nonstream call"
+     * class as `messages.create` (ADR-0024a §D7) — reuses
+     * `postJsonIdempotent` verbatim.
+     */
+    countTokens: (request, options) => postJsonIdempotent(
+      this.nonstreamDeps(options),
+      "/v1/messages/count_tokens",
+      "messages.countTokens",
+      request
+    )
   };
-  responses(_request, _options) {
-    return notImplemented("responses");
+  /**
+   * `POST /v1/responses`. Current server is stateless: callers resend
+   * conversation input. `previousResponseId` is preview and MUST NOT be
+   * described as recovery (ADR-0024a §D3) — this method does not restore
+   * or synthesize any prior conversation state; it only sends `request`
+   * as given. Real HTTP call logic (issue #58 / M2 continuation) reuses
+   * `postJsonIdempotent` verbatim, same as `chat.completions`.
+   */
+  responses(request, options) {
+    return postJsonIdempotent(
+      this.nonstreamDeps(options),
+      "/v1/responses",
+      "responses",
+      request
+    );
   }
-  embeddings(_request, _options) {
-    return notImplemented("embeddings");
+  /**
+   * `POST /v1/embeddings`. Real HTTP call logic (issue #58 / M2
+   * continuation) reuses `postJsonIdempotent` verbatim — infrastructure is
+   * identical to the other direct nonstream operations even though
+   * embeddings has its own separate maturity gate criteria in ADR-0024a
+   * §D2 ("input limits, dimensions, usage, errors and auth published").
+   */
+  embeddings(request, options) {
+    return postJsonIdempotent(
+      this.nonstreamDeps(options),
+      "/v1/embeddings",
+      "embeddings",
+      request
+    );
   }
   /**
    * Close local connections and wait only. Never cancels a remote
