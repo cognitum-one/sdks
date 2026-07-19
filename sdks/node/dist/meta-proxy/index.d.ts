@@ -251,6 +251,17 @@ interface ResolvedMetaProxyClientConfig extends MetaProxyClientConfig {
 /** Test-only hook to reset the one-shot warning latch between test cases. */
 declare function __resetMetaProxyNonLoopbackWarnLatch(): void;
 /**
+ * Defense-in-depth gate for the BEARER-ATTACHMENT path (ADR-0025a §D6/§D10:
+ * "The bearer is sent only to literal loopback through a direct transport").
+ * `resolveMetaProxyClientConfig` already rejects a non-loopback origin at
+ * construction unless `allowNonLoopback` is set, so a client whose origin is
+ * non-loopback but whose `allowNonLoopback` is falsy is structurally
+ * unreachable — this re-check exists so the credential is never attached
+ * without that invariant being re-proven at request time, not to be reached
+ * in normal operation. Returns `true` when it is safe to attach a bearer.
+ */
+declare function isBearerAttachmentAllowed(origin: string, allowNonLoopback: boolean | undefined): boolean;
+/**
  * Validate and normalize a {@link MetaProxyClientConfig}. Pure function, no
  * I/O — construction MUST stay side-effect free (ADR-0025a §D1: "Construction
  * never starts, installs, authenticates, probes, or reconfigures a process.").
@@ -384,6 +395,445 @@ interface MetaProxyResult<T> {
 }
 
 /**
+ * Data-plane routing intent and decode-time verification (ADR-0025a §D5).
+ *
+ * This module carries the caller's *supported intent* and verifies the
+ * Proxy's decision against it — it deliberately does NOT implement a router.
+ * ADR-0025a §D5: "The SDK communicates supported intent and verifies the
+ * decision; it does not implement another router." There is no planner, no
+ * plane selector, and no failover logic here; the Proxy owns all of that.
+ *
+ * `RoutingPlane` / `WorkloadPolicy` are re-exported from `./status.js` (where
+ * §D4 already needed them for `MetaProxyStatus`) rather than redeclared, so
+ * the union types have exactly one definition across the module.
+ */
+
+/**
+ * A consent grant is an opaque ADR-0022 grant identifier — the SDK treats it
+ * as a bare string ID and does not interpret its structure (ADR-0025a §D9
+ * owns consent semantics; this pass only forwards intent).
+ */
+type ConsentGrantId = string;
+/**
+ * Supported routing intent a caller attaches to an inference call
+ * (ADR-0025a §D5). The Proxy is the authority; the SDK sends this as intent
+ * and verifies the returned receipt against it (see
+ * {@link assertRoutingReceiptMatchesIntent}). None of these fields cause the
+ * SDK to *choose* a plane.
+ */
+interface RoutingIntent {
+    /**
+     * If set, the returned receipt's `selectedPlane` MUST equal this or the
+     * call is a protocol violation "even if output succeeds" (ADR-0025a §D5
+     * rule 7). Verified at decode time by
+     * {@link assertRoutingReceiptMatchesIntent}.
+     */
+    requiredPlane?: RoutingPlane;
+    /** Planes the caller will accept. Advisory intent — the Proxy enforces. */
+    allowedPlanes: RoutingPlane[];
+    /** Workload urgency class (ADR-0025a §D5). `critical` suppresses automatic failover. */
+    workloadPolicy: WorkloadPolicy;
+    /** Ceiling the caller is willing to route under, when the Proxy exposes utilization. */
+    maxUtilization?: number;
+    /** Opaque ADR-0022 consent grant IDs relevant to this call (ADR-0025a §D5/§D9). */
+    consentGrants: ConsentGrantId[];
+    /** Whether the caller opts into training contribution (reported without content, §D9). */
+    trainingShare: boolean;
+    /** If true, the Proxy must fail rather than silently degrade to another plane (§D5 rule 5). */
+    failIfUnavailable: boolean;
+}
+/**
+ * The single decode-time verification §D5 mandates (rule 7): a
+ * `requiredPlane` that the returned receipt contradicts is a protocol
+ * violation, non-retryable, and MUST throw even when the HTTP call itself
+ * was a well-formed 200. This is the SDK's *only* routing "decision" — a
+ * pure after-the-fact check, never a selection.
+ *
+ * Throws {@link AgenticError} `kind: "protocol"` when:
+ *  - `intent.requiredPlane` is set and no receipt was returned to verify
+ *    against (§D4: "Every inference must return selected-plane evidence"), or
+ *  - the receipt's `selectedPlane` does not equal `intent.requiredPlane`.
+ *
+ * A no-op when `intent` is undefined or carries no `requiredPlane`.
+ */
+declare function assertRoutingReceiptMatchesIntent(intent: RoutingIntent | undefined, receipt: MetaProxyRoutingReceipt | undefined): void;
+
+/**
+ * Proxy authentication credentials (ADR-0025a §D6).
+ *
+ * Two variants exist in the contract: `LocalBearerToken` (the raw local proxy
+ * bearer) and `WorkloadCapability` (a minted `mh1.<payload>.<hmac>` scoped
+ * capability). This pass ships ONLY the local-bearer variant as constructable
+ * — {@link LocalBearerTokenCredentialProvider}. The `WorkloadCapability`
+ * variant is TYPE-ONLY: minting requires an injected `MetaProxyLifecycleProvider`
+ * (ADR-0025b) and its MetaHarness-backed adapter (ADR-0026a), neither of which
+ * exists in this codebase yet, so there is deliberately no constructor,
+ * factory, or minting function for it here (ADR-0025a §D6: "The SDK may
+ * validate non-secret claims but does not mint capabilities itself").
+ *
+ * The secret itself is never reinvented — a resolved credential rides the
+ * existing ADR-0022 `Credential` / `RedactedSecret` contract from
+ * `../agentic/index.js`, exactly like `StaticApiKeyCredentialProvider`.
+ */
+
+/**
+ * Env var the local bearer is read from when no explicit `token` is passed —
+ * mirrors `StaticApiKeyCredentialProvider`'s `COGNITUM_API_KEY` resolution
+ * order (explicit arg, then env var, then fail at construction time).
+ */
+declare const DEFAULT_META_PROXY_TOKEN_ENV_VAR = "COGNITUM_META_PROXY_TOKEN";
+/**
+ * The raw local proxy bearer (ADR-0025a §D6). Sent only to literal loopback
+ * through a direct transport; never substituted with cloud, OAuth, sponsor,
+ * or provider credentials.
+ */
+interface LocalBearerToken {
+    kind: "local_bearer_token";
+    /** Resolved bearer, carried by the ADR-0022 `Credential` contract (scheme `"bearer"`). */
+    credential: Credential;
+}
+/**
+ * Non-secret claims of a workload capability (ADR-0025a §D6). The wire format
+ * is `mh1.<payload>.<hmac>`, signed with the local proxy token, with an expiry
+ * at most 12 hours ahead. The SDK may validate these claims but does not mint
+ * the capability.
+ */
+interface WorkloadCapabilityClaims {
+    version: string;
+    policy: WorkloadPolicy;
+    worktreeId: string;
+    /** ISO-8601 expiry; the contract caps this at 12 hours ahead of issuance. */
+    expiresAt: string;
+}
+/**
+ * A minted, scoped workload capability (ADR-0025a §D6). TYPE-ONLY in this
+ * pass — see the module doc comment. There is no provider or factory that
+ * produces one; that arrives with ADR-0025b's `MetaProxyLifecycleProvider`.
+ */
+interface WorkloadCapability {
+    kind: "workload_capability";
+    claims: WorkloadCapabilityClaims;
+    /** The `mh1.<payload>.<hmac>` value, carried by the ADR-0022 `Credential` contract. */
+    credential: Credential;
+}
+/**
+ * The two Proxy credential shapes (ADR-0025a §D6:
+ * `ProxyCredential = LocalBearerToken | WorkloadCapability`). Only
+ * `LocalBearerToken` is constructable this pass.
+ */
+type ProxyCredential = LocalBearerToken | WorkloadCapability;
+/** Construction-time options for {@link LocalBearerTokenCredentialProvider}. */
+interface LocalBearerTokenCredentialProviderOptions {
+    /** Exact normalized (loopback) origin this provider is bound to (ADR-0022 §D3). */
+    normalizedOrigin: string;
+    /** Exact audience this provider is bound to; defaults to `normalizedOrigin`. */
+    audience?: string;
+    /**
+     * Explicit local bearer token. When omitted, resolved from `envVar`
+     * (default {@link DEFAULT_META_PROXY_TOKEN_ENV_VAR}), then fails at
+     * construction time — same fail-closed order as
+     * `StaticApiKeyCredentialProvider`.
+     */
+    token?: string;
+    /** Override the environment variable name checked when `token` is omitted. */
+    envVar?: string;
+    /** Injectable environment map, for testing. Defaults to `process.env`. */
+    env?: Record<string, string | undefined>;
+}
+/**
+ * Concrete `CredentialProvider` for the raw local proxy bearer
+ * (ADR-0025a §D6, ADR-0022 §D1/§D3). Fails closed on construction if no
+ * token is available, and on any product / origin / audience mismatch at
+ * acquire time — exact string equality only, no wildcard or DNS-parent
+ * trust. Always hands out `scheme: "bearer"` so the client maps it to the
+ * `Authorization` header.
+ *
+ * This models the `LocalBearerToken` half of `ProxyCredential`; the
+ * `WorkloadCapability` half is not mintable in this pass (see module doc).
+ */
+declare class LocalBearerTokenCredentialProvider implements CredentialProvider {
+    #private;
+    constructor(options: LocalBearerTokenCredentialProviderOptions);
+    /** Non-secret stable provider identity, safe to log. */
+    identity(): string;
+    describeAuthority(request: CredentialRequest): Promise<CredentialAuthority>;
+    acquire(request: CredentialRequest): Promise<Credential>;
+    invalidate(_reason: string): Promise<void>;
+    private authority;
+    /** Fail-closed match check (ADR-0022 §D1/§D3). Exact string equality only. */
+    private assertMatch;
+}
+
+/**
+ * ADR-0024b §D2: routing types and precedence. Issue #59, D11 migration
+ * step 1 ("Release routing receipt and usage read-only support after
+ * ADR-0024a serving").
+ *
+ * `ModelSelector` deliberately has NO escape hatch for a raw provider model
+ * ID — `auto`, a `ModelTier`, or a contract-declared alias string are the
+ * only three shapes the audited resolver accepts; anything else is rejected
+ * server-side as `model_not_found` (§D2). This is a deliberate rejection,
+ * not an oversight, so no fourth "raw model id" variant is added here.
+ *
+ * Unknown values RECEIVED from the server (e.g. a `resolved_tier` that
+ * predates this SDK's enum) must be preserved rather than dropped — see
+ * `../types/receipt.js`'s `ReceiptModelTier`/`ReceiptCacheResult`, which
+ * widen the known union with `(string & {})` so an unrecognized wire value
+ * still round-trips as a plain string instead of being coerced away.
+ *
+ * Values the SDK *sends*, by contrast, are validated against the closed set
+ * at request time via `assertSendableRoutingControls` — §D2: "stable
+ * methods cannot send them until capabilities declare support."
+ *
+ * Body controls win over `X-Cognitum-*` headers (§D2) — this SDK never
+ * exposes a generic header-override surface for routing, safety, auth,
+ * request ID, idempotency, trace, host, or content-length fields (see
+ * `../nonstream.ts`/`../client.ts`: headers are built internally from typed
+ * fields only), so there is no header path these controls could lose to.
+ */
+type ModelTier = "low" | "mid" | "high";
+type ModelSelector = {
+    readonly kind: "auto";
+} | {
+    readonly kind: "tier";
+    readonly tier: ModelTier;
+} | {
+    readonly kind: "contract_declared_alias";
+    readonly alias: string;
+};
+type FallbackPolicy = "fail_fast" | "best_effort";
+type EscalationStrategy = "stream_oneshot" | "post_hoc" | "buffered" | "inflight";
+type CacheMode = "disabled" | "exact" | "semantic";
+type SafetyMode = "block" | "warn" | "redact";
+/**
+ * Opaque, sanitized attribution metadata (ADR-0024b §D2). Included in
+ * operation/idempotency metadata where contracted, but never treated as
+ * tenant, budget, rate-limit, or resource-owner authority.
+ */
+type SubTenantAttribution = string;
+/** ADR-0024b §D2's `MetaLlmRoutingControls`. */
+interface MetaLlmRoutingControls {
+    model?: ModelSelector;
+    minTier?: ModelTier;
+    maxTier?: ModelTier;
+    fallbackPolicy?: FallbackPolicy;
+    escalation?: EscalationStrategy;
+    cache?: CacheMode;
+    safety?: SafetyMode;
+    subTenantId?: SubTenantAttribution;
+}
+
+/**
+ * OpenAI-style wire types (ADR-0024a §D3): chat completions, legacy
+ * completions, Responses, and embeddings. Request/response shapes only —
+ * no HTTP call logic lands in this pass (issue #58 / M2 scope).
+ *
+ * The SDK does not invent a universal prompt object (ADR-0024a §D3):
+ * content blocks, tools, tool choices, finish reasons, and usage stay in
+ * this native OpenAI-compatible namespace rather than a cross-protocol
+ * shared shape.
+ *
+ * Field names here are idiomatic camelCase (this SDK's convention), not the
+ * wire's snake_case (`max_tokens`, `top_p`, ...). The follow-up issue that
+ * implements the actual HTTP call logic for these operations owns the
+ * snake_case <-> camelCase mapping; no such mapping exists yet since this
+ * pass ships types only.
+ *
+ * `routingControls` (ADR-0024b §D2, issue #59) is added to
+ * `ChatCompletionRequest`, `LegacyCompletionRequest`, and `ResponsesRequest`
+ * — the same three protocol request shapes ADR-0024b's issue names,
+ * alongside `AnthropicMessageRequest` in `./anthropic.ts`. `EmbeddingRequest`
+ * deliberately does NOT get this field: it is out of ADR-0024b D11 step 1's
+ * scope.
+ */
+
+/** A single chat message. Content may be plain text or a multi-part array. */
+interface ChatMessage {
+    role: "system" | "user" | "assistant" | "tool" | "developer";
+    content: string | ChatContentPart[] | null;
+    name?: string;
+    toolCallId?: string;
+    toolCalls?: ChatToolCall[];
+}
+type ChatContentPart = {
+    type: "text";
+    text: string;
+} | {
+    type: "image_url";
+    imageUrl: {
+        url: string;
+        detail?: "auto" | "low" | "high";
+    };
+};
+interface ChatToolCall {
+    id: string;
+    type: "function";
+    function: {
+        name: string;
+        arguments: string;
+    };
+}
+interface ChatToolDefinition {
+    type: "function";
+    function: {
+        name: string;
+        description?: string;
+        parameters?: Record<string, unknown>;
+    };
+}
+type ChatToolChoice = "none" | "auto" | "required" | {
+    type: "function";
+    function: {
+        name: string;
+    };
+};
+/** `POST /v1/chat/completions` request. Server currently caps `n = 1`. */
+interface ChatCompletionRequest {
+    model: string;
+    messages: ChatMessage[];
+    maxTokens?: number;
+    temperature?: number;
+    topP?: number;
+    /** Server-enforced maximum of 1 (ADR-0024a §D3). */
+    n?: 1;
+    stream?: boolean;
+    stop?: string | string[];
+    presencePenalty?: number;
+    frequencyPenalty?: number;
+    logitBias?: Record<string, number>;
+    user?: string;
+    tools?: ChatToolDefinition[];
+    toolChoice?: ChatToolChoice;
+    responseFormat?: {
+        type: "text" | "json_object";
+    };
+    seed?: number;
+    /** ADR-0024b §D2. Body controls win over any `X-Cognitum-*` header. */
+    routingControls?: MetaLlmRoutingControls;
+}
+interface ChatCompletionUsage {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+}
+interface ChatCompletionChoice {
+    index: number;
+    message: ChatMessage;
+    finishReason: "stop" | "length" | "tool_calls" | "content_filter" | null;
+    logprobs?: unknown;
+}
+/** `POST /v1/chat/completions` response. */
+interface ChatCompletion {
+    id: string;
+    object: "chat.completion";
+    created: number;
+    model: string;
+    choices: ChatCompletionChoice[];
+    usage?: ChatCompletionUsage;
+    systemFingerprint?: string;
+}
+
+/**
+ * Non-streaming `chat.completions` forwarding for MetaProxyClient
+ * (ADR-0025a §D7). Streaming (§D8) is out of scope this pass.
+ *
+ * ADR-0025a §D7 says Proxy chat/Messages "reuse only the wire types and
+ * stream events" from ADR-0024a — so this module imports `ChatCompletion`/
+ * `ChatCompletionRequest` from `../meta-llm/types/openai.js` verbatim, but
+ * deliberately does NOT call `../meta-llm/nonstream.js`'s `postJsonIdempotent`:
+ * that helper carries Proxy-inappropriate behavior (ADR-0024b `routingControls`
+ * validation, `cognitum_receipt` decoding into a `MetaLlmReceipt`, and
+ * meta-llm error mapping). The surrounding forwarding / retry / error contract
+ * is Proxy-specific (§D7), so the idempotency + retry shape is re-implemented
+ * lightly here:
+ *  - a generated (or caller-supplied) `Idempotency-Key`, stable across the
+ *    one possible 401-triggered retry;
+ *  - at most one 401 credential refresh after a verified 401 challenge;
+ *  - everything else — 429/502/503 included — is NEVER automatically
+ *    retried (ADR-0025a §D8: "No Proxy POST is automatically retried while
+ *    it drops `Idempotency-Key`"). That sentence is about whether the
+ *    *Proxy server* honors the header for dedup — the currently-deployed
+ *    Proxy drops it — so attaching one client-side does not make a retry
+ *    safe. The Alternatives-considered table rejects "Retry Proxy POSTs"
+ *    outright ("Idempotency is dropped and spend can duplicate"). A
+ *    non-2xx surfaces as a single terminal, non-retryable `AgenticError`
+ *    carrying `retryAfterMs` so the CALLER can retry manually. Bounded
+ *    retry is reserved for the read-only status/models/identity routes
+ *    (§D8), which this module does not implement.
+ *
+ * Security posture layered on top (§D6/§D10):
+ *  - only an allowlist of caller headers is forwarded; `Authorization`, the
+ *    local bearer, `Host`, `Content-Length`, sponsor markers, installation
+ *    identity, and training-consent headers are NEVER caller-forwarded — the
+ *    bearer comes only from validated local state (the credential provider);
+ *  - the bearer is attached only when the origin is literal loopback (or
+ *    `allowNonLoopback` was explicitly set) — a defense-in-depth re-check on
+ *    top of construction-time validation;
+ *  - `redirect: "manual"` on every request; a 3xx / opaque-redirect response
+ *    is surfaced as a non-retryable protocol error, never followed;
+ *  - ambient HTTP proxy env vars are ignored: the transport is called
+ *    directly with only `{ method, headers, body, redirect }` — no dispatcher,
+ *    agent, or proxy option is ever wired in.
+ */
+
+/**
+ * Caller headers the Proxy forwards to the target cloud when supported
+ * (ADR-0025a §D7). Anything not on this list is silently dropped before the
+ * outgoing request is built — a caller can never inject `Authorization`,
+ * `Host`, sponsor markers, etc. Matching is case-insensitive.
+ */
+declare const PROXY_CHAT_FORWARD_HEADER_ALLOWLIST: readonly ["Idempotency-Key", "X-Request-ID", "traceparent", "tracestate", "X-Cognitum-Fallback-Policy", "X-Cognitum-Min-Tier", "X-Cognitum-Max-Tier", "X-Cognitum-Escalation", "X-Cognitum-Cache", "X-Cognitum-Safety", "X-Cognitum-Sub-Tenant", "anthropic-version", "anthropic-beta"];
+/** Options accepted by `MetaProxyClient.chat.completions`. */
+interface MetaProxyChatCallOptions {
+    requestContext?: Record<string, unknown>;
+    /**
+     * Supported routing intent (ADR-0025a §D5). When `requiredPlane` is set the
+     * returned receipt is verified against it and a mismatch throws a
+     * non-retryable protocol error — even on an otherwise-valid 200.
+     */
+    routingIntent?: RoutingIntent;
+    /**
+     * Caller headers to forward. Only members of
+     * {@link PROXY_CHAT_FORWARD_HEADER_ALLOWLIST} are passed through (case-
+     * insensitive); everything else is dropped before the request is sent, so a
+     * caller cannot syntactically inject `Authorization` or any other protected
+     * header into the outgoing request.
+     */
+    forwardHeaders?: Record<string, string>;
+}
+/** Dependency bag `forwardChatCompletion` needs from `MetaProxyClient`. */
+interface ChatForwardDeps {
+    origin: string;
+    transport: MetaProxyTransport;
+    credentialProvider?: CredentialProvider;
+    allowNonLoopback?: boolean;
+    defaultRequestContext?: Partial<RequestContext>;
+    telemetry?: MetaProxyTelemetryHooks;
+}
+/**
+ * Reject a redirect response outright (ADR-0025a §D6/§D10: "Cross-origin
+ * redirects, rebinding hostnames, embedded credentials, and downgrade
+ * redirects are rejected"). Handles both a real `fetch` opaque redirect
+ * (`type === "opaqueredirect"`, `status === 0`, produced by
+ * `redirect: "manual"`) and an explicit 3xx surfaced by a mock transport.
+ * Exported so `client.ts`'s GET path applies the identical rule.
+ */
+declare function rejectRedirectResponse(response: {
+    status: number;
+    type?: string;
+    headers: {
+        get(name: string): string | null;
+    };
+}, operation: string, requestId: string): void;
+/**
+ * `POST /v1/chat/completions` through the Proxy (ADR-0025a §D7, non-streaming).
+ * Returns a Proxy result whose `meta` carries the selected-plane routing
+ * receipt; verifies it against `options.routingIntent.requiredPlane` (§D5
+ * rule 7) before returning.
+ */
+declare function forwardChatCompletion(deps: ChatForwardDeps, request: ChatCompletionRequest, options?: MetaProxyChatCallOptions): Promise<MetaProxyResult<ChatCompletion>>;
+
+/**
  * MetaProxyClient (ADR-0025a). Issue #61 / M3 start.
  *
  * This pass implements exactly §D1 (public topology — only `status` and
@@ -458,6 +908,21 @@ declare class MetaProxyClient {
      */
     capabilities(options?: MetaProxyCallOptions): Promise<MetaProxyResult<CapabilitiesResult>>;
     /**
+     * `POST /v1/chat/completions` through the Proxy (ADR-0025a §D7), non-
+     * streaming only this pass (§D8 streaming is deferred, so there is no
+     * `chat.completionsStream` here). Namespace-object shape mirrors
+     * `MetaLlmClient.chat.completions` (`../meta-llm/client.js`), but the call
+     * returns a Proxy result whose `meta` carries the selected-plane routing
+     * receipt and is verified against `options.routingIntent.requiredPlane`
+     * (§D5 rule 7). See `./forwarding.js` for the header allowlist, idempotency,
+     * retry, redirect, and ambient-proxy rules.
+     */
+    readonly chat: {
+        completions: (request: ChatCompletionRequest, options?: MetaProxyChatCallOptions) => Promise<MetaProxyResult<ChatCompletion>>;
+    };
+    /** Assemble the `./forwarding.js` dependency bag from resolved config. */
+    private forwardingDeps;
+    /**
      * Close local connections and wait only. Never stops the sidecar process
      * (ADR-0025a §D3: "Closing it releases connections only and never stops
      * the sidecar.").
@@ -486,4 +951,4 @@ interface CapabilitiesResult {
     selectedPlane?: string;
 }
 
-export { type CapabilitiesResult, DEFAULT_META_PROXY_ORIGIN, type MetaProxyCallOptions, MetaProxyClient, type MetaProxyClientConfig, type MetaProxyResponseMeta, type MetaProxyResult, type MetaProxyRoutingReceipt, type MetaProxyStatus, type MetaProxyTelemetryEvent, type MetaProxyTelemetryHooks, type MetaProxyTransport, type MetaProxyUpstreamReceipt, type ResolvedMetaProxyClientConfig, type RoutingPlane, type WorkloadPolicy, __resetMetaProxyNonLoopbackWarnLatch, resolveMetaProxyClientConfig };
+export { type CapabilitiesResult, type ChatForwardDeps, type ConsentGrantId, DEFAULT_META_PROXY_ORIGIN, DEFAULT_META_PROXY_TOKEN_ENV_VAR, type LocalBearerToken, LocalBearerTokenCredentialProvider, type LocalBearerTokenCredentialProviderOptions, type MetaProxyCallOptions, type MetaProxyChatCallOptions, MetaProxyClient, type MetaProxyClientConfig, type MetaProxyResponseMeta, type MetaProxyResult, type MetaProxyRoutingReceipt, type MetaProxyStatus, type MetaProxyTelemetryEvent, type MetaProxyTelemetryHooks, type MetaProxyTransport, type MetaProxyUpstreamReceipt, PROXY_CHAT_FORWARD_HEADER_ALLOWLIST, type ProxyCredential, type ResolvedMetaProxyClientConfig, type RoutingIntent, type RoutingPlane, type WorkloadCapability, type WorkloadCapabilityClaims, type WorkloadPolicy, __resetMetaProxyNonLoopbackWarnLatch, assertRoutingReceiptMatchesIntent, forwardChatCompletion, isBearerAttachmentAllowed, rejectRedirectResponse, resolveMetaProxyClientConfig };

@@ -145,6 +145,25 @@ function isLoopbackHost(hostname: string): boolean {
   );
 }
 
+/**
+ * Defense-in-depth gate for the BEARER-ATTACHMENT path (ADR-0025a §D6/§D10:
+ * "The bearer is sent only to literal loopback through a direct transport").
+ * `resolveMetaProxyClientConfig` already rejects a non-loopback origin at
+ * construction unless `allowNonLoopback` is set, so a client whose origin is
+ * non-loopback but whose `allowNonLoopback` is falsy is structurally
+ * unreachable — this re-check exists so the credential is never attached
+ * without that invariant being re-proven at request time, not to be reached
+ * in normal operation. Returns `true` when it is safe to attach a bearer.
+ */
+export function isBearerAttachmentAllowed(
+  origin: string,
+  allowNonLoopback: boolean | undefined,
+): boolean {
+  if (allowNonLoopback) return true;
+  const host = extractHost(origin);
+  return host !== null && isLoopbackHost(host);
+}
+
 function warnNonLoopbackOnce(origin: string): void {
   if (warnedNonLoopback) return;
   warnedNonLoopback = true;

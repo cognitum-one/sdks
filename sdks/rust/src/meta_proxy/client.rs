@@ -34,10 +34,13 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-use crate::agentic::{AgenticError, CapabilitySet, CapabilitySource};
+use crate::agentic::{AgenticError, AgenticErrorKind, CapabilitySet, CapabilitySource};
+use crate::meta_llm::types::openai::{ChatCompletion, ChatCompletionRequest};
 
-use super::config::{resolve_config, MetaProxyClientConfig};
+use super::config::{build_default_transport, resolve_config, MetaProxyClientConfig};
 use super::envelope::MetaProxyResult;
+use super::forwarding::MetaProxyChatCallOptions;
+use super::routing::assert_routing_receipt_matches_intent;
 use super::status::MetaProxyStatus;
 use super::{DEFAULT_CAPABILITY_VERSION, PRODUCT};
 
@@ -121,7 +124,14 @@ impl MetaProxyClient {
     #[allow(clippy::result_large_err)]
     pub fn new(config: MetaProxyClientConfig) -> Result<Self, AgenticError> {
         let resolved = resolve_config(config)?;
-        let http = resolved.transport.clone().unwrap_or_default();
+        // ADR-0025a §D6/§D10: when no transport is injected, build the
+        // explicitly hardened one (proxy-env-ignoring, redirect-rejecting)
+        // rather than `reqwest::Client::default()`, whose safety depends on
+        // reqwest's defaults staying unchanged.
+        let http = match resolved.transport.clone() {
+            Some(client) => client,
+            None => build_default_transport()?,
+        };
         Ok(Self {
             config: resolved,
             http,
@@ -213,6 +223,98 @@ impl MetaProxyClient {
                 configured_plane: Some(status.configured_plane),
                 selected_plane: Some(status.selected_plane),
             },
+            meta,
+        })
+    }
+
+    /// `POST /v1/chat/completions` forwarded through the local Proxy
+    /// (ADR-0025a §D7). Reuses `meta_llm`'s OpenAI wire types verbatim
+    /// ([`ChatCompletionRequest`]/[`ChatCompletion`]) — permitted wire-primitive
+    /// sharing per ADR-0019 §D7 — but stays a Proxy method that returns a Proxy
+    /// [`MetaProxyResult`] carrying a routing receipt, never a Meta LLM result.
+    ///
+    /// Behavior:
+    ///  - fails closed with `Authentication` before any HTTP call when no
+    ///    `local_credential_provider` is configured (the local `/v1/*` routes
+    ///    are authenticated, like `/status`);
+    ///  - attaches ONLY the §D7 allowlisted forwarding headers from
+    ///    `options.forward_headers` — a caller-supplied `Authorization`, local
+    ///    bearer, `Host`, `Content-Length`, sponsor/identity/consent marker,
+    ///    etc. is never forwarded (see [`MetaProxyChatCallOptions`]);
+    ///  - after a successful decode, when the caller supplied a
+    ///    [`RoutingIntent`](super::routing::RoutingIntent) with `required_plane`
+    ///    set, verifies the response's routing receipt matches it (§D5 rule 7) —
+    ///    a mismatch (or a missing receipt) is a non-retryable `Protocol` error
+    ///    even on an otherwise-successful 200.
+    ///
+    /// Idempotency and the single 401-refresh reuse a Proxy-local POST loop in
+    /// `super::http` — NOT `meta_llm`'s `post_json_idempotent`, which is client
+    /// behavior `ADR-0019 §D4` keeps product-private (only wire types are shared).
+    /// Unlike that Meta LLM helper, this loop never bounded-retries a
+    /// 429/502/503: ADR-0025a §D8 rules out automatic Proxy POST retry because
+    /// the currently-deployed Proxy drops `Idempotency-Key` server-side, so a
+    /// non-2xx is always a single terminal error (see `super::http`'s
+    /// `post_json_forwarding` for the full rationale).
+    #[allow(clippy::result_large_err)]
+    pub async fn chat_completions(
+        &self,
+        request: &ChatCompletionRequest,
+        options: Option<MetaProxyChatCallOptions>,
+    ) -> Result<MetaProxyResult<ChatCompletion>, AgenticError> {
+        let options = options.unwrap_or_default();
+        let body = serde_json::to_value(request).map_err(|cause| AgenticError {
+            product: Some(PRODUCT.to_owned()),
+            operation: Some("chat_completions".to_owned()),
+            ..AgenticError::new(
+                AgenticErrorKind::Validation,
+                format!("chat_completions request failed to serialize: {cause}"),
+            )
+        })?;
+
+        let (data, meta) = self
+            .post_json_forwarding("/v1/chat/completions", "chat_completions", body, &options)
+            .await?;
+
+        // §D5 rule 7: a required_plane mismatch is a protocol violation even on
+        // a 200. When a required plane is set the receipt is the only evidence
+        // of the selected plane, so its absence is itself a violation.
+        if options
+            .routing_intent
+            .as_ref()
+            .and_then(|i| i.required_plane)
+            .is_some()
+        {
+            match meta.routing_receipt.as_ref() {
+                Some(receipt) => {
+                    assert_routing_receipt_matches_intent(options.routing_intent.as_ref(), receipt)?;
+                }
+                None => {
+                    return Err(AgenticError {
+                        product: Some(PRODUCT.to_owned()),
+                        operation: Some("chat_completions".to_owned()),
+                        request_id: Some(meta.request_id.clone()),
+                        ..AgenticError::new(
+                            AgenticErrorKind::Protocol,
+                            "caller required a specific routing plane but the response carried \
+                             no routing receipt to verify it against (ADR-0025a §D5 rule 7 / §D7)"
+                                .to_owned(),
+                        )
+                    });
+                }
+            }
+        }
+
+        let parsed: ChatCompletion = serde_json::from_value(data).map_err(|cause| AgenticError {
+            product: Some(PRODUCT.to_owned()),
+            operation: Some("chat_completions".to_owned()),
+            request_id: Some(meta.request_id.clone()),
+            ..AgenticError::new(
+                AgenticErrorKind::Protocol,
+                format!("chat_completions response did not match the expected shape: {cause}"),
+            )
+        })?;
+        Ok(MetaProxyResult {
+            data: parsed,
             meta,
         })
     }

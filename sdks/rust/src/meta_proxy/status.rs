@@ -28,6 +28,34 @@ pub enum RoutingPlane {
     SponsoredCognitum,
 }
 
+impl RoutingPlane {
+    /// The wire token for this plane (ADR-0025a §D5:
+    /// `local | cognitum_cloud | anthropic_passthrough | sponsored_cognitum`).
+    /// Used to compare a typed `required_plane` against the `String`
+    /// `selected_plane` a `/status` response or routing receipt carries.
+    pub fn wire_str(self) -> &'static str {
+        match self {
+            RoutingPlane::Local => "local",
+            RoutingPlane::CognitumCloud => "cognitum_cloud",
+            RoutingPlane::AnthropicPassthrough => "anthropic_passthrough",
+            RoutingPlane::SponsoredCognitum => "sponsored_cognitum",
+        }
+    }
+
+    /// Inverse of [`RoutingPlane::wire_str`]. Returns `None` for an
+    /// unrecognized token — the SDK stays permissive about planes it does
+    /// not model (ADR-0025a §D4/§D5: no published contract yet).
+    pub fn from_wire(token: &str) -> Option<Self> {
+        match token {
+            "local" => Some(RoutingPlane::Local),
+            "cognitum_cloud" => Some(RoutingPlane::CognitumCloud),
+            "anthropic_passthrough" => Some(RoutingPlane::AnthropicPassthrough),
+            "sponsored_cognitum" => Some(RoutingPlane::SponsoredCognitum),
+            _ => None,
+        }
+    }
+}
+
 /// Workload urgency classification (ADR-0025a §D5). Reference-only this pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkloadPolicy {
@@ -112,4 +140,39 @@ pub struct MetaProxyRoutingReceipt {
     pub local_usage: Option<HashMap<String, Value>>,
     pub degraded: bool,
     pub warnings: Option<Vec<String>>,
+}
+
+/// Decode a [`MetaProxyRoutingReceipt`] from a JSON object embedded in an
+/// inference response body (ADR-0025a §D4/§D7). Permissive, matching
+/// [`MetaProxyStatus`]'s "no published contract yet" convention: unknown
+/// fields are ignored and missing fields fall back to sensible empties.
+/// Returns `None` when `value` is not a JSON object.
+pub(crate) fn parse_routing_receipt(value: &Value) -> Option<MetaProxyRoutingReceipt> {
+    let obj = value.as_object()?;
+    let str_field = |key: &str| obj.get(key).and_then(|v| v.as_str()).map(str::to_owned);
+    let bool_field = |key: &str| obj.get(key).and_then(|v| v.as_bool()).unwrap_or(false);
+    let warnings = obj.get("warnings").and_then(|v| v.as_array()).map(|items| {
+        items
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect::<Vec<_>>()
+    });
+    let local_usage = obj
+        .get("local_usage")
+        .and_then(|v| v.as_object())
+        .map(|m| m.clone().into_iter().collect());
+
+    Some(MetaProxyRoutingReceipt {
+        request_id: str_field("request_id").unwrap_or_default(),
+        configured_plane: str_field("configured_plane").unwrap_or_default(),
+        selected_plane: str_field("selected_plane").unwrap_or_default(),
+        routing_reason: str_field("routing_reason"),
+        automatic: bool_field("automatic"),
+        workload_policy: str_field("workload_policy"),
+        consent_evidence_id: str_field("consent_evidence_id"),
+        upstream_receipt: obj.get("upstream_receipt").cloned(),
+        local_usage,
+        degraded: bool_field("degraded"),
+        warnings,
+    })
 }

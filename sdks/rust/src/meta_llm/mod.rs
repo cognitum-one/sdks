@@ -11,9 +11,14 @@
 //! flywheel, genome, brain, vectors, and conditional hosts (§D5-§D8) —
 //! separate future issues.
 //!
-//! Per ADR-0019 §D4, this module depends on `crate::agentic` and MUST NOT
-//! be imported by any other product module (`meta_proxy`, `metaharness`,
-//! `harnessaas`).
+//! Per ADR-0019 §D4, this module's CLIENT is product-private and MUST NOT be
+//! imported for its behavior by any other product module (`metaharness`,
+//! `harnessaas`). Its OpenAI/Anthropic WIRE TYPES (`types::openai`,
+//! `types::anthropic`) are, however, shared with `meta_proxy` for the
+//! ADR-0025a §D7 forwarding contract — permitted wire-primitive sharing per
+//! ADR-0019 §D7 ("Meta LLM and Meta Proxy share OpenAI and Anthropic wire
+//! primitives where their capability sets agree. They do not share a client
+//! class.").
 
 pub mod client;
 pub mod config;

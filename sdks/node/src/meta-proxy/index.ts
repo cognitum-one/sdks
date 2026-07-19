@@ -15,6 +15,7 @@
 
 export {
   DEFAULT_META_PROXY_ORIGIN,
+  isBearerAttachmentAllowed,
   resolveMetaProxyClientConfig,
   __resetMetaProxyNonLoopbackWarnLatch,
 } from "./config.js";
@@ -33,6 +34,28 @@ export type {
 } from "./envelope.js";
 
 export type { MetaProxyRoutingReceipt, MetaProxyStatus, RoutingPlane, WorkloadPolicy } from "./status.js";
+
+export { assertRoutingReceiptMatchesIntent } from "./routing.js";
+export type { ConsentGrantId, RoutingIntent } from "./routing.js";
+
+export {
+  DEFAULT_META_PROXY_TOKEN_ENV_VAR,
+  LocalBearerTokenCredentialProvider,
+} from "./auth.js";
+export type {
+  LocalBearerToken,
+  LocalBearerTokenCredentialProviderOptions,
+  ProxyCredential,
+  WorkloadCapability,
+  WorkloadCapabilityClaims,
+} from "./auth.js";
+
+export {
+  forwardChatCompletion,
+  PROXY_CHAT_FORWARD_HEADER_ALLOWLIST,
+  rejectRedirectResponse,
+} from "./forwarding.js";
+export type { ChatForwardDeps, MetaProxyChatCallOptions } from "./forwarding.js";
 
 export type { CapabilitiesResult, MetaProxyCallOptions } from "./client.js";
 export { MetaProxyClient } from "./client.js";
