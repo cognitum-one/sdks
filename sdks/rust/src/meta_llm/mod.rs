@@ -41,9 +41,12 @@ pub use config::{MetaLlmClientConfig, MetaLlmSafetyControl, MetaLlmTelemetryEven
 pub use discovery::{MetaLlmHealth, MetaLlmModelInfo, MetaLlmModelList, MetaLlmWhoAmI};
 pub use envelope::{MetaLlmReceipt, MetaLlmResponseMeta, MetaLlmResult};
 pub use stream::{
-    decode_openai_sse_event, ChatCompletionsStream, ChatCompletionsStreamAccumulator,
-    ChatCompletionsStreamSnapshot, DecodedOpenAiSseEvent, MetaLlmStreamEnvelope, OpenAiStreamErrorPayload,
-    OpenAiStreamEvent, ToolCallAccumulation,
+    decode_anthropic_sse_event, decode_openai_sse_event, AnthropicContentBlockDelta,
+    AnthropicMessageDeltaPayload, AnthropicMessageDeltaUsage, AnthropicStreamContentBlockStart,
+    AnthropicStreamErrorPayload, AnthropicStreamEvent, AnthropicStreamMessageStart,
+    ChatCompletionsStream, ChatCompletionsStreamAccumulator, ChatCompletionsStreamSnapshot,
+    DecodedAnthropicSseEvent, DecodedOpenAiSseEvent, MessagesStream, MetaLlmStreamEnvelope,
+    OpenAiStreamErrorPayload, OpenAiStreamEvent, ToolCallAccumulation,
 };
 // ADR-0024b D11 migration step 1 (issue #59): routing controls, money,
 // receipt, and usage/budget types.

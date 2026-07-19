@@ -40,7 +40,7 @@ use super::config::{resolve_config, MetaLlmClientConfig};
 use super::discovery::{MetaLlmHealth, MetaLlmModelInfo, MetaLlmModelList, MetaLlmWhoAmI};
 use super::envelope::MetaLlmResult;
 use super::http::{as_object, take_string, unsupported};
-use super::stream::{self, ChatCompletionsStream};
+use super::stream::{self, ChatCompletionsStream, MessagesStream};
 use super::types::{
     assert_sendable_routing_controls, assert_valid_usage_query, parse_usage_summary,
     AnthropicMessage, AnthropicMessageRequest, ChatCompletion, ChatCompletionRequest,
@@ -453,6 +453,27 @@ impl MetaLlmClient {
             data: parsed,
             meta,
         })
+    }
+
+    /// `POST /v1/messages` with `stream: true` (ADR-0024a §D5). Issue #58
+    /// / M2 continuation, item 2 of the tracked "what's left" list --
+    /// reuses the same generic SSE parser (`crate::sse`) `chat_completions_stream`
+    /// wired up in PR #88. Returns a [`MessagesStream`] -- pull events with
+    /// `next_envelope().await` in a `while let Some(envelope) = ...` loop
+    /// (see `super::stream`'s module docs for why this isn't a
+    /// `futures::Stream`). The stream completes successfully only after
+    /// observing the Anthropic wire terminal condition (`message_stop`);
+    /// otherwise `next_envelope` returns a typed `AgenticError` describing
+    /// why.
+    #[allow(clippy::result_large_err)]
+    pub async fn messages_create_stream(
+        &self,
+        request: &AnthropicMessageRequest,
+        time_budget: Option<TimeBudget>,
+        cancellation: Option<Arc<dyn CancellationToken>>,
+    ) -> Result<MessagesStream, AgenticError> {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        stream::messages_create_stream(self, request, request_id, time_budget, cancellation).await
     }
 
     /// `POST /v1/responses`. Current server is stateless: callers resend

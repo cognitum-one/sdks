@@ -74,6 +74,7 @@ _OPERATION_REQUIRED_SCOPE: dict[str, str] = {
     "chat.completions": _INFERENCE_SCOPE,
     "chat.completions_stream": _INFERENCE_SCOPE,
     "messages.create": _INFERENCE_SCOPE,
+    "messages.create_stream": _INFERENCE_SCOPE,
     "messages.count_tokens": _INFERENCE_SCOPE,
     "completions": _INFERENCE_SCOPE,
     "responses": _INFERENCE_SCOPE,

@@ -932,6 +932,133 @@ interface SseEvent {
 }
 
 /**
+ * Anthropic `messages` streaming event types (ADR-0024a §D5, issue #58 M2
+ * continuation — item 2 of the tracked "what's left" list). Mirrors
+ * `./openai-events.ts`'s decode discipline exactly, but for the Anthropic
+ * Messages wire protocol: `message_start`, `content_block_start`,
+ * `content_block_delta`, `content_block_stop`, `message_delta`,
+ * `message_stop`, `ping`, and a wire-level `error` event. Any recognized
+ * SSE frame whose payload shape this decoder does not understand falls
+ * back to {@link UnknownStreamEvent} rather than throwing — same contract
+ * as the OpenAI decoder.
+ *
+ * Unlike OpenAI chat-completions chunks (which carry no `event:` field and
+ * pack multiple facets into one JSON object), Anthropic's wire sets a real
+ * SSE `event:` name that duplicates the JSON payload's own `"type"` field
+ * (ADR-0024a §D5 ground truth). This decoder switches on the JSON
+ * payload's `"type"` (not `raw.event`) so a mismatched/missing `event:`
+ * field never hides a well-formed payload — the JSON body is authoritative,
+ * exactly as it is for the OpenAI decoder's `choices[].delta` shape.
+ *
+ * `ping` is modeled as its own recognized variant (`AnthropicPingEvent`),
+ * NOT `unknown` — it carries no payload but is a real, expected keepalive
+ * frame, not a decode failure.
+ *
+ * The Cognitum receipt facet (`cognitum_receipt`) is decoded from whichever
+ * event payload carries it, same top-level-key check as
+ * `decodeOpenAiSseEvent` — ADR-0024a treats the receipt facet as
+ * protocol-uniform, not chat-completions-specific.
+ */
+
+/** The `message` object embedded in a `message_start` event — a message whose content/usage are still being filled in. */
+interface AnthropicStreamMessageStart {
+    id: string;
+    type: "message";
+    role: "assistant";
+    content: AnthropicContentBlock[];
+    model: string;
+    stopReason: "end_turn" | "max_tokens" | "stop_sequence" | "tool_use" | null;
+    stopSequence?: string | null;
+    usage: AnthropicUsage;
+}
+interface AnthropicMessageStartEvent {
+    type: "message_start";
+    message: AnthropicStreamMessageStart;
+}
+/** The content block a `content_block_start` event opens at `index` — fields fill in via subsequent `content_block_delta`s. */
+type AnthropicStreamContentBlockStart = {
+    type: "text";
+    text: string;
+} | {
+    type: "tool_use";
+    id: string;
+    name: string;
+    input: Record<string, unknown>;
+};
+interface AnthropicContentBlockStartEvent {
+    type: "content_block_start";
+    index: number;
+    contentBlock: AnthropicStreamContentBlockStart;
+}
+type AnthropicContentBlockDelta = {
+    type: "text_delta";
+    text: string;
+} | {
+    type: "input_json_delta";
+    partialJson: string;
+};
+interface AnthropicContentBlockDeltaEvent {
+    type: "content_block_delta";
+    index: number;
+    delta: AnthropicContentBlockDelta;
+}
+interface AnthropicContentBlockStopEvent {
+    type: "content_block_stop";
+    index: number;
+}
+interface AnthropicMessageDeltaPayload {
+    stopReason: string | null;
+    stopSequence?: string | null;
+}
+/** `message_delta`'s trailing `usage` only ever carries `output_tokens` (ADR-0024a §D5 ground truth). */
+interface AnthropicMessageDeltaUsage {
+    outputTokens: number;
+}
+interface AnthropicMessageDeltaEvent {
+    type: "message_delta";
+    delta: AnthropicMessageDeltaPayload;
+    usage?: AnthropicMessageDeltaUsage;
+}
+/** The wire terminal condition for a successful Anthropic Messages stream — there is no `[DONE]` sentinel. */
+interface AnthropicMessageStopEvent {
+    type: "message_stop";
+}
+/** Keepalive heartbeat. Carries no payload; recognized deliberately rather than falling back to `unknown`. */
+interface AnthropicPingEvent {
+    type: "ping";
+}
+interface AnthropicStreamErrorPayload {
+    type: string;
+    message: string;
+}
+/** A wire-level terminal error event embedded in the SSE stream itself (`data: {"type":"error","error":{...}}`). */
+interface AnthropicStreamErrorEvent {
+    type: "error";
+    error: AnthropicStreamErrorPayload;
+}
+interface AnthropicReceiptEvent {
+    type: "receipt";
+    receipt: MetaLlmReceipt;
+}
+/** A syntactically valid SSE event whose payload this decoder does not recognize. Never a crash. */
+interface UnknownStreamEvent$1 {
+    type: "unknown";
+    raw: unknown;
+}
+type AnthropicStreamEvent = AnthropicMessageStartEvent | AnthropicContentBlockStartEvent | AnthropicContentBlockDeltaEvent | AnthropicContentBlockStopEvent | AnthropicMessageDeltaEvent | AnthropicMessageStopEvent | AnthropicPingEvent | AnthropicStreamErrorEvent | AnthropicReceiptEvent | UnknownStreamEvent$1;
+interface DecodedAnthropicSseEvent {
+    events: AnthropicStreamEvent[];
+    unknownFields?: Record<string, unknown>;
+}
+/**
+ * Decode one generic {@link SseEvent} into zero or more
+ * {@link AnthropicStreamEvent}s. Never throws — malformed JSON or an
+ * unrecognized shape becomes an {@link UnknownStreamEvent} (same contract
+ * as {@link import("./openai-events.js").decodeOpenAiSseEvent}).
+ */
+declare function decodeAnthropicSseEvent(raw: SseEvent): DecodedAnthropicSseEvent;
+
+/**
  * OpenAI `chat.completions` streaming event types (ADR-0024a §D5): role,
  * content delta, tool-call fragments, finish reason, trailing usage, the
  * Cognitum receipt, a terminal wire-level error event, and the `[DONE]`
@@ -1191,6 +1318,16 @@ declare class MetaLlmClient {
          * `postJsonIdempotent` verbatim.
          */
         countTokens: (request: CountTokensRequest, options?: MetaLlmCallOptions) => Promise<MetaLlmResult<CountTokensResult>>;
+        /**
+         * `POST /v1/messages` with `stream: true` (ADR-0024a §D5). Issue #58 /
+         * M2 continuation, item 2 of the tracked "what's left" list — reuses
+         * the same generic SSE parser (`../sse/parser.js`) `chat.completionsStream`
+         * wired up in PR #88. Returns an async generator — iterate with `for
+         * await`; it completes normally only after the Anthropic wire terminal
+         * condition (`message_stop`) is observed, otherwise it throws a typed
+         * `AgenticError` describing why (see `./stream/messages-stream.js`).
+         */
+        createStream: (request: AnthropicMessageRequest, options?: MetaLlmCallOptions) => AsyncGenerator<MetaLlmStreamEnvelope<AnthropicStreamEvent>, void, void>;
     };
     /**
      * `POST /v1/responses`. Current server is stateless: callers resend
@@ -1222,4 +1359,4 @@ declare class MetaLlmClient {
     private getJson;
 }
 
-export { type AnthropicContentBlock, type AnthropicMessage, type AnthropicMessageParam, type AnthropicMessageRequest, type AnthropicToolChoice, type AnthropicToolDefinition, type AnthropicUsage, type BudgetView, type CacheMode, type CacheStats, type ChatCompletion, type ChatCompletionChoice, type ChatCompletionRequest, type ChatCompletionUsage, ChatCompletionsStreamAccumulator, type ChatContentPart, type ChatMessage, type ChatToolCall, type ChatToolChoice, type ChatToolDefinition, type CountTokensRequest, type CountTokensResult, type DecodedOpenAiSseEvent, type EmbeddingDatum, type EmbeddingRequest, type EmbeddingResponse, type EmbeddingUsage, type EscalationStrategy, type FallbackPolicy, InvalidUsageQueryError, type LegacyCompletion, type LegacyCompletionChoice, type LegacyCompletionRequest, type MetaLlmCallOptions, MetaLlmClient, type MetaLlmClientConfig, type MetaLlmHealth, type MetaLlmModelInfo, type MetaLlmModelList, type MetaLlmReceipt, type MetaLlmResponseMeta, type MetaLlmResult, type MetaLlmRoutingControls, type MetaLlmSafetyControl, type MetaLlmStreamEnvelope, type MetaLlmTelemetryEvent, type MetaLlmTelemetryHooks, type MetaLlmTransport, type MetaLlmWhoAmI, type ModelSelector, type ModelTier, type Money, type OpenAiContentDeltaEvent, type OpenAiDoneEvent, type OpenAiFinishReasonEvent, type OpenAiReceiptEvent, type OpenAiRoleEvent, type OpenAiStreamErrorEvent, type OpenAiStreamErrorPayload, type OpenAiStreamEvent, type OpenAiToolCallDeltaEvent, type OpenAiUsageEvent, type ReceiptCacheResult, type ReceiptModelTier, type ResolvedMetaLlmClientConfig, type ResponsesOutputItem, type ResponsesRequest, type ResponsesResponse, type SafetyMode, type SafetySummary, type SubTenantAttribution, type UnknownStreamEvent, UnsendableRoutingControlsError, type UsageBreakdownEntry, type UsagePeriodEntry, type UsageQuery, type UsageSummary, type UsageTotals, assertSendableRoutingControls, assertValidUsageQuery, decodeOpenAiSseEvent, parseMetaLlmReceipt, parseMoney, parseUsageSummary, resolveMetaLlmClientConfig };
+export { type AnthropicContentBlock, type AnthropicContentBlockDelta, type AnthropicContentBlockDeltaEvent, type AnthropicContentBlockStartEvent, type AnthropicContentBlockStopEvent, type AnthropicMessage, type AnthropicMessageDeltaEvent, type AnthropicMessageDeltaPayload, type AnthropicMessageDeltaUsage, type AnthropicMessageParam, type AnthropicMessageRequest, type AnthropicMessageStartEvent, type AnthropicMessageStopEvent, type AnthropicPingEvent, type AnthropicReceiptEvent, type AnthropicStreamContentBlockStart, type AnthropicStreamErrorEvent, type AnthropicStreamErrorPayload, type AnthropicStreamEvent, type AnthropicStreamMessageStart, type AnthropicToolChoice, type AnthropicToolDefinition, type AnthropicUsage, type BudgetView, type CacheMode, type CacheStats, type ChatCompletion, type ChatCompletionChoice, type ChatCompletionRequest, type ChatCompletionUsage, ChatCompletionsStreamAccumulator, type ChatContentPart, type ChatMessage, type ChatToolCall, type ChatToolChoice, type ChatToolDefinition, type CountTokensRequest, type CountTokensResult, type DecodedAnthropicSseEvent, type DecodedOpenAiSseEvent, type EmbeddingDatum, type EmbeddingRequest, type EmbeddingResponse, type EmbeddingUsage, type EscalationStrategy, type FallbackPolicy, InvalidUsageQueryError, type LegacyCompletion, type LegacyCompletionChoice, type LegacyCompletionRequest, type MetaLlmCallOptions, MetaLlmClient, type MetaLlmClientConfig, type MetaLlmHealth, type MetaLlmModelInfo, type MetaLlmModelList, type MetaLlmReceipt, type MetaLlmResponseMeta, type MetaLlmResult, type MetaLlmRoutingControls, type MetaLlmSafetyControl, type MetaLlmStreamEnvelope, type MetaLlmTelemetryEvent, type MetaLlmTelemetryHooks, type MetaLlmTransport, type MetaLlmWhoAmI, type ModelSelector, type ModelTier, type Money, type OpenAiContentDeltaEvent, type OpenAiDoneEvent, type OpenAiFinishReasonEvent, type OpenAiReceiptEvent, type OpenAiRoleEvent, type OpenAiStreamErrorEvent, type OpenAiStreamErrorPayload, type OpenAiStreamEvent, type OpenAiToolCallDeltaEvent, type OpenAiUsageEvent, type ReceiptCacheResult, type ReceiptModelTier, type ResolvedMetaLlmClientConfig, type ResponsesOutputItem, type ResponsesRequest, type ResponsesResponse, type SafetyMode, type SafetySummary, type SubTenantAttribution, type UnknownStreamEvent, UnsendableRoutingControlsError, type UsageBreakdownEntry, type UsagePeriodEntry, type UsageQuery, type UsageSummary, type UsageTotals, assertSendableRoutingControls, assertValidUsageQuery, decodeAnthropicSseEvent, decodeOpenAiSseEvent, parseMetaLlmReceipt, parseMoney, parseUsageSummary, resolveMetaLlmClientConfig };

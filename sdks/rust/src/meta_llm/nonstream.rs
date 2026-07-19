@@ -63,9 +63,8 @@ const INFERENCE_SCOPE: &str = "meta-llm.inference";
 fn required_scope_for(operation: &str) -> &'static str {
     match operation {
         "chat.completions" | "chat_completions_stream" | "messages.create"
-        | "messages.count_tokens" | "completions" | "responses" | "embeddings" => {
-            INFERENCE_SCOPE
-        }
+        | "messages_create_stream" | "messages.count_tokens" | "completions" | "responses"
+        | "embeddings" => INFERENCE_SCOPE,
         _ => INFERENCE_SCOPE,
     }
 }

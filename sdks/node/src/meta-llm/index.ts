@@ -112,3 +112,26 @@ export type {
   UnknownStreamEvent,
 } from "./stream/openai-events.js";
 export { decodeOpenAiSseEvent } from "./stream/openai-events.js";
+
+// Anthropic Messages streaming (ADR-0024a §D5, issue #58 M2 continuation
+// item 2) — same generic SSE parser as chat.completionsStream (PR #88).
+export type {
+  AnthropicContentBlockDelta,
+  AnthropicContentBlockDeltaEvent,
+  AnthropicContentBlockStartEvent,
+  AnthropicContentBlockStopEvent,
+  AnthropicMessageDeltaEvent,
+  AnthropicMessageDeltaPayload,
+  AnthropicMessageDeltaUsage,
+  AnthropicMessageStartEvent,
+  AnthropicMessageStopEvent,
+  AnthropicPingEvent,
+  AnthropicReceiptEvent,
+  AnthropicStreamContentBlockStart,
+  AnthropicStreamErrorEvent,
+  AnthropicStreamErrorPayload,
+  AnthropicStreamEvent,
+  AnthropicStreamMessageStart,
+  DecodedAnthropicSseEvent,
+} from "./stream/anthropic-events.js";
+export { decodeAnthropicSseEvent } from "./stream/anthropic-events.js";
