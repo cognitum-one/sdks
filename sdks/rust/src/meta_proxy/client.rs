@@ -247,10 +247,14 @@ impl MetaProxyClient {
     ///    a mismatch (or a missing receipt) is a non-retryable `Protocol` error
     ///    even on an otherwise-successful 200.
     ///
-    /// Retry/idempotency reuse the frozen `crate::agentic` retry policy
-    /// (`RetryPolicy`/`equal_jitter_delay_ms`) via a Proxy-local POST loop in
+    /// Idempotency and the single 401-refresh reuse a Proxy-local POST loop in
     /// `super::http` — NOT `meta_llm`'s `post_json_idempotent`, which is client
     /// behavior `ADR-0019 §D4` keeps product-private (only wire types are shared).
+    /// Unlike that Meta LLM helper, this loop never bounded-retries a
+    /// 429/502/503: ADR-0025a §D8 rules out automatic Proxy POST retry because
+    /// the currently-deployed Proxy drops `Idempotency-Key` server-side, so a
+    /// non-2xx is always a single terminal error (see `super::http`'s
+    /// `post_json_forwarding` for the full rationale).
     #[allow(clippy::result_large_err)]
     pub async fn chat_completions(
         &self,

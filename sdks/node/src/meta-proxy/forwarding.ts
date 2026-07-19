@@ -10,11 +10,21 @@
  * validation, `cognitum_receipt` decoding into a `MetaLlmReceipt`, and
  * meta-llm error mapping). The surrounding forwarding / retry / error contract
  * is Proxy-specific (§D7), so the idempotency + retry shape is re-implemented
- * lightly here, matching `nonstream.js`'s documented behavior:
- *  - a generated (or caller-supplied) `Idempotency-Key`, stable across retries;
+ * lightly here:
+ *  - a generated (or caller-supplied) `Idempotency-Key`, stable across the
+ *    one possible 401-triggered retry;
  *  - at most one 401 credential refresh after a verified 401 challenge;
- *  - bounded 429/502/503 retry using the frozen `DEFAULT_RETRY_POLICY`;
- *  - everything else is never retried.
+ *  - everything else — 429/502/503 included — is NEVER automatically
+ *    retried (ADR-0025a §D8: "No Proxy POST is automatically retried while
+ *    it drops `Idempotency-Key`"). That sentence is about whether the
+ *    *Proxy server* honors the header for dedup — the currently-deployed
+ *    Proxy drops it — so attaching one client-side does not make a retry
+ *    safe. The Alternatives-considered table rejects "Retry Proxy POSTs"
+ *    outright ("Idempotency is dropped and spend can duplicate"). A
+ *    non-2xx surfaces as a single terminal, non-retryable `AgenticError`
+ *    carrying `retryAfterMs` so the CALLER can retry manually. Bounded
+ *    retry is reserved for the read-only status/models/identity routes
+ *    (§D8), which this module does not implement.
  *
  * Security posture layered on top (§D6/§D10):
  *  - only an allowlist of caller headers is forwarded; `Authorization`, the
@@ -33,8 +43,6 @@
 
 import {
   AgenticError,
-  DEFAULT_RETRY_POLICY,
-  equalJitterDelayMs,
   type Credential,
   type CredentialProvider,
   type RequestContext,
@@ -326,9 +334,6 @@ export async function forwardChatCompletion(
 
   let credential = await requireCredential(deps);
 
-  const retryPolicy = DEFAULT_RETRY_POLICY;
-  let attempt = 0;
-  let sleepBudgetUsedMs = 0;
   let refreshedOnce = false;
 
   for (;;) {
@@ -343,19 +348,12 @@ export async function forwardChatCompletion(
         credential = await requireCredential(deps);
         continue;
       }
-      const isBoundedRetryable = err.status === 429 || err.status === 502 || err.status === 503;
-      if (isBoundedRetryable && attempt + 1 < retryPolicy.maxAttempts) {
-        const serverHintMs = err.retryAfterMs ?? 0;
-        const jitterMs = Math.random() * retryPolicy.baseMs;
-        const delayMs = equalJitterDelayMs(attempt, retryPolicy, serverHintMs, jitterMs);
-        if (sleepBudgetUsedMs + delayMs > retryPolicy.retrySleepBudgetMs) {
-          throw err;
-        }
-        sleepBudgetUsedMs += delayMs;
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
-        attempt += 1;
-        continue;
-      }
+      // ADR-0025a §D8: "No Proxy POST is automatically retried while it
+      // drops `Idempotency-Key`" — the currently-deployed Proxy does not
+      // honor the header for server-side dedup, so attaching one does not
+      // make a retry safe. 429/502/503 (and every other status) surface as
+      // a single terminal error; `err.retryAfterMs` lets the caller retry
+      // manually.
       throw err;
     }
 

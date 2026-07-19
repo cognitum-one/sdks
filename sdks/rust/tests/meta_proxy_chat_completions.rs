@@ -449,30 +449,105 @@ async fn a_non_loopback_origin_construction_fails_so_no_bearer_can_leave() {
 }
 
 // ---------------------------------------------------------------------------
-// §D7/§D8 — bounded retry reuse
+// §D8 — no automatic POST retry on 429/502/503 (duplicate-spend risk)
 // ---------------------------------------------------------------------------
+//
+// ADR-0025a §D8: "No Proxy POST is automatically retried while it drops
+// `Idempotency-Key`" -- the currently-deployed Proxy drops the header
+// server-side, so the SDK attaching one does not make a silent retry safe.
+// The Alternatives-considered table rejects "Retry Proxy POSTs" outright.
+// A 429/502/503 must therefore surface as a single terminal,
+// non-retryable-by-the-SDK error after exactly one HTTP attempt, carrying
+// whatever `retry_after` hint the response supplied so the CALLER can decide
+// to retry manually.
 
 #[tokio::test]
-async fn a_503_is_retried_and_then_succeeds() {
+async fn a_503_is_a_single_terminal_error_and_is_never_auto_retried() {
     let server = MockServer::start().await;
-    // First attempt: 503 (retryable). Consumed after one hit.
+    // Only ONE mock response is registered (default `.expect(1)` behavior of
+    // wiremock when no explicit count is given would still allow more calls,
+    // so assert the exact received-request count below instead of relying on
+    // mock exhaustion).
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(503).set_body_json(json!({"error": "warming up"})))
-        .up_to_n_times(1)
-        .mount(&server)
-        .await;
-    // Subsequent attempts: 200.
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response_body()))
+        .respond_with(
+            ResponseTemplate::new(503)
+                .set_body_json(json!({"error": "warming up"}))
+                .insert_header("retry-after", "7"),
+        )
         .mount(&server)
         .await;
     let client = client_for(&server);
 
-    let result = client
+    let err = client
         .chat_completions(&chat_request(), None)
         .await
-        .expect("a 503 then 200 should succeed after a bounded retry");
-    assert_eq!(result.data.id, "chatcmpl-1");
+        .expect_err("a 503 must surface as an error, not be silently retried into a 200");
+    assert_eq!(err.status, Some(503));
+    assert_eq!(
+        err.retry_after_ms,
+        Some(7000),
+        "the Retry-After hint must be preserved for the caller to retry manually"
+    );
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("mock server records requests");
+    assert_eq!(
+        requests.len(),
+        1,
+        "the SDK must make exactly ONE HTTP attempt for a Proxy POST — no automatic retry (§D8)"
+    );
+}
+
+#[tokio::test]
+async fn a_429_is_a_single_terminal_error_and_is_never_auto_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .set_body_json(json!({"error": "rate limited"}))
+                .insert_header("retry-after", "2"),
+        )
+        .mount(&server)
+        .await;
+    let client = client_for(&server);
+
+    let err = client
+        .chat_completions(&chat_request(), None)
+        .await
+        .expect_err("a 429 must surface as an error, not be silently retried");
+    assert_eq!(err.status, Some(429));
+    assert_eq!(err.retry_after_ms, Some(2000));
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("mock server records requests");
+    assert_eq!(requests.len(), 1, "no automatic retry on 429 (§D8)");
+}
+
+#[tokio::test]
+async fn a_502_is_a_single_terminal_error_and_is_never_auto_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(502).set_body_json(json!({"error": "bad gateway"})))
+        .mount(&server)
+        .await;
+    let client = client_for(&server);
+
+    let err = client
+        .chat_completions(&chat_request(), None)
+        .await
+        .expect_err("a 502 must surface as an error, not be silently retried");
+    assert_eq!(err.status, Some(502));
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("mock server records requests");
+    assert_eq!(requests.len(), 1, "no automatic retry on 502 (§D8)");
 }

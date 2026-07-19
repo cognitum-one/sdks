@@ -10,15 +10,12 @@
 //! operation surface; nothing here is part of the public API (this module
 //! is private — see `super`'s `mod http;`).
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::agentic::{
-    equal_jitter_delay_ms, AgenticError, AgenticErrorKind, Credential, CredentialRequest,
-    RetryPolicy,
-};
+use crate::agentic::{AgenticError, AgenticErrorKind, Credential, CredentialRequest};
 
 use super::client::MetaProxyClient;
 use super::config::MetaProxyTelemetryEvent;
@@ -34,21 +31,6 @@ const STATUS_SCOPE: &str = "meta-proxy.status";
 /// Distinct from [`STATUS_SCOPE`] — these are inference calls, not reads
 /// (ADR-0025a §D6/§D7).
 const INFERENCE_SCOPE: &str = "meta-proxy.inference";
-
-/// Cheap non-cryptographic backoff jitter in `[0, bound]`, mirroring
-/// `meta_llm::nonstream::random_jitter_ms` (subsecond `SystemTime` entropy
-/// rather than a `rand` dependency) — it only needs to avoid lockstep retries
-/// across callers, not cryptographic unpredictability.
-fn pseudo_jitter_ms(bound: u64) -> u64 {
-    if bound == 0 {
-        return 0;
-    }
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as u64)
-        .unwrap_or(0);
-    nanos % (bound + 1)
-}
 
 fn non_empty<'a>(value: &'a str, fallback: &'a str) -> &'a str {
     if value.is_empty() {
@@ -274,15 +256,28 @@ impl MetaProxyClient {
         Ok((data, meta))
     }
 
-    /// Proxy-local idempotent POST with bounded retry (ADR-0025a §D7/§D8).
+    /// Proxy-local idempotent POST (ADR-0025a §D7/§D8).
     ///
     /// Deliberately NOT a call into `meta_llm`'s `post_json_idempotent`:
     /// ADR-0019 §D4 keeps client behavior product-private (only wire types are
     /// shared, §D7), so this reimplements the same shape — a stable
-    /// `Idempotency-Key` across retries, a single 401 credential refresh, and
-    /// bounded 429/502/503 retry via the frozen `crate::agentic` retry policy
-    /// (`RetryPolicy`/`equal_jitter_delay_ms`) — against the Proxy's local
-    /// route rather than borrowing another product's method.
+    /// `Idempotency-Key` across the one possible 401-triggered retry and a
+    /// single 401 credential refresh — against the Proxy's local route
+    /// rather than borrowing another product's method.
+    ///
+    /// Deliberately NOT bounded-retried on 429/502/503: §D8 says "No Proxy
+    /// POST is automatically retried while it drops `Idempotency-Key`",
+    /// which describes the *Proxy server* dropping the header for
+    /// server-side dedup (confirmed by the currently-deployed Proxy), not
+    /// whether the SDK attaches one. Attaching an `Idempotency-Key`
+    /// client-side does not make a retry safe when the server never uses it
+    /// to deduplicate — the Alternatives-considered table rejects "Retry
+    /// Proxy POSTs" outright ("Idempotency is dropped and spend can
+    /// duplicate"). Every non-2xx (429/502/503 included) is therefore a
+    /// single terminal, non-retryable `AgenticError` carrying
+    /// `retry_after_ms` so the CALLER can retry manually. Bounded retry
+    /// remains reserved for the read-only status/models/identity routes
+    /// (§D8), which this method does not implement.
     ///
     /// Fails closed with `Authentication` before any HTTP call when no
     /// `local_credential_provider` is configured.
@@ -318,16 +313,14 @@ impl MetaProxyClient {
             }
         };
 
-        // Stable across every retry of this one logical call (§D7/§D8: "No
-        // Proxy POST is automatically retried while it drops `Idempotency-Key`").
+        // Stable across the one possible 401-triggered retry of this logical
+        // call (§D7/§D8: "No Proxy POST is automatically retried while it
+        // drops `Idempotency-Key`").
         let idempotency_key = options
             .idempotency_key
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-        let retry_policy = RetryPolicy::default();
-        let mut attempt: u32 = 0;
-        let mut sleep_budget_used_ms: u64 = 0;
         let mut refreshed_once = false;
 
         loop {
@@ -350,24 +343,11 @@ impl MetaProxyClient {
                         continue;
                     }
 
-                    let is_bounded_retryable =
-                        matches!(err.status, Some(429) | Some(502) | Some(503));
-                    if is_bounded_retryable && attempt + 1 < retry_policy.max_attempts {
-                        let server_hint_ms = err.retry_after_ms.unwrap_or(0);
-                        let jitter_ms = pseudo_jitter_ms(retry_policy.base_ms);
-                        let delay_ms =
-                            equal_jitter_delay_ms(attempt, &retry_policy, server_hint_ms, jitter_ms);
-                        if sleep_budget_used_ms.saturating_add(delay_ms)
-                            > retry_policy.retry_sleep_budget_ms
-                        {
-                            return Err(err);
-                        }
-                        sleep_budget_used_ms += delay_ms;
-                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                        attempt += 1;
-                        continue;
-                    }
-
+                    // ADR-0025a §D8: the currently-deployed Proxy drops
+                    // `Idempotency-Key` server-side, so attaching one does not
+                    // make a retry safe. 429/502/503 (and every other status)
+                    // surface as a single terminal error here;
+                    // `err.retry_after_ms` lets the caller retry manually.
                     return Err(err);
                 }
             }

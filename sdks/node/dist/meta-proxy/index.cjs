@@ -121,19 +121,6 @@ var AgenticError = class extends Error {
     Object.setPrototypeOf(this, new.target.prototype);
   }
 };
-var DEFAULT_RETRY_POLICY = {
-  baseMs: 500,
-  capMs: 3e4,
-  maxAttempts: 4,
-  retrySleepBudgetMs: 6e4
-};
-function equalJitterDelayMs(attempt, policy = DEFAULT_RETRY_POLICY, serverHintMs = 0, jitterMs = 0) {
-  const expo = policy.baseMs * 2 ** attempt;
-  const clampedJitter = Math.min(Math.max(jitterMs, 0), policy.baseMs);
-  const computed = expo + clampedJitter;
-  const floor = Math.max(serverHintMs, computed);
-  return Math.min(policy.capMs, floor);
-}
 
 // src/agentic/credentials.ts
 var REDACT_INSPECT = /* @__PURE__ */ Symbol.for("nodejs.util.inspect.custom");
@@ -523,9 +510,6 @@ async function forwardChatCompletion(deps, request, options) {
   const { forwarded, idempotencyKey: callerKey } = filterForwardHeaders(options?.forwardHeaders);
   const idempotencyKey = callerKey ?? newIdempotencyKey();
   let credential = await requireCredential(deps);
-  const retryPolicy = DEFAULT_RETRY_POLICY;
-  let attempt = 0;
-  let sleepBudgetUsedMs = 0;
   let refreshedOnce = false;
   for (; ; ) {
     let result;
@@ -537,19 +521,6 @@ async function forwardChatCompletion(deps, request, options) {
         refreshedOnce = true;
         await deps.credentialProvider?.invalidate("401 challenge from meta-proxy");
         credential = await requireCredential(deps);
-        continue;
-      }
-      const isBoundedRetryable = err.status === 429 || err.status === 502 || err.status === 503;
-      if (isBoundedRetryable && attempt + 1 < retryPolicy.maxAttempts) {
-        const serverHintMs = err.retryAfterMs ?? 0;
-        const jitterMs = Math.random() * retryPolicy.baseMs;
-        const delayMs = equalJitterDelayMs(attempt, retryPolicy, serverHintMs, jitterMs);
-        if (sleepBudgetUsedMs + delayMs > retryPolicy.retrySleepBudgetMs) {
-          throw err;
-        }
-        sleepBudgetUsedMs += delayMs;
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
-        attempt += 1;
         continue;
       }
       throw err;

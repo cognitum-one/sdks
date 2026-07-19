@@ -331,3 +331,78 @@ def test_construction_blocks_non_loopback_bearer_target_without_opt_in() -> None
     # a non-loopback origin unless allow_non_loopback was set.
     with pytest.raises(ValueError):
         MetaProxyClientConfig(origin="http://10.0.0.5:11435")
+
+
+# ---------------------------------------------------------------------------
+# §D8 — no automatic POST retry on 429/502/503 (duplicate-spend risk)
+# ---------------------------------------------------------------------------
+#
+# ADR-0025a §D8: "No Proxy POST is automatically retried while it drops
+# `Idempotency-Key`". That sentence is about the *Proxy server* dropping the
+# header for dedup (confirmed by the currently-deployed Proxy) -- the SDK
+# attaching one client-side does not make a retry safe. The
+# Alternatives-considered table rejects "Retry Proxy POSTs" outright
+# ("Idempotency is dropped and spend can duplicate"). A 429/502/503 must
+# therefore result in exactly ONE HTTP attempt and a single terminal error,
+# preserving whatever `retry_after` hint the response carried so the CALLER
+# can retry manually.
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_a_503_is_a_single_attempt_terminal_error_with_retry_after_preserved() -> None:
+    route = respx.post(f"{ORIGIN}/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            503, json={"error": "warming up"}, headers={"retry-after": "7"}
+        )
+    )
+    client = MetaProxyClient(MetaProxyClientConfig(local_credential_provider=_provider()))
+
+    with pytest.raises(AgenticError) as exc_info:
+        await client.chat.completions(_request())
+    err = exc_info.value
+    assert err.status == 503
+    # `retryable=True` is the generic HTTP-error classification (a caller MAY
+    # retry a 503) -- it does not mean the SDK retried automatically, which
+    # is exactly the bug this guards against.
+    assert err.retryable is True
+    assert err.retry_after_ms == 7000
+    assert route.call_count == 1, "the SDK must make exactly ONE HTTP attempt (§D8)"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_a_429_is_a_single_attempt_terminal_error_with_retry_after_preserved() -> None:
+    route = respx.post(f"{ORIGIN}/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            429, json={"error": "rate limited"}, headers={"retry-after": "2"}
+        )
+    )
+    client = MetaProxyClient(MetaProxyClientConfig(local_credential_provider=_provider()))
+
+    with pytest.raises(AgenticError) as exc_info:
+        await client.chat.completions(_request())
+    err = exc_info.value
+    assert err.status == 429
+    assert err.retryable is True
+    assert err.retry_after_ms == 2000
+    assert route.call_count == 1, "no automatic retry on 429 (§D8)"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_a_502_is_a_single_attempt_terminal_error() -> None:
+    route = respx.post(f"{ORIGIN}/v1/chat/completions").mock(
+        return_value=httpx.Response(502, json={"error": "bad gateway"})
+    )
+    client = MetaProxyClient(MetaProxyClientConfig(local_credential_provider=_provider()))
+
+    with pytest.raises(AgenticError) as exc_info:
+        await client.chat.completions(_request())
+    err = exc_info.value
+    assert err.status == 502
+    assert err.retryable is True
+    assert route.call_count == 1, "no automatic retry on 502 (§D8)"
+    await client.aclose()

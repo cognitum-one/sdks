@@ -16,20 +16,26 @@ does not carry:
 3. §D4/§D5 routing-receipt decode into ``MetaProxyResponseMeta`` so the
    caller's ``RoutingIntent`` can be verified at decode time.
 
-The idempotency-key + single-401-refresh + bounded 429/502/503 retry shape
-is mirrored CONCEPTUALLY from ``meta_llm/nonstream.py`` (same
-``DEFAULT_RETRY_POLICY`` / ``equal_jitter_delay_ms`` from ``cognitum.agentic``).
-Note the tension with §D8 ("No Proxy POST is automatically retried while it
-drops ``Idempotency-Key``"): here the SDK always ATTACHES an idempotency key
-(generated when the caller does not supply one), which is exactly the
-condition §D8 says makes bounded retry safe; §D8's own error/stream/deadline
-model is otherwise out of scope for this pass.
+The idempotency-key + single-401-refresh shape is mirrored CONCEPTUALLY from
+``meta_llm/nonstream.py``, but the retry shape is deliberately NOT mirrored:
+per §D8, "No Proxy POST is automatically retried while it drops
+``Idempotency-Key``". That sentence is about whether the *Proxy server*
+honors the header for server-side deduplication -- the currently-deployed
+Proxy drops it -- not about whether the SDK attaches one. Attaching an
+``Idempotency-Key`` client-side does nothing to make a retry safe if the
+server never uses it to deduplicate, so a 429/502/503 (or any other
+non-2xx) from this POST is surfaced as a single terminal, non-retryable
+error; the caller may retry manually using the error's ``retry_after_ms``.
+The Alternatives-considered table makes the same point explicitly: "Retry
+Proxy POSTs" was considered and rejected because "Idempotency is dropped
+and spend can duplicate". Bounded retry remains reserved for the read-only
+status/models/identity routes (§D8), which this module does not implement.
+§D8's own error/stream/deadline model is otherwise out of scope for this
+pass.
 """
 
 from __future__ import annotations
 
-import asyncio
-import random
 import time
 import uuid
 from collections.abc import Mapping
@@ -37,7 +43,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from cognitum.agentic import DEFAULT_RETRY_POLICY, AgenticError, equal_jitter_delay_ms
+from cognitum.agentic import AgenticError
 from cognitum.meta_proxy.envelope import MetaProxyResponseMeta
 from cognitum.meta_proxy.http_errors import map_meta_proxy_http_error
 from cognitum.meta_proxy.status import MetaProxyRoutingReceipt
@@ -278,9 +284,17 @@ async def post_chat_forwarding(
 
     Attaches ONLY the §D7-allowlisted subset of ``caller_headers`` plus the
     SDK-owned headers and the validated local bearer; generates an
-    idempotency key when the caller did not supply one; performs a single
-    401 credential refresh and bounded 429/502/503 retry; rejects redirects;
-    and decodes the routing/upstream receipts into the returned metadata.
+    idempotency key when the caller did not supply one; performs at most one
+    401 credential refresh; rejects redirects; and decodes the routing/
+    upstream receipts into the returned metadata.
+
+    Per §D8, a Proxy POST is never automatically retried on 429/502/503 (or
+    any other status): the currently-deployed Proxy drops the caller's
+    ``Idempotency-Key`` server-side, so attaching one client-side does not
+    make a silent retry safe against duplicate spend. Any such error
+    surfaces as a single terminal, non-retryable ``AgenticError`` whose
+    ``retry_after_ms`` (populated from a ``Retry-After`` response header,
+    when present) lets the CALLER decide whether to retry manually.
     """
     forwarded = filter_forwardable_headers(caller_headers)
     # Reuse a caller-supplied (allowlisted) Idempotency-Key when present so
@@ -290,9 +304,6 @@ async def post_chat_forwarding(
 
     credential = await _require_bearer(config, operation)
 
-    retry_policy = DEFAULT_RETRY_POLICY
-    attempt = 0
-    sleep_budget_used_ms = 0.0
     refreshed_once = False
 
     while True:
@@ -317,20 +328,12 @@ async def post_chat_forwarding(
                 credential = await _require_bearer(config, operation)
                 continue
 
-            is_bounded_retryable = err.status in (429, 502, 503)
-            if is_bounded_retryable and attempt + 1 < retry_policy.max_attempts:
-                server_hint_ms = err.retry_after_ms or 0
-                jitter_ms = random.uniform(0, retry_policy.base_ms)
-                delay_ms = equal_jitter_delay_ms(
-                    attempt, retry_policy, server_hint_ms, int(jitter_ms)
-                )
-                if sleep_budget_used_ms + delay_ms > retry_policy.retry_sleep_budget_ms:
-                    raise
-                sleep_budget_used_ms += delay_ms
-                await asyncio.sleep(delay_ms / 1000)
-                attempt += 1
-                continue
-
+            # ADR-0025a §D8: "No Proxy POST is automatically retried while it
+            # drops `Idempotency-Key`" -- the currently-deployed Proxy does not
+            # honor the header for server-side dedup, so attaching one here
+            # does not make a retry safe. 429/502/503 (and every other status)
+            # surface as a single terminal error; `err.retry_after_ms` lets the
+            # caller retry manually.
             raise
 
 

@@ -425,23 +425,59 @@ describe("MetaProxyClient.chat.completions() — retry/refresh (§D7)", () => {
     expect(key0).toBe(key1);
   });
 
-  it("bounded-retries a 503 then succeeds, reusing the idempotency key", async () => {
-    const fetchSpy = queuedFetch([
-      res(503, { error: "degraded" }),
-      res(200, routingReceiptBody("local")),
-    ]);
+  // ADR-0025a §D8: "No Proxy POST is automatically retried while it drops
+  // `Idempotency-Key`" — the currently-deployed Proxy drops the header
+  // server-side, so the SDK attaching one does not make a silent retry safe
+  // against duplicate spend (the Alternatives-considered table rejects
+  // "Retry Proxy POSTs" outright). A 429/502/503 must surface as a single
+  // terminal, non-retryable-by-the-SDK error after exactly one HTTP attempt,
+  // preserving `retryAfterMs` so the CALLER can retry manually.
+  it("never auto-retries a 503 — single attempt, terminal error, retryAfterMs preserved", async () => {
+    const fetchSpy = queuedFetch([res(503, { error: "degraded" }, { "retry-after": "7" })]);
     const client = new MetaProxyClient({
       transport: fetchSpy,
       localCredentialProvider: localBearerProvider(),
     });
 
-    const result = await client.chat.completions(REQUEST);
-    expect(result.data.id).toBe("chatcmpl-1");
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    // `retryable: true` reflects the generic HTTP error classification (a
+    // caller MAY choose to retry a 503) — it does NOT mean the SDK retries it
+    // automatically, which is exactly the bug: the SDK must make exactly one
+    // attempt and hand the classified, terminal error back to the caller.
+    await expect(client.chat.completions(REQUEST)).rejects.toMatchObject({
+      status: 503,
+      retryable: true,
+      retryAfterMs: 7000,
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
 
-    const key0 = (fetchSpy.mock.calls[0][1].headers as Record<string, string>)["Idempotency-Key"];
-    const key1 = (fetchSpy.mock.calls[1][1].headers as Record<string, string>)["Idempotency-Key"];
-    expect(key0).toBe(key1);
+  it("never auto-retries a 429 — single attempt, terminal error", async () => {
+    const fetchSpy = queuedFetch([res(429, { error: "rate limited" }, { "retry-after": "2" })]);
+    const client = new MetaProxyClient({
+      transport: fetchSpy,
+      localCredentialProvider: localBearerProvider(),
+    });
+
+    await expect(client.chat.completions(REQUEST)).rejects.toMatchObject({
+      status: 429,
+      retryable: true,
+      retryAfterMs: 2000,
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("never auto-retries a 502 — single attempt, terminal error", async () => {
+    const fetchSpy = queuedFetch([res(502, { error: "bad gateway" })]);
+    const client = new MetaProxyClient({
+      transport: fetchSpy,
+      localCredentialProvider: localBearerProvider(),
+    });
+
+    await expect(client.chat.completions(REQUEST)).rejects.toMatchObject({
+      status: 502,
+      retryable: true,
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it("never auto-retries a 400", async () => {

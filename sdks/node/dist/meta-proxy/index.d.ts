@@ -745,11 +745,21 @@ interface ChatCompletion {
  * validation, `cognitum_receipt` decoding into a `MetaLlmReceipt`, and
  * meta-llm error mapping). The surrounding forwarding / retry / error contract
  * is Proxy-specific (§D7), so the idempotency + retry shape is re-implemented
- * lightly here, matching `nonstream.js`'s documented behavior:
- *  - a generated (or caller-supplied) `Idempotency-Key`, stable across retries;
+ * lightly here:
+ *  - a generated (or caller-supplied) `Idempotency-Key`, stable across the
+ *    one possible 401-triggered retry;
  *  - at most one 401 credential refresh after a verified 401 challenge;
- *  - bounded 429/502/503 retry using the frozen `DEFAULT_RETRY_POLICY`;
- *  - everything else is never retried.
+ *  - everything else — 429/502/503 included — is NEVER automatically
+ *    retried (ADR-0025a §D8: "No Proxy POST is automatically retried while
+ *    it drops `Idempotency-Key`"). That sentence is about whether the
+ *    *Proxy server* honors the header for dedup — the currently-deployed
+ *    Proxy drops it — so attaching one client-side does not make a retry
+ *    safe. The Alternatives-considered table rejects "Retry Proxy POSTs"
+ *    outright ("Idempotency is dropped and spend can duplicate"). A
+ *    non-2xx surfaces as a single terminal, non-retryable `AgenticError`
+ *    carrying `retryAfterMs` so the CALLER can retry manually. Bounded
+ *    retry is reserved for the read-only status/models/identity routes
+ *    (§D8), which this module does not implement.
  *
  * Security posture layered on top (§D6/§D10):
  *  - only an allowlist of caller headers is forwarded; `Authorization`, the
