@@ -103,7 +103,9 @@ export type {
   OperationHandle,
   PageRequest,
   Page,
+  WaitForOperationOptions,
 } from "./operations.js";
+export { waitForOperation } from "./operations.js";
 
 export type {
   VerificationLevel,

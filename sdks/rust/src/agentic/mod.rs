@@ -59,8 +59,9 @@ pub use oauth_token_provider::{
 };
 pub use scope_preflight::assert_scope_granted;
 pub use operations::{
-    EventStreamOptions, OperationEvent, OperationEventStream, OperationHandle, OperationSnapshot,
-    OperationState, Page, PageRequest, WaitOptions,
+    wait_for_operation, EventStreamOptions, OperationEvent, OperationEventStream, OperationHandle,
+    OperationSnapshot, OperationSource, OperationState, Page, PageRequest, WaitForOperationExtras,
+    WaitOptions,
 };
 pub use receipt_verification::{
     build_execution_receipt, canonical_json, shape_check_execution_receipt,
