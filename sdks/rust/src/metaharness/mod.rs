@@ -26,5 +26,6 @@ pub use types::{
     HarnessValidationResult, HostDescriptor, LocalRepository, ProcessCommitOutcome, ProcessRun,
     ProcessRunState, RepositoryAnalysis, RepositoryScore, RepositorySource, ScaffoldPlan,
     ScaffoldRequestV1, ScaffoldResult, TemplateDescriptor, TemplateIdentity, WitnessVerification,
-    SCAFFOLD_PLAN_SCHEMA_V1, SCAFFOLD_REQUEST_SCHEMA_V1, SCAFFOLD_RESULT_SCHEMA_V1,
+    WorkspaceOrWitness, SCAFFOLD_PLAN_SCHEMA_V1, SCAFFOLD_REQUEST_SCHEMA_V1,
+    SCAFFOLD_RESULT_SCHEMA_V1,
 };

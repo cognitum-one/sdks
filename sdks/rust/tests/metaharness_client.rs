@@ -2,9 +2,9 @@
 
 use cognitum_one::agentic::AgenticErrorKind;
 use cognitum_one::metaharness::{
-    ApplyApproval, GeneratorIdentity, LocalRepository, MetaHarnessClient, MetaHarnessConfig,
-    RepositorySource, ScaffoldPlan, ScaffoldRequestV1, TemplateIdentity,
-    DEFAULT_HANDSHAKE_TIMEOUT_MS,
+    parse_witness_verification, ApplyApproval, GeneratorIdentity, LocalRepository,
+    MetaHarnessClient, MetaHarnessConfig, RepositorySource, ScaffoldPlan, ScaffoldRequestV1,
+    TemplateIdentity, WorkspaceOrWitness, DEFAULT_HANDSHAKE_TIMEOUT_MS,
 };
 use serde_json::json;
 
@@ -239,7 +239,24 @@ async fn compare_harnesses_fails_closed() {
 async fn verify_witness_fails_closed() {
     let source = local_repo("/tmp/repo");
     let err = client()
-        .verify_witness(&source)
+        .verify_witness(&WorkspaceOrWitness::from(source))
+        .await
+        .expect_err("should be blocked");
+    assert_blocked(&err, "verify_witness", "metaharness.witness.shape");
+}
+
+#[tokio::test]
+async fn verify_witness_also_accepts_a_prior_witness_verification_to_reverify_or_escalate() {
+    // Issue #102: `verifyWitness`'s input is a union in Node/Python
+    // (`RepositorySource | WitnessVerification`) so a caller can re-verify
+    // or escalate an already-computed result, not just verify a fresh
+    // workspace. Rust's `verify_witness` previously accepted only
+    // `&RepositorySource`, missing this second variant entirely.
+    let prior = parse_witness_verification(&json!({
+        "verification": { "level": "shape", "valid": true },
+    }));
+    let err = client()
+        .verify_witness(&WorkspaceOrWitness::from(prior))
         .await
         .expect_err("should be blocked");
     assert_blocked(&err, "verify_witness", "metaharness.witness.shape");
@@ -260,5 +277,8 @@ async fn stubs_never_touch_a_process_spy() {
     assert!(c.list_templates().await.is_err());
     assert!(c.list_hosts().await.is_err());
     assert!(c.analyze_repository(&source).await.is_err());
-    assert!(c.verify_witness(&source).await.is_err());
+    assert!(c
+        .verify_witness(&WorkspaceOrWitness::from(local_repo("/tmp/repo")))
+        .await
+        .is_err());
 }

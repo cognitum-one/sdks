@@ -51,6 +51,7 @@ use super::types::{
     ApplyApproval, HarnessComparisonResult, HarnessManifest, HarnessValidationResult,
     HostDescriptor, RepositoryAnalysis, RepositoryScore, RepositorySource, ScaffoldPlan,
     ScaffoldRequestV1, ScaffoldResult, TemplateDescriptor, WitnessVerification,
+    WorkspaceOrWitness,
 };
 
 const PRODUCT: &str = "metaharness";
@@ -296,12 +297,16 @@ impl MetaHarnessClient {
     }
 
     /// Verify a witness at the requested level (ADR-0026a §D2, §D6).
-    /// Blocked for every level — even `shape`, the weakest, requires the
-    /// bridge/kernel this pass does not have (§D7 blocker #5).
+    /// Accepts either a fresh `RepositorySource` to verify from scratch, or
+    /// an existing `WitnessVerification` to re-verify/escalate — matching
+    /// Node/Python's `workspaceOrWitness: RepositorySource |
+    /// WitnessVerification` union (issue #102). Blocked for every level —
+    /// even `shape`, the weakest, requires the bridge/kernel this pass does
+    /// not have (§D7 blocker #5).
     #[allow(clippy::result_large_err)]
     pub async fn verify_witness(
         &self,
-        workspace_or_witness: &RepositorySource,
+        workspace_or_witness: &WorkspaceOrWitness,
     ) -> Result<WitnessVerification, AgenticError> {
         let _ = workspace_or_witness;
         not_yet_available("verify_witness")
