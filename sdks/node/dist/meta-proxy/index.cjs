@@ -199,8 +199,11 @@ var import_node_crypto = require("crypto");
 // src/agentic/oauth-token-provider.ts
 var import_node_crypto2 = require("crypto");
 
-// src/agentic/receipt-verification.ts
+// src/agentic/trace-context.ts
 var import_node_crypto3 = require("crypto");
+
+// src/agentic/receipt-verification.ts
+var import_node_crypto4 = require("crypto");
 
 // src/meta-proxy/routing.ts
 var PRODUCT = "meta-proxy";
@@ -291,7 +294,7 @@ function assertNodeRuntime(operation) {
 }
 
 // src/meta-proxy/auth.ts
-var import_node_crypto4 = require("crypto");
+var import_node_crypto5 = require("crypto");
 var PRODUCT4 = "meta-proxy";
 var DEFAULT_META_PROXY_TOKEN_ENV_VAR = "COGNITUM_META_PROXY_TOKEN";
 function resolveToken(options) {
@@ -311,7 +314,7 @@ function resolveToken(options) {
   );
 }
 function fingerprintOf(token) {
-  return (0, import_node_crypto4.createHash)("sha256").update(`${PRODUCT4}:${token}`).digest("hex").slice(0, 16);
+  return (0, import_node_crypto5.createHash)("sha256").update(`${PRODUCT4}:${token}`).digest("hex").slice(0, 16);
 }
 var LocalBearerTokenCredentialProvider = class {
   #secret;

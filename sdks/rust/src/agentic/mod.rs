@@ -31,6 +31,7 @@ pub mod scope_preflight;
 pub mod static_api_key_provider;
 pub mod sentinel;
 pub mod telemetry;
+pub mod trace_context;
 
 pub use capability::{CapabilitySet, CapabilitySource};
 pub use context::{BudgetPolicy, OnUnknownEstimate, RequestContext, TenantContext};
@@ -72,4 +73,10 @@ pub use telemetry::{
     ATTR_CACHE_RESULT, ATTR_CONTRACT_VERSION, ATTR_ERROR_KIND, ATTR_MODEL_ALIAS,
     ATTR_OPERATION, ATTR_OPERATION_STATE, ATTR_PRODUCT, ATTR_PROTOCOL, ATTR_REQUEST_ID,
     ATTR_RETRY_COUNT, ATTR_ROUTING_PLANE, ATTR_ROUTING_REASON, ATTR_TENANT_HASH, ATTR_TIER,
+};
+pub use trace_context::{
+    format_trace_state, generate_trace_parent, harnessaas_span_name, join_or_generate_trace_context,
+    meta_llm_span_name, meta_proxy_span_name, metaharness_span_name, parse_trace_parent,
+    parse_trace_state, TraceStateMember, DEFAULT_TRACE_FLAGS, MAX_TRACESTATE_MEMBERS,
+    TRACE_VERSION,
 };

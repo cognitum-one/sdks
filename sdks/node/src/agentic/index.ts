@@ -123,6 +123,22 @@ export {
   ATTR_RETRY_COUNT,
 } from "./telemetry.js";
 
+export type { TraceStateMember } from "./trace-context.js";
+export {
+  parseTraceParent,
+  generateTraceParent,
+  parseTraceState,
+  formatTraceState,
+  joinOrGenerateTraceContext,
+  metaLlmSpanName,
+  metaProxySpanName,
+  metaharnessSpanName,
+  harnessaasSpanName,
+  TRACE_VERSION,
+  DEFAULT_TRACE_FLAGS,
+  MAX_TRACESTATE_MEMBERS,
+} from "./trace-context.js";
+
 export type {
   BuildExecutionReceiptInput,
   VerifyReceiptOptions,

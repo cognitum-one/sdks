@@ -126,6 +126,21 @@ from cognitum.agentic.telemetry import (
     TelemetrySink,
     TraceContext,
 )
+from cognitum.agentic.trace_context import (
+    DEFAULT_TRACE_FLAGS,
+    MAX_TRACESTATE_MEMBERS,
+    TRACE_VERSION,
+    TraceStateMember,
+    format_trace_state,
+    generate_trace_parent,
+    harnessaas_span_name,
+    join_or_generate_trace_context,
+    meta_llm_span_name,
+    meta_proxy_span_name,
+    metaharness_span_name,
+    parse_trace_parent,
+    parse_trace_state,
+)
 
 __all__ = [
     # Capability negotiation
@@ -219,4 +234,18 @@ __all__ = [
     "ATTR_OPERATION_STATE",
     "ATTR_ERROR_KIND",
     "ATTR_RETRY_COUNT",
+    # Trace context parse/generate/join + span-name builders (ADR-0028 D2)
+    "TRACE_VERSION",
+    "DEFAULT_TRACE_FLAGS",
+    "MAX_TRACESTATE_MEMBERS",
+    "TraceStateMember",
+    "parse_trace_parent",
+    "generate_trace_parent",
+    "parse_trace_state",
+    "format_trace_state",
+    "join_or_generate_trace_context",
+    "meta_llm_span_name",
+    "meta_proxy_span_name",
+    "metaharness_span_name",
+    "harnessaas_span_name",
 ]

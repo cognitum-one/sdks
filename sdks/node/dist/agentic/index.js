@@ -564,6 +564,138 @@ var ATTR_OPERATION_STATE = "cognitum.operation.state";
 var ATTR_ERROR_KIND = "cognitum.error.kind";
 var ATTR_RETRY_COUNT = "cognitum.retry.count";
 
+// src/agentic/trace-context.ts
+import { randomBytes as randomBytes2 } from "crypto";
+var TRACE_VERSION = "00";
+var DEFAULT_TRACE_FLAGS = "01";
+var MAX_TRACESTATE_MEMBERS = 32;
+function isLowercaseHex(s, expectedLen) {
+  return s.length === expectedLen && /^[0-9a-f]+$/.test(s);
+}
+function isAllZero(s) {
+  return /^0+$/.test(s);
+}
+function parseTraceParentComponents(header) {
+  const parts = header.split("-");
+  if (parts.length !== 4) {
+    return null;
+  }
+  const [version, traceId, parentId, traceFlags] = parts;
+  if (version !== TRACE_VERSION) {
+    return null;
+  }
+  if (!isLowercaseHex(traceId, 32) || isAllZero(traceId)) {
+    return null;
+  }
+  if (!isLowercaseHex(parentId, 16) || isAllZero(parentId)) {
+    return null;
+  }
+  if (!isLowercaseHex(traceFlags, 2)) {
+    return null;
+  }
+  return { traceId, parentId, traceFlags };
+}
+function parseTraceParent(header) {
+  if (!parseTraceParentComponents(header)) {
+    return null;
+  }
+  return { traceParent: header };
+}
+function randomHexNonzero(byteLen) {
+  for (; ; ) {
+    const bytes = randomBytes2(byteLen);
+    if (bytes.some((b) => b !== 0)) {
+      return bytes.toString("hex");
+    }
+  }
+}
+function generateTraceParent() {
+  const traceId = randomHexNonzero(16);
+  const parentId = randomHexNonzero(8);
+  return {
+    traceParent: `${TRACE_VERSION}-${traceId}-${parentId}-${DEFAULT_TRACE_FLAGS}`
+  };
+}
+function isValidTraceStateKeyCharset(s) {
+  return s.length > 0 && s.length <= 256 && /^[a-z0-9][a-z0-9\-*_/]*$/.test(s);
+}
+function isValidTraceStateKey(key) {
+  const atIndex = key.indexOf("@");
+  if (atIndex === -1) {
+    return isValidTraceStateKeyCharset(key);
+  }
+  if (key.indexOf("@", atIndex + 1) !== -1) {
+    return false;
+  }
+  const tenant = key.slice(0, atIndex);
+  const vendor = key.slice(atIndex + 1);
+  return tenant.length > 0 && vendor.length > 0 && isValidTraceStateKeyCharset(tenant) && isValidTraceStateKeyCharset(vendor);
+}
+function isValidTraceStateValue(value) {
+  if (value.length === 0 || value.length > 256) {
+    return false;
+  }
+  if (value.startsWith(" ") || value.endsWith(" ")) {
+    return false;
+  }
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    const ch = value[i];
+    if (code < 32 || code > 126 || ch === "," || ch === "=") {
+      return false;
+    }
+  }
+  return true;
+}
+function parseTraceState(header) {
+  if (header.trim().length === 0) {
+    return null;
+  }
+  const members = [];
+  for (const rawMember of header.split(",")) {
+    const member = rawMember.replace(/^[ \t]+|[ \t]+$/g, "");
+    if (member.length === 0) {
+      return null;
+    }
+    const eqIndex = member.indexOf("=");
+    if (eqIndex === -1) {
+      return null;
+    }
+    const key = member.slice(0, eqIndex);
+    const value = member.slice(eqIndex + 1);
+    if (!isValidTraceStateKey(key) || !isValidTraceStateValue(value)) {
+      return null;
+    }
+    members.push({ key, value });
+  }
+  if (members.length === 0 || members.length > MAX_TRACESTATE_MEMBERS) {
+    return null;
+  }
+  return members;
+}
+function formatTraceState(members) {
+  return members.map((m) => `${m.key}=${m.value}`).join(",");
+}
+function joinOrGenerateTraceContext(incomingTraceparentHeader, incomingTracestateHeader) {
+  const parsedTraceState = incomingTracestateHeader ? parseTraceState(incomingTracestateHeader) : null;
+  const traceState = parsedTraceState ? formatTraceState(parsedTraceState) : void 0;
+  const components = incomingTraceparentHeader ? parseTraceParentComponents(incomingTraceparentHeader) : null;
+  const traceParent = components ? `${TRACE_VERSION}-${components.traceId}-${randomHexNonzero(8)}-${DEFAULT_TRACE_FLAGS}` : generateTraceParent().traceParent;
+  return traceState !== void 0 ? { traceParent, traceState } : { traceParent };
+}
+function metaLlmSpanName(operation) {
+  return `cognitum.meta_llm.${operation}`;
+}
+function metaProxySpanName(operation) {
+  return `cognitum.meta_proxy.${operation}`;
+}
+function metaharnessSpanName(operation) {
+  return `cognitum.metaharness.${operation}`;
+}
+function harnessaasSpanName(operation) {
+  return `cognitum.harnessaas.${operation}`;
+}
+
 // src/agentic/receipt-verification.ts
 import { createHash as createHash3, createHmac, timingSafeEqual } from "crypto";
 var CANONICALIZATION_VERSION = "cognitum-canonical-json-v1";
@@ -851,18 +983,30 @@ export {
   ConsentRequiredError,
   DEFAULT_API_KEY_ENV_VAR,
   DEFAULT_RETRY_POLICY,
+  DEFAULT_TRACE_FLAGS,
+  MAX_TRACESTATE_MEMBERS,
   NoopTelemetrySink,
   OAuthTokenCredentialProvider,
   PermissionDeniedError,
   RedactedSecret,
   SentinelSecretRedactor,
   StaticApiKeyCredentialProvider,
+  TRACE_VERSION,
   UnsupportedCapabilityError,
   UnsupportedRuntimeError,
   assertScopeGranted,
   buildExecutionReceipt,
   canonicalJson,
   equalJitterDelayMs,
+  formatTraceState,
+  generateTraceParent,
+  harnessaasSpanName,
+  joinOrGenerateTraceContext,
+  metaLlmSpanName,
+  metaProxySpanName,
+  metaharnessSpanName,
+  parseTraceParent,
+  parseTraceState,
   sha256Hex,
   shapeCheckExecutionReceipt,
   shapeCheckLineageReference,

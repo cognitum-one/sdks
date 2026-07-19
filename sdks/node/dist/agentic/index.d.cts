@@ -843,6 +843,113 @@ declare const ATTR_ERROR_KIND = "cognitum.error.kind";
 declare const ATTR_RETRY_COUNT = "cognitum.retry.count";
 
 /**
+ * W3C Trace Context parse / generate / join logic and stable span-name
+ * builders (ADR-0028 §D2).
+ *
+ * This module ADDS real logic on top of the {@link TraceContext} carrier
+ * type frozen in `./telemetry.ts` during the §D1/§D3 pass (PR #115) -- it
+ * does not redefine that type. Per §D2: "Remote HTTP clients propagate W3C
+ * `traceparent` and `tracestate` when enabled and when allowed by the
+ * product contract... Trace context is generated or joined by the SDK but
+ * never used as an authorization, tenant, idempotency, or evidence
+ * identity. Untrusted server or subprocess trace values are validated
+ * before joining."
+ *
+ * Nothing in this module performs network I/O or wires into a product
+ * client's HTTP request logic (meta-llm/meta-proxy/metaharness/harnessaas)
+ * -- that is explicitly out of scope for this pass, mirroring how
+ * `sse/parser.ts` shipped as a protocol-agnostic core before any product
+ * wired it in.
+ *
+ * ## W3C Trace Context spec simplifications made in this pass
+ *
+ * - **Version**: only `traceparent` version `"00"` is accepted. The spec's
+ *   own forward-compatibility rule (Trace Context, "Versioning of
+ *   traceparent") allows a higher version to append trailing fields after
+ *   `trace-flags`; this SDK has no use for any such field, so rather than
+ *   parse-and-ignore unknown trailing data, any non-`"00"` version (or a
+ *   `traceparent` that does not split into exactly four `-`-separated
+ *   fields) is treated as invalid input. Per §D2's "untrusted values must
+ *   be validated before joining," {@link joinOrGenerateTraceContext} simply
+ *   falls back to generating a fresh trace context in that case rather than
+ *   guessing at a newer wire shape.
+ * - **`tracestate`**: a "reasonably strict" validator, not the full spec.
+ *   Enforced: non-empty, at most 32 members, each `key=value` pair with a
+ *   key restricted to lowercase alphanumerics plus `-`/`*`/`_`/`/` (with at
+ *   most one `@` tenant/vendor separator, each side non-empty) and a value
+ *   restricted to printable ASCII (0x20-0x7E) excluding `,`/`=` and
+ *   leading/trailing spaces. Not enforced: the spec's separate tenant-id
+ *   (<=241 chars) / vendor-id (<=13 chars) length caps around `@` -- this
+ *   pass uses one shared 256-char cap on each side instead.
+ * - **Random source**: `node:crypto`'s `randomBytes` (already used
+ *   elsewhere in this module tree, e.g. `oauth-token-provider.ts`) is a
+ *   cryptographically secure OS-backed source, so generation here uses it
+ *   directly -- no new dependency, and no need to fall back to a
+ *   non-cryptographic PRNG (unlike the Rust SDK, where the equivalent
+ *   secure-random dependency, `uuid`, is feature-gated behind product
+ *   features this base module cannot depend on).
+ */
+
+/** The only `traceparent` version this implementation accepts. See the module doc comment's "Version" simplification. */
+declare const TRACE_VERSION = "00";
+/** Default `trace-flags` value used when this SDK generates a new trace-parent: bit 0 ("sampled") set. */
+declare const DEFAULT_TRACE_FLAGS = "01";
+/** Max `tracestate` list members this parser accepts (matches the W3C spec's own cap). */
+declare const MAX_TRACESTATE_MEMBERS = 32;
+/**
+ * Parses and validates a raw `traceparent` header value (W3C Trace Context:
+ * `{version}-{trace-id}-{parent-id}-{trace-flags}`, e.g.
+ * `00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01`). Returns `null`
+ * on ANY malformed input (wrong version, wrong hex-char-count, all-zero
+ * trace-id or parent-id, wrong separator count, non-hex characters) --
+ * never throws, matching §D2's "untrusted server or subprocess trace values
+ * are validated before joining."
+ */
+declare function parseTraceParent(header: string): TraceContext | null;
+/**
+ * Generates a fresh, valid `traceparent`: a random 32-hex-char trace-id and
+ * 16-hex-char parent-id (both guaranteed nonzero), `trace-flags = "01"`
+ * (sampled).
+ */
+declare function generateTraceParent(): TraceContext;
+/** One validated `tracestate` list member. */
+interface TraceStateMember {
+    key: string;
+    value: string;
+}
+/**
+ * Parses a raw `tracestate` header value into an ordered list of validated
+ * `key=value` members (comma-separated, up to {@link MAX_TRACESTATE_MEMBERS}).
+ * Returns `null` on ANY malformed input (empty, too many members, malformed
+ * key/value characters) -- never throws. See the module doc comment for
+ * exactly which spec details this validator simplifies.
+ */
+declare function parseTraceState(header: string): TraceStateMember[] | null;
+/** Formats a list of `tracestate` members back into the wire string. */
+declare function formatTraceState(members: TraceStateMember[]): string;
+/**
+ * Joins an incoming, untrusted `traceparent`/`tracestate` pair if valid, or
+ * generates a fresh trace context otherwise. Per §D2: a receiving service
+ * keeps the incoming trace-id but generates its own new parent-id/span-id
+ * (this SDK is a new span in the same trace); `trace-flags` is reset to
+ * {@link DEFAULT_TRACE_FLAGS} since this pass does not interpret or
+ * propagate the incoming sampling bit. An invalid incoming `traceparent`
+ * NEVER throws and NEVER gets joined -- it falls back to generation,
+ * matching "untrusted server or subprocess trace values are validated
+ * before joining." An invalid incoming `tracestate` is silently dropped
+ * (treated as absent) rather than invalidating the whole join.
+ */
+declare function joinOrGenerateTraceContext(incomingTraceparentHeader?: string, incomingTracestateHeader?: string): TraceContext;
+/** Builds the stable span name `cognitum.meta_llm.<operation>`. */
+declare function metaLlmSpanName(operation: string): string;
+/** Builds the stable span name `cognitum.meta_proxy.<operation>`. */
+declare function metaProxySpanName(operation: string): string;
+/** Builds the stable span name `cognitum.metaharness.<operation>`. */
+declare function metaharnessSpanName(operation: string): string;
+/** Builds the stable span name `cognitum.harnessaas.<operation>`. */
+declare function harnessaasSpanName(operation: string): string;
+
+/**
  * ExecutionReceipt / LineageReference construction + verification (issue #56,
  * building out the ADR-0028 §D7-§D9 type-only stubs from PR #79).
  *
@@ -930,4 +1037,4 @@ interface LineageChainVerification {
  */
 declare function verifyLineageChain(chain: LineageReference[], opts: VerifyLineageChainOptions): LineageChainVerification;
 
-export { ATTR_CACHE_RESULT, ATTR_CONTRACT_VERSION, ATTR_ERROR_KIND, ATTR_MODEL_ALIAS, ATTR_OPERATION, ATTR_OPERATION_STATE, ATTR_PRODUCT, ATTR_PROTOCOL, ATTR_REQUEST_ID, ATTR_RETRY_COUNT, ATTR_ROUTING_PLANE, ATTR_ROUTING_REASON, ATTR_TENANT_HASH, ATTR_TIER, AgenticError, type AgenticErrorKind, type BudgetPolicy, type BuildExecutionReceiptInput, type CancellationReason, type CancellationToken, type CapabilitySet, type CapabilitySource, type ConsentGrant, type ConsentGrantKind, ConsentRequiredError, type CostFinality, type CostObservation, type Credential, type CredentialAuthority, type CredentialProvider, type CredentialRequest, type D12Category, DEFAULT_API_KEY_ENV_VAR, DEFAULT_RETRY_POLICY, type EventStreamOptions, type ExecutionReceipt, type IdempotencyBindingV1, type LineageChainVerification, type LineageReference, NoopTelemetrySink, OAuthTokenCredentialProvider, type OAuthTokenCredentialProviderOptions, type OAuthTokenSource, type OAuthTokenSourceResult, type OnUnknownEstimate, type OperationEvent, type OperationHandle, type OperationRetryClass, type OperationSnapshot, type OperationState, type Page, type PageRequest, PermissionDeniedError, RedactedSecret, type RequestContext, type RetryPolicy, type SecretClassification, type SecretRedactor, SentinelSecretRedactor, StaticApiKeyCredentialProvider, type StaticApiKeyCredentialProviderOptions, type TelemetryEvent, type TelemetrySeverity, type TelemetrySink, type TenantContext, type TimeBudget, type TraceContext, UnsupportedCapabilityError, UnsupportedRuntimeError, type VerificationLevel, type VerificationResult, type VerifyLineageChainOptions, type VerifyReceiptOptions, type WaitOptions, assertScopeGranted, buildExecutionReceipt, canonicalJson, equalJitterDelayMs, sha256Hex, shapeCheckExecutionReceipt, shapeCheckLineageReference, verifyExecutionReceipt, verifyLineageChain };
+export { ATTR_CACHE_RESULT, ATTR_CONTRACT_VERSION, ATTR_ERROR_KIND, ATTR_MODEL_ALIAS, ATTR_OPERATION, ATTR_OPERATION_STATE, ATTR_PRODUCT, ATTR_PROTOCOL, ATTR_REQUEST_ID, ATTR_RETRY_COUNT, ATTR_ROUTING_PLANE, ATTR_ROUTING_REASON, ATTR_TENANT_HASH, ATTR_TIER, AgenticError, type AgenticErrorKind, type BudgetPolicy, type BuildExecutionReceiptInput, type CancellationReason, type CancellationToken, type CapabilitySet, type CapabilitySource, type ConsentGrant, type ConsentGrantKind, ConsentRequiredError, type CostFinality, type CostObservation, type Credential, type CredentialAuthority, type CredentialProvider, type CredentialRequest, type D12Category, DEFAULT_API_KEY_ENV_VAR, DEFAULT_RETRY_POLICY, DEFAULT_TRACE_FLAGS, type EventStreamOptions, type ExecutionReceipt, type IdempotencyBindingV1, type LineageChainVerification, type LineageReference, MAX_TRACESTATE_MEMBERS, NoopTelemetrySink, OAuthTokenCredentialProvider, type OAuthTokenCredentialProviderOptions, type OAuthTokenSource, type OAuthTokenSourceResult, type OnUnknownEstimate, type OperationEvent, type OperationHandle, type OperationRetryClass, type OperationSnapshot, type OperationState, type Page, type PageRequest, PermissionDeniedError, RedactedSecret, type RequestContext, type RetryPolicy, type SecretClassification, type SecretRedactor, SentinelSecretRedactor, StaticApiKeyCredentialProvider, type StaticApiKeyCredentialProviderOptions, TRACE_VERSION, type TelemetryEvent, type TelemetrySeverity, type TelemetrySink, type TenantContext, type TimeBudget, type TraceContext, type TraceStateMember, UnsupportedCapabilityError, UnsupportedRuntimeError, type VerificationLevel, type VerificationResult, type VerifyLineageChainOptions, type VerifyReceiptOptions, type WaitOptions, assertScopeGranted, buildExecutionReceipt, canonicalJson, equalJitterDelayMs, formatTraceState, generateTraceParent, harnessaasSpanName, joinOrGenerateTraceContext, metaLlmSpanName, metaProxySpanName, metaharnessSpanName, parseTraceParent, parseTraceState, sha256Hex, shapeCheckExecutionReceipt, shapeCheckLineageReference, verifyExecutionReceipt, verifyLineageChain };

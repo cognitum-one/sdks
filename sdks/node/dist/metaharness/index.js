@@ -104,6 +104,9 @@ import { createHash } from "crypto";
 // src/agentic/oauth-token-provider.ts
 import { createHash as createHash2, randomBytes } from "crypto";
 
+// src/agentic/trace-context.ts
+import { randomBytes as randomBytes2 } from "crypto";
+
 // src/agentic/receipt-verification.ts
 import { createHash as createHash3, createHmac, timingSafeEqual } from "crypto";
 
