@@ -2,7 +2,7 @@
 
 - **Status:** Partially Implemented
 - **Date:** 2026-07-18
-- **Updated:** 2026-07-19 — `CredentialProvider`/`RedactedSecret`/`SecretRedactor` frozen and built (PR #79 stub, PR #83 `StaticApiKeyCredentialProvider`, PR #82 `SentinelSecretRedactor`); D7 consent-grant isolation for Meta Proxy's `cognitum_cloud` routing plane (`ConsentGrant`/`ConsentRequiredError`) is implemented in PR #96 (in independent review, not yet merged as of this update). Client-side `BudgetPolicy` guard exists as an additional (non-authoritative) check on Meta LLM operations; server-authoritative budget/reservation accounting is platform-side and out of SDK scope. Sponsor/power-saver/direct-Anthropic/training consent grants beyond the cloud-routing check, and OAuth token-provider support, are not yet implemented.
+- **Updated:** 2026-07-19 — `CredentialProvider`/`RedactedSecret`/`SecretRedactor` frozen and built (PR #79 stub, PR #83 `StaticApiKeyCredentialProvider`, PR #82 `SentinelSecretRedactor`); D7 consent-grant isolation for Meta Proxy's `cognitum_cloud` routing plane (`ConsentGrant`/`ConsentRequiredError`) is implemented (PR #96). Client-side `BudgetPolicy` guard exists as an additional (non-authoritative) check on Meta LLM operations; server-authoritative budget/reservation accounting is platform-side and out of SDK scope. Sponsor/power-saver/direct-Anthropic/training consent grants beyond the cloud-routing check, and OAuth token-provider support, are not yet implemented.
 - **Deciders:** Cognitum SDK Working Group, Identity, Security, Privacy, FinOps, product owners
 - **Scope:** cross-cutting (`sdks/node`, `sdks/python`, `sdks/rust`)
 
