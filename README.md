@@ -102,7 +102,7 @@ Every SDK ships — with parity tests:
 - **Health probing** — opt-in background probe that marks slow peers
   `Degraded` and failed peers `Unhealthy`.
 - **Discovery providers** — explicit list (default), **mDNS** (opt-in:
-  `@cognitum-one/sdk/seed/discovery/mdns` · `pip install cognitum[mdns]` ·
+  `@cognitum-one/sdk/seed/discovery/mdns` · `pip install cognitum-sdk[mdns]` ·
   `cargo --features seed,mdns`), **Tailscale** (any tailnet peer matching
   `cognitum-*`).
 - **TLS pinning** — three modes: explicit CA (`tls.ca` / `SeedTLS(ca_pem=...)` /
@@ -145,7 +145,7 @@ Maturity uses one shared vocabulary across all three SDKs and the
 | Capability | Maturity | What it does |
 |---|---|---|
 | **Agentic core** | Available | Credential providers (API key + OAuth), scope preflight, typed error/retry taxonomy, execution receipts + lineage verification, secret redaction, W3C trace context. Telemetry primitives (sink interface, event/metric catalog) are public and tested but not yet wired into a live emission path. |
-| **Meta-LLM** | Available | Real HTTP client for all 5 serving protocols (chat.completions, messages, countTokens, completions, responses, embeddings), OpenAI + Anthropic SSE streaming, routing controls, receipts. Platform resources (batches, pods, Brain, vectors, …) are REST-only for now — [issue #59](https://github.com/cognitum-one/sdks/issues/59). |
+| **Meta-LLM** | Available | Real HTTP client for all 6 serving protocols (chat.completions, messages.create, messages.countTokens, completions, responses, embeddings), OpenAI + Anthropic SSE streaming, routing controls, receipts. Platform resources (batches, pods, Brain, vectors, …) are REST-only for now — [issue #59](https://github.com/cognitum-one/sdks/issues/59). |
 | **Meta-Proxy** | Available | Local data-plane status/capabilities discovery and chat.completions forwarding (streaming + non-streaming), consent-gated cloud routing. Sponsor/budget lifecycle is not yet implemented. |
 | **HarnessaaS** | Available | Real synchronous `health` / `solve` / `lineage` calls against the deployed API. The async job/poll/approval contract some ADRs describe does not exist upstream yet. |
 | **MetaHarness** | Contract preview | Full typed method surface, every operation fail-closed by design — there is no published local bridge protocol for it to call yet. Do not represent any method as functional until that changes. |

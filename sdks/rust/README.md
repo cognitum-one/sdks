@@ -70,16 +70,17 @@ shared agentic contract layer (unconditional, no feature flag needed), all
 additive to the Seed/Cloud client above.
 
 ```rust
+use std::sync::Arc;
+
 use cognitum_one::agentic::StaticApiKeyCredentialProvider;
-use cognitum_one::meta_llm::{
-    ChatCompletionRequest, ChatMessage, ChatMessageContent, ChatRole, MetaLlmClient, MetaLlmClientConfig,
-};
+use cognitum_one::meta_llm::types::{ChatCompletionRequest, ChatMessage, ChatMessageContent, ChatRole};
+use cognitum_one::meta_llm::{MetaLlmClient, MetaLlmClientConfig, OpenAiStreamEvent};
 
 let llm = MetaLlmClient::new(MetaLlmClientConfig {
     credential_provider: Some(Arc::new(StaticApiKeyCredentialProvider::new(
         "meta-llm",
         "https://api.cognitum.one",
-        "cognitum.meta-llm",
+        "https://api.cognitum.one", // audience must match base_url (ADR-0022 §D3)
         Default::default(), // reads COGNITUM_API_KEY by default
     )?)),
     ..MetaLlmClientConfig::new("https://api.cognitum.one")
@@ -99,16 +100,20 @@ let request = ChatCompletionRequest {
     tools: None, tool_choice: None, response_format: None, seed: None, routing_controls: None,
 };
 let mut stream = llm.chat_completions_stream(&request, None, None).await?;
-// pull with next_envelope() -- this isn't a futures::Stream, see the method's doc comment
+// pull with next_envelope() -- this isn't a futures::Stream, see the method's doc comment.
+// The event lives on envelope.event -- the envelope itself only carries metadata
+// (sequence, received_at, request_id, ...), never the event fields directly.
 while let Some(envelope) = stream.next_envelope().await? {
-    // handle ContentDelta / ToolCallDelta / FinishReason / Usage / Receipt / Error
+    if let OpenAiStreamEvent::ContentDelta { delta, .. } = envelope.event {
+        print!("{delta}");
+    }
 }
 ```
 
 | Module | Feature flag | Maturity | Notes |
 |---|---|---|---|
 | `cognitum_one::agentic` | none (always available) | Available | Credentials, typed errors/retry, receipts + lineage, redaction, W3C trace context. Telemetry primitives are public/tested but no product client wires them into a live emission path yet. |
-| `cognitum_one::meta_llm` | `meta-llm` | Available | 5 serving protocols, OpenAI/Anthropic SSE streaming, routing, receipts. Platform resources (batches, pods, Brain, …) are REST-only — [issue #59](https://github.com/cognitum-one/sdks/issues/59). |
+| `cognitum_one::meta_llm` | `meta-llm` | Available | 6 serving protocols, OpenAI/Anthropic SSE streaming, routing, receipts. Platform resources (batches, pods, Brain, …) are REST-only — [issue #59](https://github.com/cognitum-one/sdks/issues/59). |
 | `cognitum_one::meta_proxy` | `meta-proxy` | Available | Local status/capabilities + chat.completions forwarding (streaming + non-streaming), consent-gated cloud routing. |
 | `cognitum_one::harnessaas` | `harnessaas` | Available | Real synchronous `health` / `solve` / `lineage`. No async job/poll/approval contract exists upstream yet. |
 | `cognitum_one::metaharness` | `metaharness` | Contract preview | Full typed surface, every call fail-closed — no published local bridge protocol yet. |

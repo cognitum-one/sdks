@@ -65,7 +65,7 @@
         "python": "cognitum.meta_llm",
         "rust": "cognitum_one::meta_llm (feature = \"meta-llm\")"
       },
-      "description": "Real HTTP-backed client for all five Meta-LLM serving protocols.",
+      "description": "Real HTTP-backed client for all six Meta-LLM serving protocols.",
       "protocols": ["chat.completions", "messages.create", "messages.countTokens", "completions", "responses", "embeddings"],
       "streaming": {
         "chat.completions": "OpenAI-style SSE, protocol-agnostic parser",

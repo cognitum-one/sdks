@@ -57,22 +57,25 @@ const llm = new MetaLlmClient({
   credentialProvider: new StaticApiKeyCredentialProvider({
     product: "meta-llm",
     normalizedOrigin: "https://api.cognitum.one",
-    audience: "cognitum.meta-llm",
+    audience: "https://api.cognitum.one", // must match baseUrl (ADR-0022 §D3)
   }), // reads COGNITUM_API_KEY by default
 });
 
-for await (const event of llm.chat.completionsStream({
+// Each yielded value is a MetaLlmStreamEnvelope<OpenAiStreamEvent> -- the
+// event itself lives on .event; the envelope only carries metadata
+// (sequence, receivedAt, requestId, ...).
+for await (const envelope of llm.chat.completionsStream({
   model: "cognitum-meta-llm",
   messages: [{ role: "user", content: "hello" }],
 })) {
-  if (event.type === "content_delta") process.stdout.write(event.delta);
+  if (envelope.event.type === "content_delta") process.stdout.write(envelope.event.delta);
 }
 ```
 
 | Namespace | Maturity | Notes |
 |---|---|---|
 | `@cognitum-one/sdk/agentic` | Available | Credentials, typed errors/retry, receipts + lineage, redaction, W3C trace context. Telemetry primitives are public/tested but no product client wires them into a live emission path yet. |
-| `@cognitum-one/sdk/meta-llm` | Available | 5 serving protocols, OpenAI/Anthropic SSE streaming, routing, receipts. Platform resources (batches, pods, Brain, …) are REST-only — [issue #59](https://github.com/cognitum-one/sdks/issues/59). |
+| `@cognitum-one/sdk/meta-llm` | Available | 6 serving protocols, OpenAI/Anthropic SSE streaming, routing, receipts. Platform resources (batches, pods, Brain, …) are REST-only — [issue #59](https://github.com/cognitum-one/sdks/issues/59). |
 | `@cognitum-one/sdk/meta-proxy` | Available | Local status/capabilities + chat.completions forwarding (streaming + non-streaming), consent-gated cloud routing. |
 | `@cognitum-one/sdk/harnessaas` | Available | Real synchronous `health` / `solve` / `lineage`. No async job/poll/approval contract exists upstream yet. |
 | `@cognitum-one/sdk/metaharness` | Contract preview | Full typed surface, every call fail-closed — no published local bridge protocol yet. |

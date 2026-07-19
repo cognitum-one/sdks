@@ -162,7 +162,7 @@ async function crossCheckRegistries(manifest) {
       const liveVersion = await checker(lang);
       if (liveVersion !== lang.registryVersion) {
         fail(
-          `${name}: manifest claims registryVersion "${lang.registryVersion}" but live registry reports "${liveVersion}" -- update the manifest or investigate a stalled publish (see .mission/GUIDANCE.md for the crates.io 0.3.0 incident this check exists to catch).`,
+          `${name}: manifest claims registryVersion "${lang.registryVersion}" but live registry reports "${liveVersion}" -- update the manifest, or investigate a stalled publish (this is the exact class of drift this check exists to catch -- see issue #123).`,
         );
       } else {
         ok(`${name}: registryVersion "${lang.registryVersion}" matches live registry`);
