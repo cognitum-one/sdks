@@ -41,6 +41,13 @@ meta-llm = ["dep:uuid"]
 # client-class sharing (still forbidden by §D4). `meta-llm` already pulls in
 # the `uuid` optional dependency both modules use for correlation IDs.
 meta-proxy = ["meta-llm"]
+# MetaHarness client (ADR-0019 §D2, ADR-0026a). Gates the `metaharness`
+# module's code, per ADR-0026a §D1's namespace map
+# (`cognitum_one::metaharness`, feature `metaharness`). Issue #64 / M4
+# start: construction + fail-closed §D2 method stubs only — no bridge
+# process, no npm acquisition — so this pulls in no new optional
+# dependency (only `serde_json`, already a base dependency).
+metaharness = []
 blocking = ["reqwest/blocking"]
 live-seed-tests = ["seed"]
 # Opt-in mDNS discovery (ADR-0016a §D6, Phase 3). One-shot `_cognitum._tcp.local`

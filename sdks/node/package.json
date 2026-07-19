@@ -37,6 +37,11 @@
       "import": "./dist/meta-proxy/index.js",
       "require": "./dist/meta-proxy/index.cjs"
     },
+    "./metaharness": {
+      "types": "./dist/metaharness/index.d.ts",
+      "import": "./dist/metaharness/index.js",
+      "require": "./dist/metaharness/index.cjs"
+    },
     "./sse": {
       "types": "./dist/sse/index.d.ts",
       "import": "./dist/sse/index.js",

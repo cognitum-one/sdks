@@ -77,6 +77,25 @@ export default defineConfig([
     outDir: "dist",
   },
   {
+    // MetaHarness client subpath — @cognitum-one/sdk/metaharness
+    // (ADR-0019 §D2, ADR-0026a §D1, ADR-0029 §D2). Same "runtime guard, not
+    // build-time exclusion" approach as meta-proxy above: this package
+    // ships one universal build per subpath, so `./src/metaharness/browser-guard.js`
+    // (a byte-for-byte port of meta-proxy's guard) runs as the FIRST
+    // statement of `MetaHarnessClient`'s constructor and throws
+    // `UnsupportedRuntimeError` before any npm access, process spawn,
+    // repository read, filesystem write, capability probe, login, or
+    // prompt, regardless of which bundler resolves this module for a
+    // browser target.
+    entry: { "metaharness/index": "src/metaharness/index.ts" },
+    format: ["esm", "cjs"],
+    dts: true,
+    clean: false,
+    sourcemap: true,
+    target: "es2022",
+    outDir: "dist",
+  },
+  {
     // Protocol-agnostic SSE parser subpath — @cognitum-one/sdk/sse
     // (ADR-0024a §D5). Zero product knowledge, zero dependencies beyond
     // `TextDecoder`/`TextEncoder` — safe for browser-facing bundles.
