@@ -21,12 +21,14 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 var agentic_exports = {};
 __export(agentic_exports, {
   AgenticError: () => AgenticError,
+  ConsentRequiredError: () => ConsentRequiredError,
   DEFAULT_API_KEY_ENV_VAR: () => DEFAULT_API_KEY_ENV_VAR,
   DEFAULT_RETRY_POLICY: () => DEFAULT_RETRY_POLICY,
   RedactedSecret: () => RedactedSecret,
   SentinelSecretRedactor: () => SentinelSecretRedactor,
   StaticApiKeyCredentialProvider: () => StaticApiKeyCredentialProvider,
   UnsupportedCapabilityError: () => UnsupportedCapabilityError,
+  UnsupportedRuntimeError: () => UnsupportedRuntimeError,
   buildExecutionReceipt: () => buildExecutionReceipt,
   canonicalJson: () => canonicalJson,
   equalJitterDelayMs: () => equalJitterDelayMs,
@@ -80,6 +82,32 @@ var UnsupportedCapabilityError = class extends AgenticError {
     );
     this.name = "UnsupportedCapabilityError";
     this.capability = capability;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
+var ConsentRequiredError = class extends AgenticError {
+  requiredKind;
+  constructor(product, operation, requiredKind, message) {
+    super(
+      "consent_required",
+      message ?? `operation "${operation}" on ${product} requires an unexpired ADR-0022 consent grant of kind "${requiredKind}" \u2014 credential presence alone is not consent`,
+      { product, operation, retryable: false }
+    );
+    this.name = "ConsentRequiredError";
+    this.requiredKind = requiredKind;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
+var UnsupportedRuntimeError = class extends AgenticError {
+  runtime;
+  constructor(product, operation, runtime, message) {
+    super(
+      "configuration",
+      message ?? `${product} does not support the "${runtime}" runtime (ADR-0029 \xA7D2) \u2014 construction refused before reading a credential or opening a socket`,
+      { product, operation, retryable: false }
+    );
+    this.name = "UnsupportedRuntimeError";
+    this.runtime = runtime;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 };
@@ -662,12 +690,14 @@ function verifyLineageChain(chain, opts) {
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   AgenticError,
+  ConsentRequiredError,
   DEFAULT_API_KEY_ENV_VAR,
   DEFAULT_RETRY_POLICY,
   RedactedSecret,
   SentinelSecretRedactor,
   StaticApiKeyCredentialProvider,
   UnsupportedCapabilityError,
+  UnsupportedRuntimeError,
   buildExecutionReceipt,
   canonicalJson,
   equalJitterDelayMs,

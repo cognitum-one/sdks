@@ -66,6 +66,7 @@ import {
   type ChatForwardDeps,
   type MetaProxyChatCallOptions,
 } from "../forwarding.js";
+import { assertConsentForRoutingIntent } from "../consent.js";
 import { mapMetaProxyHttpError } from "../http-errors.js";
 import { assertRoutingReceiptMatchesIntent } from "../routing.js";
 import type { MetaProxyRoutingReceipt } from "../status.js";
@@ -466,6 +467,17 @@ export async function* forwardChatCompletionStream(
   request: ChatCompletionRequest,
   options?: MetaProxyChatStreamCallOptions,
 ): AsyncGenerator<MetaProxyStreamEnvelope<OpenAiStreamEvent>, void, void> {
+  // ADR-0025a §D9: same fail-closed consent gate as non-streaming
+  // `forwardChatCompletion` (`../forwarding.js`) — this is the FIRST
+  // statement in the generator body, so it runs on the first `.next()` call,
+  // before `openStreamWithPreByteRetry` opens any connection.
+  assertConsentForRoutingIntent(
+    options?.routingIntent,
+    deps.consentGrants ?? [],
+    deps.origin,
+    OPERATION,
+  );
+
   const { forwarded, idempotencyKey: callerKey } = filterForwardHeaders(options?.forwardHeaders);
   const idempotencyKey = callerKey ?? newIdempotencyKey();
   const requestId = (options?.requestContext?.requestId as string | undefined) ?? newRequestId();

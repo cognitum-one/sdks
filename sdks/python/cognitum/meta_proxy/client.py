@@ -21,14 +21,24 @@ their OWN envelope, not a reuse of ``MetaLlmResult`` -- see
 
 Deferred to follow-up M3 passes (see issue #61 and ADR-0025a):
 
-- §D5 data-plane and policy model (``RoutingIntent``, plane/policy rules);
+- §D5 data-plane and policy model (``RoutingIntent``, plane/policy rules) --
+  implemented (:mod:`cognitum.meta_proxy.routing`);
 - §D6 authentication and workload capabilities beyond the minimal
   ``CredentialProvider`` this pass's constructor accepts;
-- §D7 inference/forwarding contract (``chat.completions``, ``messages``);
-- §D8 streaming, errors, cancellation, and retry for the data plane;
-- §D9 consent, sponsor budget, and usage;
-- §D10 loopback and browser security beyond the loopback-origin validation
-  already enforced by :mod:`cognitum.meta_proxy.config`.
+- §D7 inference/forwarding contract (``chat.completions``, ``messages``) --
+  implemented (:mod:`cognitum.meta_proxy.nonstream`);
+- §D8 streaming, errors, cancellation, and retry for the data plane --
+  implemented (:mod:`cognitum.meta_proxy.stream.chat_completions_stream`);
+- §D9 consent, sponsor budget, and usage -- the TRACTABLE slice (consent
+  gating for the ``cognitum_cloud`` plane, :mod:`cognitum.meta_proxy.consent`)
+  is implemented; sponsor budget/usage remain BLOCKED on ADR-0025b's
+  lifecycle/state fixes and are explicitly out of scope (see
+  ``preview.sponsored`` below);
+- §D10 loopback and browser security -- loopback-origin validation
+  (:mod:`cognitum.meta_proxy.config`) is implemented; browser-runtime
+  rejection is N/A (Python has no browser/WASM distribution surface for
+  this package); non-loopback remote exposure remains dangerous preview,
+  unimplemented by design.
 
 This client is async-only, mirroring :class:`cognitum.meta_llm.client.MetaLlmClient`.
 """
@@ -44,6 +54,7 @@ import httpx
 
 from cognitum.agentic import AgenticError, UnsupportedCapabilityError
 from cognitum.meta_proxy.config import MetaProxyClientConfig
+from cognitum.meta_proxy.consent import assert_consent_for_routing_intent
 from cognitum.meta_proxy.envelope import MetaProxyResponseMeta, MetaProxyResult
 from cognitum.meta_proxy.http_errors import map_meta_proxy_http_error
 from cognitum.meta_proxy.nonstream import post_chat_forwarding
@@ -157,6 +168,17 @@ class _ChatNamespace:
         from cognitum.meta_llm.parsing import parse_chat_completion
 
         opts = options or MetaProxyChatCallOptions()
+
+        # ADR-0025a §D9: fail closed on missing consent BEFORE any HTTP I/O --
+        # a valid local bearer credential is never a substitute for the
+        # ADR-0022 consent grant a cognitum_cloud RoutingIntent requires.
+        assert_consent_for_routing_intent(
+            opts.routing_intent,
+            self._client._config.consent_grants or [],
+            self._client._config.origin,
+            "chat.completions",
+        )
+
         body = asdict(request)
         data, meta = await post_chat_forwarding(
             self._client._config,

@@ -1,11 +1,15 @@
 //! Meta Proxy client (ADR-0025a). Product module + feature per ADR-0019
 //! §D2: `cognitum_one::meta_proxy`, Cargo feature `meta-proxy`.
 //!
-//! Issue #61 / M3 start: `MetaProxyClient` construction (§D3) and real
-//! `status()` / `capabilities()` implementations (§D4). Data-plane
-//! forwarding (§D5-§D9) and loopback/browser security beyond loopback-origin
-//! construction validation (§D10) are deliberately out of scope — see
-//! `client`'s module doc comment for the full deferred list.
+//! Issue #61 / M3: `MetaProxyClient` construction (§D3), `status()` /
+//! `capabilities()` (§D4), routing intent + `chat_completions()` forwarding
+//! (§D5-§D7), streaming (§D8), and the tractable consent-gating slice of §D9
+//! (`consent` — the `cognitum_cloud` plane is gated on a `CloudFallback`
+//! grant; sponsor budget/usage remain BLOCKED on ADR-0025b). §D10's
+//! browser-runtime rejection is N/A for this crate: Rust has no wasm32/
+//! browser target for `meta-proxy` (see `Cargo.toml`'s `[features]` —
+//! no such target exists), so there is nothing to guard. Loopback-origin
+//! construction validation (§D10's other half) is implemented in `config`.
 //!
 //! Per ADR-0019 §D4, this module's CLIENT is product-private and MUST NOT be
 //! imported by any other product module (`meta_llm`, `metaharness`,
@@ -15,16 +19,14 @@
 //! primitives where their capability sets agree. They do not share a client
 //! class."). Hence the `meta-proxy` Cargo feature depends on `meta-llm`.
 //!
-//! M3 continuation (issue #61, §D5-§D7): `RoutingIntent` + the decode-time
-//! required-plane check (`routing`), the local-bearer credential provider and
-//! the type-only `ProxyCredential` union (`auth`), and non-streaming
-//! `chat_completions()` forwarding with the §D7 header allowlist (`forwarding`
-//! + `client`/`http`). Still out of scope: §D8 streaming/errors/cancellation,
-//! §D9 consent/sponsor budget, `WorkloadCapability` minting, and Messages.
+//! Still out of scope: sponsor budget/usage (`WorkloadCapability` minting
+//! included — both blocked on ADR-0025b's lifecycle/state fixes), and
+//! Messages.
 
 pub mod auth;
 pub mod client;
 pub mod config;
+pub mod consent;
 pub mod envelope;
 pub mod forwarding;
 mod http;
@@ -47,6 +49,10 @@ pub use client::{CapabilitiesResult, MetaProxyClient};
 pub use config::{
     MetaProxyClientConfig, MetaProxyTelemetryEvent, MetaProxyTelemetryHooks,
     DEFAULT_META_PROXY_ORIGIN,
+};
+pub use consent::{
+    assert_consent_for_routing_intent, has_valid_consent_grant, intent_touches_plane,
+    is_consent_grant_valid, CLOUD_ROUTING_CONSENT_KIND,
 };
 pub use envelope::{MetaProxyResponseMeta, MetaProxyResult, MetaProxyUpstreamReceipt};
 pub use forwarding::MetaProxyChatCallOptions;

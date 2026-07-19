@@ -71,6 +71,69 @@ declare class UnsupportedCapabilityError extends AgenticError {
     constructor(product: string, operation: string, capability: string, message?: string);
 }
 /**
+ * ADR-0022 §D7 consent grant kinds. A locally recorded `ConsentGrant` names
+ * exactly one of these — never a generic boolean — so consent for one kind
+ * never implies another ("Consent for sponsored inference does not imply
+ * cloud fallback or training contribution").
+ */
+type ConsentGrantKind = "sponsored_inference" | "power_saver_routing" | "cloud_fallback" | "source_upload" | "artifact_retention" | "training_data_contribution" | "external_webhook_delivery";
+/**
+ * A narrow, locally-recorded (or signed) consent grant (ADR-0022 §D7). The
+ * grant must match product, origin, subject, and action before it satisfies
+ * a gated call — the SDK never infers consent from credential presence, a
+ * prior operation on another origin, environment variables, or a retry
+ * policy.
+ *
+ * Type-only scaffolding: this module does not verify signatures or attest
+ * server-persisted grants (§D7's "consequential kind" re-check requirement)
+ * — it only defines the shape and the presence/expiry check that product
+ * clients (starting with `MetaProxyClient`, ADR-0025a §D9) apply before a
+ * gated call.
+ */
+interface ConsentGrant {
+    kind: ConsentGrantKind;
+    product: string;
+    origin: string;
+    subject: string;
+    scope: string;
+    issuedAt: string;
+    /** Absent means the grant does not expire. */
+    expiresAt?: string;
+    /**
+     * Present when the grant is signed or attested by the issuing service.
+     * §D7: consequential kinds (`sponsored_inference`, `training_data_contribution`,
+     * `source_upload`, `artifact_retention`, `external_webhook_delivery`)
+     * require this; the low-stakes kinds (`power_saver_routing`, `cloud_fallback`)
+     * may be an unsigned local record without one.
+     */
+    evidenceId?: string;
+}
+/**
+ * Fail-closed error raised when a gated operation requires an ADR-0022 §D7
+ * consent grant that is absent, expired, or does not match the call
+ * (product/origin/subject/action). Credential presence is never a
+ * substitute for consent (§D7/ADR-0025a §D9): "Headless clients return
+ * `ConsentRequiredError` rather than prompt." Carries a machine-readable
+ * `requiredKind` per §D7 ("Headless SDKs return `ConsentRequiredError` with
+ * a machine-readable required kind").
+ */
+declare class ConsentRequiredError extends AgenticError {
+    readonly requiredKind: ConsentGrantKind;
+    constructor(product: string, operation: string, requiredKind: ConsentGrantKind, message?: string);
+}
+/**
+ * Fail-closed error raised when a product client that excludes browser use
+ * (ADR-0029 §D2 — Meta Proxy is excluded because "its loopback token, local
+ * consent, process ownership, and CORS behavior are not a browser contract")
+ * is constructed in a browser-like runtime. §D2: "construction MUST throw
+ * `UnsupportedRuntimeError` before reading a credential, opening a socket,
+ * importing an installer, or executing a process."
+ */
+declare class UnsupportedRuntimeError extends AgenticError {
+    readonly runtime: string;
+    constructor(product: string, operation: string, runtime: string, message?: string);
+}
+/**
  * Retry-policy shape (ADR-0023 §D4). Values MUST match ADR-0005's
  * equal-jitter formula verbatim; agentic modules MUST NOT diverge from it.
  */
@@ -587,4 +650,4 @@ interface LineageChainVerification {
  */
 declare function verifyLineageChain(chain: LineageReference[], opts: VerifyLineageChainOptions): LineageChainVerification;
 
-export { AgenticError, type AgenticErrorKind, type BudgetPolicy, type BuildExecutionReceiptInput, type CancellationReason, type CancellationToken, type CapabilitySet, type CapabilitySource, type CostFinality, type CostObservation, type Credential, type CredentialAuthority, type CredentialProvider, type CredentialRequest, type D12Category, DEFAULT_API_KEY_ENV_VAR, DEFAULT_RETRY_POLICY, type EventStreamOptions, type ExecutionReceipt, type IdempotencyBindingV1, type LineageChainVerification, type LineageReference, type OnUnknownEstimate, type OperationEvent, type OperationHandle, type OperationRetryClass, type OperationSnapshot, type OperationState, type Page, type PageRequest, RedactedSecret, type RequestContext, type RetryPolicy, type SecretClassification, type SecretRedactor, SentinelSecretRedactor, StaticApiKeyCredentialProvider, type StaticApiKeyCredentialProviderOptions, type TenantContext, type TimeBudget, UnsupportedCapabilityError, type VerificationLevel, type VerificationResult, type VerifyLineageChainOptions, type VerifyReceiptOptions, type WaitOptions, buildExecutionReceipt, canonicalJson, equalJitterDelayMs, sha256Hex, shapeCheckExecutionReceipt, shapeCheckLineageReference, verifyExecutionReceipt, verifyLineageChain };
+export { AgenticError, type AgenticErrorKind, type BudgetPolicy, type BuildExecutionReceiptInput, type CancellationReason, type CancellationToken, type CapabilitySet, type CapabilitySource, type ConsentGrant, type ConsentGrantKind, ConsentRequiredError, type CostFinality, type CostObservation, type Credential, type CredentialAuthority, type CredentialProvider, type CredentialRequest, type D12Category, DEFAULT_API_KEY_ENV_VAR, DEFAULT_RETRY_POLICY, type EventStreamOptions, type ExecutionReceipt, type IdempotencyBindingV1, type LineageChainVerification, type LineageReference, type OnUnknownEstimate, type OperationEvent, type OperationHandle, type OperationRetryClass, type OperationSnapshot, type OperationState, type Page, type PageRequest, RedactedSecret, type RequestContext, type RetryPolicy, type SecretClassification, type SecretRedactor, SentinelSecretRedactor, StaticApiKeyCredentialProvider, type StaticApiKeyCredentialProviderOptions, type TenantContext, type TimeBudget, UnsupportedCapabilityError, UnsupportedRuntimeError, type VerificationLevel, type VerificationResult, type VerifyLineageChainOptions, type VerifyReceiptOptions, type WaitOptions, buildExecutionReceipt, canonicalJson, equalJitterDelayMs, sha256Hex, shapeCheckExecutionReceipt, shapeCheckLineageReference, verifyExecutionReceipt, verifyLineageChain };

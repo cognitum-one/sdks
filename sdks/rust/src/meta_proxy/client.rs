@@ -21,14 +21,24 @@
 //! `MetaLlmResult` — see `super::envelope`'s doc comment for why.
 //!
 //! Deferred to follow-up M3 passes (see issue #61 and ADR-0025a):
-//!  - §D5 data-plane and policy model (`RoutingIntent`, plane/policy rules);
+//!  - §D5 data-plane and policy model (`RoutingIntent`, plane/policy rules) —
+//!    implemented (`super::routing`);
 //!  - §D6 authentication and workload capabilities beyond the minimal
 //!    `CredentialProvider` this pass's constructor accepts;
-//!  - §D7 inference/forwarding contract (`chat_completions`, `messages`);
-//!  - §D8 streaming, errors, cancellation, and retry for the data plane;
-//!  - §D9 consent, sponsor budget, and usage;
-//!  - §D10 loopback and browser security beyond the loopback-origin
-//!    validation already enforced by `super::config::resolve_config`.
+//!  - §D7 inference/forwarding contract (`chat_completions`, `messages`) —
+//!    implemented (`super::forwarding`/`super::http`);
+//!  - §D8 streaming, errors, cancellation, and retry for the data plane —
+//!    implemented (`super::stream`);
+//!  - §D9 consent, sponsor budget, and usage — the TRACTABLE slice (consent
+//!    gating for the `cognitum_cloud` plane, `super::consent`) is
+//!    implemented; sponsor budget/usage remain BLOCKED on ADR-0025b's
+//!    lifecycle/state fixes and are explicitly out of scope (see
+//!    `sponsored_chat_completions` below);
+//!  - §D10 loopback and browser security — loopback-origin validation
+//!    (`super::config::resolve_config`) is implemented; browser-runtime
+//!    rejection is N/A (no wasm32/browser target exists for this crate's
+//!    `meta-proxy` feature); non-loopback remote exposure remains dangerous
+//!    preview, unimplemented by design.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -42,6 +52,7 @@ use crate::agentic::{
 use crate::meta_llm::types::openai::{ChatCompletion, ChatCompletionRequest};
 
 use super::config::{build_default_transport, resolve_config, MetaProxyClientConfig};
+use super::consent::assert_consent_for_routing_intent;
 use super::envelope::MetaProxyResult;
 use super::forwarding::MetaProxyChatCallOptions;
 use super::routing::assert_routing_receipt_matches_intent;
@@ -268,6 +279,17 @@ impl MetaProxyClient {
         options: Option<MetaProxyChatCallOptions>,
     ) -> Result<MetaProxyResult<ChatCompletion>, AgenticError> {
         let options = options.unwrap_or_default();
+
+        // ADR-0025a §D9: fail closed on missing consent BEFORE any HTTP I/O
+        // — a valid local bearer credential is never a substitute for the
+        // ADR-0022 consent grant a cognitum_cloud RoutingIntent requires.
+        assert_consent_for_routing_intent(
+            options.routing_intent.as_ref(),
+            &self.config.consent_grants,
+            &self.config.origin,
+            "chat_completions",
+        )?;
+
         let body = serde_json::to_value(request).map_err(|cause| AgenticError {
             product: Some(PRODUCT.to_owned()),
             operation: Some("chat_completions".to_owned()),

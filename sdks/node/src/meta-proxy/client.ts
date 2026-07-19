@@ -22,14 +22,23 @@
  * `MetaLlmResult` — see `./envelope.js`'s doc comment for why.
  *
  * Deferred to follow-up M3 passes (see issue #61 and ADR-0025a):
- *  - §D5 data-plane and policy model (`RoutingIntent`, plane/policy rules);
+ *  - §D5 data-plane and policy model (`RoutingIntent`, plane/policy rules) —
+ *    implemented by a later pass (`./routing.js`);
  *  - §D6 authentication and workload capabilities beyond the minimal
  *    `CredentialProvider` this pass's constructor accepts;
- *  - §D7 inference/forwarding contract (`chat.completions`, `messages`);
- *  - §D8 streaming, errors, cancellation, and retry for the data plane;
- *  - §D9 consent, sponsor budget, and usage;
- *  - §D10 loopback and browser security beyond the loopback-origin
- *    validation already enforced by `./config.js`'s `resolveMetaProxyClientConfig`.
+ *  - §D7 inference/forwarding contract (`chat.completions`, `messages`) —
+ *    implemented by a later pass (`./forwarding.js`);
+ *  - §D8 streaming, errors, cancellation, and retry for the data plane —
+ *    implemented by a later pass (`./stream/chat-completions-stream.js`);
+ *  - §D9 consent, sponsor budget, and usage — the TRACTABLE slice (consent
+ *    gating for the `cognitum_cloud` plane, `./consent.js`) is implemented;
+ *    sponsor budget/usage remain BLOCKED on ADR-0025b's lifecycle/state
+ *    fixes and are explicitly out of scope (see `preview.sponsored` below);
+ *  - §D10 loopback and browser security — loopback-origin validation
+ *    (`./config.js`'s `resolveMetaProxyClientConfig`) and the browser-runtime
+ *    construction guard (`./browser-guard.js`, checked first in the
+ *    constructor below) are both implemented; non-loopback remote exposure
+ *    remains dangerous preview, unimplemented by design (§D10).
  */
 
 import {
@@ -40,6 +49,7 @@ import {
 } from "../agentic/index.js";
 import type { ChatCompletion, ChatCompletionRequest } from "../meta-llm/types/openai.js";
 import type { OpenAiStreamEvent } from "../meta-llm/stream/openai-events.js";
+import { assertNodeRuntime } from "./browser-guard.js";
 import {
   isBearerAttachmentAllowed,
   resolveMetaProxyClientConfig,
@@ -169,6 +179,10 @@ export class MetaProxyClient {
   private readonly config: ResolvedMetaProxyClientConfig;
 
   constructor(config: MetaProxyClientConfig = {}) {
+    // ADR-0025a §D10 / ADR-0029 §D2: reject a browser-like runtime BEFORE
+    // anything else — before config validation, before reading a credential,
+    // before opening a loopback socket.
+    assertNodeRuntime("construct");
     this.config = resolveMetaProxyClientConfig(config);
   }
 
@@ -320,6 +334,7 @@ export class MetaProxyClient {
       allowNonLoopback: this.config.allowNonLoopback,
       defaultRequestContext: this.config.defaultRequestContext,
       telemetry: this.config.telemetry,
+      consentGrants: this.config.consentGrants,
     };
   }
 

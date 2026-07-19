@@ -19,7 +19,7 @@
  * (owned separately, and independent of this client per §D1's decision).
  */
 
-import type { BudgetPolicy, CredentialProvider, RequestContext } from "../agentic/index.js";
+import type { BudgetPolicy, ConsentGrant, CredentialProvider, RequestContext } from "../agentic/index.js";
 import type { CapabilitySet } from "../agentic/index.js";
 
 /** Default loopback origin — matches the Rust proxy binary's default bind (ADR-0025a Context). */
@@ -101,6 +101,15 @@ export interface MetaProxyClientConfig {
    */
   capabilitiesSnapshot?: CapabilitySet;
   telemetry?: MetaProxyTelemetryHooks;
+  /**
+   * Locally-held ADR-0022 §D7 consent grants this caller presents to the
+   * client (ADR-0025a §D9). Checked before any data-plane call whose
+   * `RoutingIntent` allows or requires a consent-gated plane — currently
+   * `cognitum_cloud`, gated on a `cloud_fallback` grant (`./consent.js`).
+   * Credential presence (`localCredentialProvider`) is NEVER a substitute
+   * for an entry here.
+   */
+  consentGrants?: ConsentGrant[];
 }
 
 /** Normalized, defaulted construction state held by {@link MetaProxyClient}. */

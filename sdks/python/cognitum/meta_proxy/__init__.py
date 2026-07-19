@@ -1,10 +1,16 @@
 """Meta Proxy client (ADR-0025a). Product namespace per ADR-0019 §D2:
 ``cognitum.meta_proxy``.
 
-Issue #61 / M3 start: ``MetaProxyClient`` construction (§D3) and real
-``status()`` / ``capabilities()`` implementations (§D4). Data-plane
-forwarding (§D5-§D9) and loopback/browser security beyond loopback-origin
-construction validation (§D10) are deliberately out of scope -- see
+Issue #61 / M3: ``MetaProxyClient`` construction (§D3), ``status()`` /
+``capabilities()`` (§D4), routing intent + chat.completions forwarding
+(§D5-§D7), streaming (§D8), and the tractable consent-gating slice of §D9
+(:mod:`cognitum.meta_proxy.consent` -- the ``cognitum_cloud`` plane is gated
+on a ``cloud_fallback`` grant; sponsor budget/usage remain BLOCKED on
+ADR-0025b). §D10's browser-runtime rejection is N/A for this package: Python
+has no browser/WASM (Pyodide) distribution surface for ``cognitum`` (see
+``pyproject.toml`` -- no such build target exists), so there is nothing to
+guard. Loopback-origin construction validation (§D10's other half) is
+implemented in :mod:`cognitum.meta_proxy.config`. See
 :mod:`cognitum.meta_proxy.client`'s module docstring for the full deferred
 list.
 
@@ -38,6 +44,13 @@ from cognitum.meta_proxy.config import (
     MetaProxyClientConfig,
     MetaProxyTelemetryEvent,
     MetaProxyTelemetryHooks,
+)
+from cognitum.meta_proxy.consent import (
+    CLOUD_ROUTING_CONSENT_KIND,
+    assert_consent_for_routing_intent,
+    has_valid_consent_grant,
+    intent_touches_plane,
+    is_consent_grant_valid,
 )
 from cognitum.meta_proxy.envelope import (
     MetaProxyResponseMeta,
@@ -84,6 +97,13 @@ __all__ = [
     # §D5 routing intent
     "RoutingIntent",
     "assert_routing_receipt_matches_intent",
+    # §D9 consent gating (tractable slice -- sponsor budget/usage remain
+    # BLOCKED on ADR-0025b)
+    "CLOUD_ROUTING_CONSENT_KIND",
+    "assert_consent_for_routing_intent",
+    "has_valid_consent_grant",
+    "intent_touches_plane",
+    "is_consent_grant_valid",
     # §D6 authentication
     "DEFAULT_META_PROXY_TOKEN_ENV_VAR",
     "LocalBearerToken",

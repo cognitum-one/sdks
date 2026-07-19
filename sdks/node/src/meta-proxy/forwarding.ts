@@ -43,6 +43,7 @@
 
 import {
   AgenticError,
+  type ConsentGrant,
   type Credential,
   type CredentialProvider,
   type RequestContext,
@@ -50,6 +51,7 @@ import {
 import type { ChatCompletion, ChatCompletionRequest } from "../meta-llm/types/openai.js";
 import { isBearerAttachmentAllowed } from "./config.js";
 import type { MetaProxyTelemetryHooks, MetaProxyTransport } from "./config.js";
+import { assertConsentForRoutingIntent } from "./consent.js";
 import type { MetaProxyResponseMeta, MetaProxyResult } from "./envelope.js";
 import { mapMetaProxyHttpError } from "./http-errors.js";
 import { assertRoutingReceiptMatchesIntent, type RoutingIntent } from "./routing.js";
@@ -114,6 +116,8 @@ export interface ChatForwardDeps {
   allowNonLoopback?: boolean;
   defaultRequestContext?: Partial<RequestContext>;
   telemetry?: MetaProxyTelemetryHooks;
+  /** ADR-0025a §D9 — see `MetaProxyClientConfig.consentGrants` (`./config.js`). */
+  consentGrants?: ConsentGrant[];
 }
 
 /** Exported so `./stream/chat-completions-stream.js` can mint the same shape of request ID. */
@@ -340,6 +344,16 @@ export async function forwardChatCompletion(
   request: ChatCompletionRequest,
   options?: MetaProxyChatCallOptions,
 ): Promise<MetaProxyResult<ChatCompletion>> {
+  // ADR-0025a §D9: fail closed on missing consent BEFORE any HTTP I/O — a
+  // valid local bearer credential is never a substitute for the ADR-0022
+  // consent grant a cognitum_cloud RoutingIntent requires.
+  assertConsentForRoutingIntent(
+    options?.routingIntent,
+    deps.consentGrants ?? [],
+    deps.origin,
+    OPERATION,
+  );
+
   const { forwarded, idempotencyKey: callerKey } = filterForwardHeaders(options?.forwardHeaders);
   const idempotencyKey = callerKey ?? newIdempotencyKey();
 

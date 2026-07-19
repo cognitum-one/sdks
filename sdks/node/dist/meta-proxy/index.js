@@ -98,6 +98,32 @@ var UnsupportedCapabilityError = class extends AgenticError {
     Object.setPrototypeOf(this, new.target.prototype);
   }
 };
+var ConsentRequiredError = class extends AgenticError {
+  requiredKind;
+  constructor(product, operation, requiredKind, message) {
+    super(
+      "consent_required",
+      message ?? `operation "${operation}" on ${product} requires an unexpired ADR-0022 consent grant of kind "${requiredKind}" \u2014 credential presence alone is not consent`,
+      { product, operation, retryable: false }
+    );
+    this.name = "ConsentRequiredError";
+    this.requiredKind = requiredKind;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
+var UnsupportedRuntimeError = class extends AgenticError {
+  runtime;
+  constructor(product, operation, runtime, message) {
+    super(
+      "configuration",
+      message ?? `${product} does not support the "${runtime}" runtime (ADR-0029 \xA7D2) \u2014 construction refused before reading a credential or opening a socket`,
+      { product, operation, retryable: false }
+    );
+    this.name = "UnsupportedRuntimeError";
+    this.runtime = runtime;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
 
 // src/agentic/credentials.ts
 var REDACT_INSPECT = /* @__PURE__ */ Symbol.for("nodejs.util.inspect.custom");
@@ -163,9 +189,61 @@ function assertRoutingReceiptMatchesIntent(intent, receipt) {
   }
 }
 
+// src/meta-proxy/consent.ts
+var PRODUCT2 = "meta-proxy";
+var CLOUD_ROUTING_CONSENT_KIND = "cloud_fallback";
+function intentTouchesPlane(intent, plane) {
+  return intent.requiredPlane === plane || intent.allowedPlanes.includes(plane);
+}
+function isConsentGrantValid(grant, kind, product, origin, now = /* @__PURE__ */ new Date()) {
+  if (grant.kind !== kind) return false;
+  if (grant.product !== product) return false;
+  if (grant.origin !== origin) return false;
+  if (grant.expiresAt !== void 0 && new Date(grant.expiresAt).getTime() <= now.getTime()) {
+    return false;
+  }
+  return true;
+}
+function hasValidConsentGrant(grants, kind, product, origin, now) {
+  return grants.some((grant) => isConsentGrantValid(grant, kind, product, origin, now));
+}
+function assertConsentForRoutingIntent(intent, grants, origin, operation, now) {
+  if (!intent) return;
+  if (!intentTouchesPlane(intent, "cognitum_cloud")) return;
+  if (hasValidConsentGrant(grants, CLOUD_ROUTING_CONSENT_KIND, PRODUCT2, origin, now)) return;
+  throw new ConsentRequiredError(
+    PRODUCT2,
+    operation,
+    CLOUD_ROUTING_CONSENT_KIND,
+    `${operation}'s RoutingIntent allows or requires the "cognitum_cloud" plane, but no unexpired ADR-0022 "${CLOUD_ROUTING_CONSENT_KIND}" consent grant is present for origin "${origin}" (ADR-0025a \xA7D9: credential presence is not consent \u2014 headless clients return ConsentRequiredError rather than prompt).`
+  );
+}
+
+// src/meta-proxy/browser-guard.ts
+var PRODUCT3 = "meta-proxy";
+function isBrowserLikeRuntime() {
+  const g = globalThis;
+  if (typeof g.window !== "undefined") return true;
+  if (typeof g.document !== "undefined") return true;
+  const proc = g.process;
+  if (typeof proc === "undefined") return true;
+  if (typeof proc.versions === "undefined") return true;
+  if (typeof proc.versions.node === "undefined") return true;
+  return false;
+}
+function assertNodeRuntime(operation) {
+  if (!isBrowserLikeRuntime()) return;
+  throw new UnsupportedRuntimeError(
+    PRODUCT3,
+    operation,
+    "browser",
+    `MetaProxyClient cannot be constructed in a browser-like runtime (ADR-0025a \xA7D10, ADR-0029 \xA7D2): its loopback token, local consent, process ownership, and CORS behavior are not a browser contract. Construction is refused before reading a credential or opening a loopback socket.`
+  );
+}
+
 // src/meta-proxy/auth.ts
 import { createHash as createHash3 } from "crypto";
-var PRODUCT2 = "meta-proxy";
+var PRODUCT4 = "meta-proxy";
 var DEFAULT_META_PROXY_TOKEN_ENV_VAR = "COGNITUM_META_PROXY_TOKEN";
 function resolveToken(options) {
   if (options.token && options.token.length > 0) {
@@ -180,11 +258,11 @@ function resolveToken(options) {
   throw new AgenticError(
     "configuration",
     `local proxy bearer is required \u2014 pass token or set ${envVar}`,
-    { product: PRODUCT2 }
+    { product: PRODUCT4 }
   );
 }
 function fingerprintOf(token) {
-  return createHash3("sha256").update(`${PRODUCT2}:${token}`).digest("hex").slice(0, 16);
+  return createHash3("sha256").update(`${PRODUCT4}:${token}`).digest("hex").slice(0, 16);
 }
 var LocalBearerTokenCredentialProvider = class {
   #secret;
@@ -201,7 +279,7 @@ var LocalBearerTokenCredentialProvider = class {
   }
   /** Non-secret stable provider identity, safe to log. */
   identity() {
-    return `local-bearer-token:${PRODUCT2}:${this.#fingerprint}`;
+    return `local-bearer-token:${PRODUCT4}:${this.#fingerprint}`;
   }
   async describeAuthority(request) {
     this.assertMatch(request);
@@ -213,7 +291,7 @@ var LocalBearerTokenCredentialProvider = class {
       throw new AgenticError(
         "authentication",
         `credential provider ${this.identity()} has been invalidated`,
-        { product: PRODUCT2, operation: request.operation }
+        { product: PRODUCT4, operation: request.operation }
       );
     }
     return {
@@ -230,46 +308,46 @@ var LocalBearerTokenCredentialProvider = class {
   authority() {
     return {
       providerFingerprint: this.#fingerprint,
-      product: PRODUCT2,
+      product: PRODUCT4,
       normalizedOrigin: this.#normalizedOrigin,
       audience: this.#audience
     };
   }
   /** Fail-closed match check (ADR-0022 §D1/§D3). Exact string equality only. */
   assertMatch(request) {
-    if (request.product !== PRODUCT2) {
+    if (request.product !== PRODUCT4) {
       throw new AgenticError(
         "authentication",
-        `credential provider ${this.identity()} is bound to product "${PRODUCT2}", refusing request for product "${request.product}"`,
-        { product: PRODUCT2, operation: request.operation }
+        `credential provider ${this.identity()} is bound to product "${PRODUCT4}", refusing request for product "${request.product}"`,
+        { product: PRODUCT4, operation: request.operation }
       );
     }
     if (request.normalizedOrigin !== this.#normalizedOrigin) {
       throw new AgenticError(
         "authentication",
         `credential provider ${this.identity()} is bound to origin "${this.#normalizedOrigin}", refusing request for origin "${request.normalizedOrigin}" (ADR-0022 \xA7D3: a redirect to another origin is not followed with credentials)`,
-        { product: PRODUCT2, operation: request.operation }
+        { product: PRODUCT4, operation: request.operation }
       );
     }
     if (request.audience !== this.#audience) {
       throw new AgenticError(
         "authentication",
         `credential provider ${this.identity()} is bound to audience "${this.#audience}", refusing request for audience "${request.audience}"`,
-        { product: PRODUCT2, operation: request.operation }
+        { product: PRODUCT4, operation: request.operation }
       );
     }
   }
 };
 
 // src/meta-proxy/http-errors.ts
-var PRODUCT3 = "meta-proxy";
+var PRODUCT5 = "meta-proxy";
 function nonEmpty(value, fallback) {
   return value.length > 0 ? value : fallback;
 }
 async function mapMetaProxyHttpError(response, operation, requestId) {
   const status = response.status;
   const bodyText = await response.text().catch(() => "");
-  const fields = { product: PRODUCT3, operation, status, requestId };
+  const fields = { product: PRODUCT5, operation, status, requestId };
   switch (status) {
     case 400:
       return new AgenticError("validation", nonEmpty(bodyText, "invalid request"), {
@@ -316,7 +394,7 @@ async function mapMetaProxyHttpError(response, operation, requestId) {
 }
 
 // src/meta-proxy/forwarding.ts
-var PRODUCT4 = "meta-proxy";
+var PRODUCT6 = "meta-proxy";
 var CHAT_PATH = "/v1/chat/completions";
 var OPERATION = "chat.completions";
 var INFERENCE_SCOPE = "meta-proxy.inference";
@@ -350,7 +428,7 @@ function rejectRedirectResponse(response, operation, requestId) {
   throw new AgenticError(
     "protocol",
     `${operation} received a redirect (status ${response.status}) \u2014 redirects are rejected, not followed (ADR-0025a \xA7D6/\xA7D10)`,
-    { product: PRODUCT4, operation, status: response.status, requestId, retryable: false }
+    { product: PRODUCT6, operation, status: response.status, requestId, retryable: false }
   );
 }
 function filterForwardHeaders(bag) {
@@ -373,7 +451,7 @@ function applyBearer(deps, headers, credential) {
     throw new AgenticError(
       "protocol",
       `refusing to attach the local bearer to non-loopback origin "${deps.origin}" (ADR-0025a \xA7D6/\xA7D10: the bearer is sent only to literal loopback)`,
-      { product: PRODUCT4, operation: OPERATION, retryable: false }
+      { product: PRODUCT6, operation: OPERATION, retryable: false }
     );
   }
   headers.Authorization = `Bearer ${credential.secret.reveal()}`;
@@ -384,11 +462,11 @@ async function requireCredential(deps) {
     throw new AgenticError(
       "authentication",
       `MetaProxyClient.${OPERATION} requires a localCredentialProvider (ADR-0025a \xA7D6)`,
-      { product: PRODUCT4, operation: OPERATION, retryable: false }
+      { product: PRODUCT6, operation: OPERATION, retryable: false }
     );
   }
   return provider.acquire({
-    product: PRODUCT4,
+    product: PRODUCT6,
     normalizedOrigin: deps.origin,
     audience: deps.origin,
     requiredScopes: [INFERENCE_SCOPE],
@@ -443,7 +521,7 @@ async function sendOnce(deps, body, credential, idempotencyKey, forwarded) {
   } catch (cause) {
     deps.telemetry?.onRequestEnd?.({ operation: OPERATION, requestId, durationMs: Date.now() - startedAt });
     throw new AgenticError("transport", `${OPERATION} request failed: ${cause}`, {
-      product: PRODUCT4,
+      product: PRODUCT6,
       operation: OPERATION,
       requestId,
       retryable: true,
@@ -484,6 +562,12 @@ async function sendOnce(deps, body, credential, idempotencyKey, forwarded) {
   return { data: rawJson, meta };
 }
 async function forwardChatCompletion(deps, request, options) {
+  assertConsentForRoutingIntent(
+    options?.routingIntent,
+    deps.consentGrants ?? [],
+    deps.origin,
+    OPERATION
+  );
   const { forwarded, idempotencyKey: callerKey } = filterForwardHeaders(options?.forwardHeaders);
   const idempotencyKey = callerKey ?? newIdempotencyKey();
   let credential = await requireCredential(deps);
@@ -934,12 +1018,12 @@ var SseParser = class {
 };
 
 // src/meta-proxy/stream/chat-completions-stream.ts
-var PRODUCT5 = "meta-proxy";
+var PRODUCT7 = "meta-proxy";
 var CHAT_PATH2 = "/v1/chat/completions";
 var OPERATION2 = "chat.completionsStream";
 function deadlineError(requestId, code, message, sequence) {
   return new AgenticError("deadline_exceeded", message, {
-    product: PRODUCT5,
+    product: PRODUCT7,
     operation: OPERATION2,
     requestId,
     retryable: false,
@@ -1003,7 +1087,7 @@ async function openStreamWithPreByteRetry(deps, request, requestId, idempotencyK
     } catch (cause) {
       if (cause instanceof AgenticError) throw cause;
       throw new AgenticError("transport", `${OPERATION2} request failed: ${cause}`, {
-        product: PRODUCT5,
+        product: PRODUCT7,
         operation: OPERATION2,
         requestId,
         retryable: true,
@@ -1081,7 +1165,7 @@ async function* readProxySseBody(body, requestId, headers, budget, overallStarte
     for (; ; ) {
       if (cancellation?.isCancelled) {
         throw new AgenticError("cancelled", `${OPERATION2} was cancelled locally`, {
-          product: PRODUCT5,
+          product: PRODUCT7,
           operation: OPERATION2,
           requestId,
           retryable: false,
@@ -1124,7 +1208,7 @@ async function* readProxySseBody(body, requestId, headers, budget, overallStarte
         readResult = raced;
       } catch (cause) {
         throw new AgenticError("transport", `${OPERATION2} stream read failed: ${cause}`, {
-          product: PRODUCT5,
+          product: PRODUCT7,
           operation: OPERATION2,
           requestId,
           retryable: false,
@@ -1141,7 +1225,7 @@ async function* readProxySseBody(body, requestId, headers, budget, overallStarte
         rawEvents = parser.feed(readResult.value);
       } catch (cause) {
         throw new AgenticError("protocol", `${OPERATION2} SSE parse failure: ${cause}`, {
-          product: PRODUCT5,
+          product: PRODUCT7,
           operation: OPERATION2,
           requestId,
           retryable: false,
@@ -1164,7 +1248,7 @@ async function* readProxySseBody(body, requestId, headers, budget, overallStarte
       finishResult = parser.finish();
     } catch (cause) {
       throw new AgenticError("protocol", `${OPERATION2} SSE parse failure at end of stream: ${cause}`, {
-        product: PRODUCT5,
+        product: PRODUCT7,
         operation: OPERATION2,
         requestId,
         retryable: false,
@@ -1186,7 +1270,7 @@ async function* readProxySseBody(body, requestId, headers, budget, overallStarte
   }
   if (!sawNativeTerminal) {
     throw new AgenticError("protocol", `${OPERATION2} stream ended without ever observing a terminal event`, {
-      product: PRODUCT5,
+      product: PRODUCT7,
       operation: OPERATION2,
       requestId,
       retryable: false,
@@ -1197,6 +1281,12 @@ async function* readProxySseBody(body, requestId, headers, budget, overallStarte
   assertRoutingReceiptMatchesIntent(routingIntent, latestRoutingReceipt);
 }
 async function* forwardChatCompletionStream(deps, request, options) {
+  assertConsentForRoutingIntent(
+    options?.routingIntent,
+    deps.consentGrants ?? [],
+    deps.origin,
+    OPERATION2
+  );
   const { forwarded, idempotencyKey: callerKey } = filterForwardHeaders(options?.forwardHeaders);
   const idempotencyKey = callerKey ?? newIdempotencyKey();
   const requestId = options?.requestContext?.requestId ?? newRequestId();
@@ -1213,7 +1303,7 @@ async function* forwardChatCompletionStream(deps, request, options) {
   );
   if (!response.body) {
     throw new AgenticError("protocol", `${OPERATION2} response had no readable body`, {
-      product: PRODUCT5,
+      product: PRODUCT7,
       operation: OPERATION2,
       requestId,
       retryable: false,
@@ -1233,7 +1323,7 @@ async function* forwardChatCompletionStream(deps, request, options) {
 }
 
 // src/meta-proxy/client.ts
-var PRODUCT6 = "meta-proxy";
+var PRODUCT8 = "meta-proxy";
 var DEFAULT_CAPABILITY_VERSION = "0.0.0";
 var KNOWN_STATUS_KEYS = /* @__PURE__ */ new Set([
   "product_version",
@@ -1300,6 +1390,7 @@ function parseStatus(data) {
 var MetaProxyClient = class {
   config;
   constructor(config = {}) {
+    assertNodeRuntime("construct");
     this.config = resolveMetaProxyClientConfig(config);
   }
   /** Read-only view of the effective configuration. */
@@ -1337,7 +1428,7 @@ var MetaProxyClient = class {
       );
     }
     const capabilities = {
-      product: PRODUCT6,
+      product: PRODUCT8,
       productVersion: status.productVersion || DEFAULT_CAPABILITY_VERSION,
       protocol: snapshot?.protocol ?? "cognitum.meta-proxy.http",
       protocolVersion: status.protocolVersion ?? snapshot?.protocolVersion ?? "1.0",
@@ -1394,14 +1485,14 @@ var MetaProxyClient = class {
       chatCompletions: async (request, _options) => {
         if (request.stream) {
           throw new UnsupportedCapabilityError(
-            PRODUCT6,
+            PRODUCT8,
             "preview.sponsored.chatCompletions",
             "sponsored-inference-streaming",
             "Sponsored stream=true fails locally until an end-to-end stream capability exists (ADR-0025a \xA7D8) \u2014 this SDK pass does not implement sponsored streaming at all."
           );
         }
         throw new UnsupportedCapabilityError(
-          PRODUCT6,
+          PRODUCT8,
           "preview.sponsored.chatCompletions",
           "sponsored-inference",
           "Sponsored chat.completions forwarding is not implemented this pass (ADR-0025a \xA7D9 consent/sponsor-budget/usage is explicitly out of scope; ADR-0025b's lifecycle/state fixes are a prerequisite for stable sponsor support)."
@@ -1417,7 +1508,8 @@ var MetaProxyClient = class {
       credentialProvider: this.config.localCredentialProvider,
       allowNonLoopback: this.config.allowNonLoopback,
       defaultRequestContext: this.config.defaultRequestContext,
-      telemetry: this.config.telemetry
+      telemetry: this.config.telemetry,
+      consentGrants: this.config.consentGrants
     };
   }
   /**
@@ -1434,7 +1526,7 @@ var MetaProxyClient = class {
     const provider = this.config.localCredentialProvider;
     if (!provider) return void 0;
     return provider.acquire({
-      product: PRODUCT6,
+      product: PRODUCT8,
       normalizedOrigin: this.config.origin,
       audience: this.config.origin,
       requiredScopes: ["meta-proxy.status"],
@@ -1448,7 +1540,7 @@ var MetaProxyClient = class {
       throw new AgenticError(
         "protocol",
         `refusing to attach the local bearer to non-loopback origin "${this.config.origin}" (ADR-0025a \xA7D6/\xA7D10)`,
-        { product: PRODUCT6, retryable: false }
+        { product: PRODUCT8, retryable: false }
       );
     }
     if (credential.scheme.toLowerCase() === "bearer") {
@@ -1466,7 +1558,7 @@ var MetaProxyClient = class {
       credential = await this.resolveCredential(operation);
     } catch (cause) {
       throw new AgenticError("authentication", `failed to acquire local credential: ${cause}`, {
-        product: PRODUCT6,
+        product: PRODUCT8,
         operation,
         requestId,
         retryable: false,
@@ -1477,7 +1569,7 @@ var MetaProxyClient = class {
       throw new AgenticError(
         "authentication",
         `MetaProxyClient.${operation} requires a localCredentialProvider (ADR-0025a Context: "GET /status | Authenticated local runtime and routing state")`,
-        { product: PRODUCT6, operation, requestId, retryable: false }
+        { product: PRODUCT8, operation, requestId, retryable: false }
       );
     }
     const headers = {
@@ -1497,7 +1589,7 @@ var MetaProxyClient = class {
         durationMs: Date.now() - startedAt
       });
       throw new AgenticError("transport", `${operation} request failed: ${cause}`, {
-        product: PRODUCT6,
+        product: PRODUCT8,
         operation,
         requestId,
         retryable: true,
@@ -1528,6 +1620,7 @@ var MetaProxyClient = class {
   }
 };
 export {
+  CLOUD_ROUTING_CONSENT_KIND,
   DEFAULT_META_PROXY_ORIGIN,
   DEFAULT_META_PROXY_TOKEN_ENV_VAR,
   DEFAULT_PROXY_CONNECT_TIMEOUT_MS,
@@ -1535,10 +1628,16 @@ export {
   MetaProxyClient,
   PROXY_CHAT_FORWARD_HEADER_ALLOWLIST,
   __resetMetaProxyNonLoopbackWarnLatch,
+  assertConsentForRoutingIntent,
+  assertNodeRuntime,
   assertRoutingReceiptMatchesIntent,
   forwardChatCompletion,
   forwardChatCompletionStream,
+  hasValidConsentGrant,
+  intentTouchesPlane,
   isBearerAttachmentAllowed,
+  isBrowserLikeRuntime,
+  isConsentGrantValid,
   rejectRedirectResponse,
   resolveMetaProxyClientConfig,
   resolveProxyTimeBudget

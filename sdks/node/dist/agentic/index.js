@@ -43,6 +43,32 @@ var UnsupportedCapabilityError = class extends AgenticError {
     Object.setPrototypeOf(this, new.target.prototype);
   }
 };
+var ConsentRequiredError = class extends AgenticError {
+  requiredKind;
+  constructor(product, operation, requiredKind, message) {
+    super(
+      "consent_required",
+      message ?? `operation "${operation}" on ${product} requires an unexpired ADR-0022 consent grant of kind "${requiredKind}" \u2014 credential presence alone is not consent`,
+      { product, operation, retryable: false }
+    );
+    this.name = "ConsentRequiredError";
+    this.requiredKind = requiredKind;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
+var UnsupportedRuntimeError = class extends AgenticError {
+  runtime;
+  constructor(product, operation, runtime, message) {
+    super(
+      "configuration",
+      message ?? `${product} does not support the "${runtime}" runtime (ADR-0029 \xA7D2) \u2014 construction refused before reading a credential or opening a socket`,
+      { product, operation, retryable: false }
+    );
+    this.name = "UnsupportedRuntimeError";
+    this.runtime = runtime;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
 var DEFAULT_RETRY_POLICY = {
   baseMs: 500,
   capMs: 3e4,
@@ -621,12 +647,14 @@ function verifyLineageChain(chain, opts) {
 }
 export {
   AgenticError,
+  ConsentRequiredError,
   DEFAULT_API_KEY_ENV_VAR,
   DEFAULT_RETRY_POLICY,
   RedactedSecret,
   SentinelSecretRedactor,
   StaticApiKeyCredentialProvider,
   UnsupportedCapabilityError,
+  UnsupportedRuntimeError,
   buildExecutionReceipt,
   canonicalJson,
   equalJitterDelayMs,

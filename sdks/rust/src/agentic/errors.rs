@@ -156,6 +156,114 @@ impl From<UnsupportedCapabilityError> for AgenticError {
     }
 }
 
+/// ADR-0022 §D7 consent grant kinds. A locally recorded [`ConsentGrant`]
+/// names exactly one of these — never a generic boolean — so consent for
+/// one kind never implies another ("Consent for sponsored inference does
+/// not imply cloud fallback or training contribution").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsentGrantKind {
+    SponsoredInference,
+    PowerSaverRouting,
+    CloudFallback,
+    SourceUpload,
+    ArtifactRetention,
+    TrainingDataContribution,
+    ExternalWebhookDelivery,
+}
+
+/// A narrow, locally-recorded (or signed) consent grant (ADR-0022 §D7). The
+/// grant must match product, origin, subject, and action before it
+/// satisfies a gated call — the SDK never infers consent from credential
+/// presence, a prior operation on another origin, environment variables, or
+/// a retry policy.
+///
+/// Type-only scaffolding: this type does not verify signatures or attest
+/// server-persisted grants (§D7's "consequential kind" re-check
+/// requirement) — it only defines the shape and the presence/expiry check
+/// that product clients (starting with `MetaProxyClient`, ADR-0025a §D9)
+/// apply before a gated call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentGrant {
+    pub kind: ConsentGrantKind,
+    pub product: String,
+    pub origin: String,
+    pub subject: String,
+    pub scope: String,
+    pub issued_at: String,
+    /// `None` means the grant does not expire.
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    /// Present when the grant is signed or attested by the issuing service.
+    /// §D7: consequential kinds (`SponsoredInference`,
+    /// `TrainingDataContribution`, `SourceUpload`, `ArtifactRetention`,
+    /// `ExternalWebhookDelivery`) require this; the low-stakes kinds
+    /// (`PowerSaverRouting`, `CloudFallback`) may be an unsigned local
+    /// record without one.
+    #[serde(default)]
+    pub evidence_id: Option<String>,
+}
+
+/// Fail-closed error raised when a gated operation requires an ADR-0022 §D7
+/// consent grant that is absent, expired, or does not match the call
+/// (product/origin/subject/action). Credential presence is never a
+/// substitute for consent (§D7/ADR-0025a §D9): "Headless clients return
+/// `ConsentRequiredError` rather than prompt." Carries a machine-readable
+/// `required_kind` per §D7 ("Headless SDKs return `ConsentRequiredError`
+/// with a machine-readable required kind").
+///
+/// Node and Python model this as a subclass of their base agentic error;
+/// Rust has no class inheritance, so this is a separate struct with a
+/// `From<ConsentRequiredError> for AgenticError` conversion below, matching
+/// [`UnsupportedCapabilityError`]'s precedent.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error(
+    "operation \"{operation}\" on {product} requires an unexpired ADR-0022 consent grant of \
+     kind \"{required_kind:?}\" — credential presence alone is not consent"
+)]
+pub struct ConsentRequiredError {
+    pub product: String,
+    pub operation: String,
+    pub required_kind: ConsentGrantKind,
+}
+
+impl ConsentRequiredError {
+    pub fn new(
+        product: impl Into<String>,
+        operation: impl Into<String>,
+        required_kind: ConsentGrantKind,
+    ) -> Self {
+        Self {
+            product: product.into(),
+            operation: operation.into(),
+            required_kind,
+        }
+    }
+}
+
+impl From<ConsentRequiredError> for AgenticError {
+    fn from(e: ConsentRequiredError) -> Self {
+        let message = e.to_string();
+        AgenticError {
+            kind: AgenticErrorKind::ConsentRequired,
+            message,
+            product: Some(e.product),
+            operation: Some(e.operation),
+            retryable: false,
+            status: None,
+            code: None,
+            request_id: None,
+            correlation_id: None,
+            protocol_version: None,
+            retry_after_ms: None,
+            attempt_count: None,
+            details: None,
+            cause: None,
+        }
+    }
+}
+
 /// Retry-policy shape (ADR-0023 §D4). Values MUST match ADR-0005's
 /// equal-jitter formula verbatim; agentic modules MUST NOT diverge from it.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

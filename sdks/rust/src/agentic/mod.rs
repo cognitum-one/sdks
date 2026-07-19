@@ -38,8 +38,8 @@ pub use credentials::{
 pub use sentinel::{D12Category, SentinelSecretRedactor};
 pub use errors::{
     equal_jitter_delay_ms, AgenticError, AgenticErrorKind, CancellationReason, CancellationToken,
-    IdempotencyBindingV1, NoopCancellationToken, OperationRetryClass, RetryPolicy, TimeBudget,
-    UnsupportedCapabilityError,
+    ConsentGrant, ConsentGrantKind, ConsentRequiredError, IdempotencyBindingV1,
+    NoopCancellationToken, OperationRetryClass, RetryPolicy, TimeBudget, UnsupportedCapabilityError,
 };
 pub use operations::{
     EventStreamOptions, OperationEvent, OperationEventStream, OperationHandle, OperationSnapshot,

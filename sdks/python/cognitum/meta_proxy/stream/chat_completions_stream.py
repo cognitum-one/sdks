@@ -64,6 +64,7 @@ import httpx
 from cognitum.agentic import AgenticError
 from cognitum.meta_llm.stream.envelope import MetaLlmStreamEnvelope
 from cognitum.meta_llm.stream.openai_events import OpenAiStreamEvent, decode_openai_sse_event
+from cognitum.meta_proxy.consent import assert_consent_for_routing_intent
 from cognitum.meta_proxy.envelope import MetaProxyUpstreamReceipt
 from cognitum.meta_proxy.nonstream import (
     _apply_bearer,
@@ -477,6 +478,18 @@ async def chat_completions_stream(
     """``POST /v1/chat/completions`` through the Proxy with ``stream=True``
     (ADR-0025a §D8). Async-generator function -- iterate with ``async for``.
     """
+    # ADR-0025a §D9: same fail-closed consent gate as non-streaming
+    # `post_chat_forwarding` (``../client.py``) -- this is the FIRST
+    # statement in the generator body, so it runs on the first
+    # ``__anext__()`` call, before ``_open_stream_with_pre_byte_retry`` opens
+    # any connection.
+    assert_consent_for_routing_intent(
+        routing_intent,
+        config.consent_grants or [],
+        config.origin,
+        _OPERATION,
+    )
+
     forwarded = filter_forwardable_headers(forward_headers)
     idempotency_key = forwarded.pop("Idempotency-Key", None) or str(uuid.uuid4())
     resolved_request_id = request_id or _new_request_id()
