@@ -3,6 +3,62 @@
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/en/1.1.0/).
 This crate follows [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] — 2026-07-19
+
+Cognitum Agentic SDK Integration — new product clients on top of the
+shared `agentic` module (credential providers, error taxonomy, retry/
+idempotency, capability sets, telemetry primitives). See the
+[root CHANGELOG](../../CHANGELOG.md) for the full cross-SDK picture
+and `docs/adr/` for governing ADRs.
+
+### Added
+
+- **`agentic` module** (unconditional base) — `CredentialProvider` /
+  `StaticApiKeyCredentialProvider` / `OAuthTokenCredentialProvider`
+  with origin/audience/product binding and scope preflight (ADR-0022),
+  the shared error taxonomy with equal-jitter retry and idempotency
+  binding (ADR-0023), `ExecutionReceipt`/`LineageReference` with real
+  HMAC-SHA256 verification across a 5-level shape/digest/cryptographic/
+  anchored ladder (ADR-0028 §D7-D9), the `SentinelSecretRedactor`
+  bounded-depth secret scanner (§D13), and — new this release — a
+  `TelemetrySink` interface with a functional no-op default, W3C
+  `traceparent`/`tracestate` parse/generate/join primitives, an event/
+  metric-name catalog, and a `DiagnosticPolicy`/manifest-preview API
+  with a policy-independent hard block on credential/signed-URL
+  capture (§D1-D4, §D10). **No product client wires telemetry
+  emission yet** — this is frozen scaffolding, not an active pipeline.
+- **`meta-llm` feature** — `MetaLlmClient` against the real Meta LLM
+  serving surface: `chat.completions`, `messages.create`/
+  `countTokens`, legacy `completions`, `responses`, `embeddings`, all
+  with idempotency-key retry and the full error-mapping table
+  (ADR-0024a). Streaming for both `chat.completions` (OpenAI-style SSE)
+  and `messages.create` (native Anthropic event types) on a shared
+  protocol-agnostic SSE parser. Routing controls and read-only
+  usage/receipt access (ADR-0024b §D11 step 1).
+- **`meta-proxy` feature** — `MetaProxyClient` data-plane (status/
+  capabilities/routing intent), non-streaming and streaming
+  `chat.completions` forwarding, consent gating for the
+  `cognitum_cloud` routing plane, browser-runtime rejection guard
+  (ADR-0025a). Sponsor/budget operations remain fail-closed stubs
+  pending ADR-0025b (not started).
+- **`metaharness` feature** — `MetaHarnessClient` construction and the
+  full §D2 method surface, all fail-closed by design: the upstream OSS
+  `metaharness` bridge protocol this client would talk to does not
+  exist yet (ADR-0026a §D7, 7 explicit blockers). Ships now so the
+  shape is visible; no operation performs real I/O.
+- **`harnessaas` feature** — `HarnessaaSClient` scoped to the real,
+  deployed synchronous surface (`health`/`solve`/`lineage`) rather
+  than ADR-0027a's proposed-but-unbuilt async job/poll/SSE contract.
+  Vertical-support capability gate on `solve()` (only `code-repair`
+  fully modeled).
+
+### Notes
+
+- Every new feature is additive and independently gated behind its own
+  Cargo feature (`meta-llm`, `meta-proxy`, `metaharness`, `harnessaas`)
+  — enabling `seed` alone is unaffected.
+- No breaking changes to the existing `seed` surface.
+
 ## [0.2.0] — 2026-04-23
 
 Aligned release across the Cognitum SDK monorepo. See the
