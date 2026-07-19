@@ -56,3 +56,10 @@ pub mod sse;
 /// `meta_proxy`'s module doc comment for the full deferred-scope list.
 #[cfg(feature = "meta-proxy")]
 pub mod meta_proxy;
+
+/// MetaHarness client (ADR-0019 §D2, ADR-0026a). Issue #64 / M4 start —
+/// `MetaHarnessClient` construction (zero I/O) and the §D2 public method
+/// surface as fail-closed stubs. See `metaharness`'s module doc comment for
+/// the full ADR-0026a §D7 blocker list this pass is gated on.
+#[cfg(feature = "metaharness")]
+pub mod metaharness;
