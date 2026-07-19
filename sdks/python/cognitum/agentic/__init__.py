@@ -89,6 +89,7 @@ from cognitum.agentic.operations import (
     Page,
     PageRequest,
     WaitOptions,
+    wait_for_operation,
 )
 from cognitum.agentic.receipt_verification import (
     LineageChainVerification,
@@ -254,6 +255,7 @@ __all__ = [
     "OperationEvent",
     "PageRequest",
     "Page",
+    "wait_for_operation",
     # Receipts / lineage (ADR-0028)
     "VerificationLevel",
     "VerificationResult",
