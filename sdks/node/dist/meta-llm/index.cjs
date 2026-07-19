@@ -534,6 +534,48 @@ function assertScopeGranted(product, operation, requiredScope, credential) {
   }
 }
 
+// src/agentic/telemetry-metrics.ts
+var METRIC_REQUEST_DURATION = "request.duration";
+var METRIC_STREAM_DURATION = "stream.duration";
+var METRIC_REQUEST_COUNT = "request.count";
+var METRIC_RETRY_COUNT = "retry.count";
+var METRIC_ERROR_COUNT = "error.count";
+var METRIC_CANCELLATION_COUNT = "cancellation.count";
+var METRIC_FIRST_EVENT_LATENCY = "stream.first_event.latency";
+var METRIC_INPUT_TOKEN_COUNT = "token.input.count";
+var METRIC_OUTPUT_TOKEN_COUNT = "token.output.count";
+var METRIC_CACHE_TOKEN_COUNT = "token.cache.count";
+var METRIC_SAFETY_TOKEN_COUNT = "token.safety.count";
+var METRIC_COST_RESERVED = "cost.reserved";
+var METRIC_COST_COMMITTED = "cost.committed";
+var METRIC_COST_RELEASED = "cost.released";
+var METRIC_COST_RECONCILED = "cost.reconciled";
+var METRIC_OPERATION_STATE_TRANSITION_COUNT = "operation.state_transition.count";
+var METRIC_PROCESS_EXIT_COUNT = "process.exit.count";
+var METRIC_PROCESS_FORCED_TERMINATION_COUNT = "process.forced_termination.count";
+var METRIC_VERIFICATION_RESULT_COUNT = "verification.result.count";
+var MEASUREMENT_KIND_BY_INSTRUMENT = {
+  [METRIC_REQUEST_DURATION]: "histogram",
+  [METRIC_STREAM_DURATION]: "histogram",
+  [METRIC_REQUEST_COUNT]: "counter",
+  [METRIC_RETRY_COUNT]: "counter",
+  [METRIC_ERROR_COUNT]: "counter",
+  [METRIC_CANCELLATION_COUNT]: "counter",
+  [METRIC_FIRST_EVENT_LATENCY]: "histogram",
+  [METRIC_INPUT_TOKEN_COUNT]: "counter",
+  [METRIC_OUTPUT_TOKEN_COUNT]: "counter",
+  [METRIC_CACHE_TOKEN_COUNT]: "counter",
+  [METRIC_SAFETY_TOKEN_COUNT]: "counter",
+  [METRIC_COST_RESERVED]: "counter",
+  [METRIC_COST_COMMITTED]: "counter",
+  [METRIC_COST_RELEASED]: "counter",
+  [METRIC_COST_RECONCILED]: "counter",
+  [METRIC_OPERATION_STATE_TRANSITION_COUNT]: "counter",
+  [METRIC_PROCESS_EXIT_COUNT]: "counter",
+  [METRIC_PROCESS_FORCED_TERMINATION_COUNT]: "counter",
+  [METRIC_VERIFICATION_RESULT_COUNT]: "counter"
+};
+
 // src/agentic/trace-context.ts
 var import_node_crypto3 = require("crypto");
 

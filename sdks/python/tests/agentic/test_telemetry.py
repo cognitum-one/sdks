@@ -27,6 +27,23 @@ from cognitum.agentic.telemetry import (
     ATTR_ROUTING_REASON,
     ATTR_TENANT_HASH,
     ATTR_TIER,
+    EVENT_ARTIFACT_VERIFIED,
+    EVENT_BUDGET_COMMITTED,
+    EVENT_BUDGET_RELEASED,
+    EVENT_BUDGET_RESERVED,
+    EVENT_CAPABILITIES_LOADED,
+    EVENT_CONSENT_REQUIRED,
+    EVENT_EVIDENCE_VERIFIED,
+    EVENT_OPERATION_STATE_CHANGED,
+    EVENT_OPERATION_WAIT_ENDED,
+    EVENT_PROCESS_ENDED,
+    EVENT_PROCESS_STARTED,
+    EVENT_REQUEST_END,
+    EVENT_REQUEST_RETRY_SCHEDULED,
+    EVENT_REQUEST_START,
+    EVENT_STREAM_END,
+    EVENT_STREAM_FIRST_EVENT,
+    EVENT_TELEMETRY_DROPPED,
     NoopTelemetrySink,
     TelemetryEvent,
     TraceContext,
@@ -103,3 +120,47 @@ def test_telemetry_event_defaults_trace_context_to_none_and_maps_to_empty() -> N
     assert event.trace_context is None
     assert event.attributes == {}
     assert event.measurements == {}
+
+
+def test_d4_event_constants_match_adr_0028_catalog_exactly() -> None:
+    assert EVENT_REQUEST_START == "request.start"
+    assert EVENT_REQUEST_RETRY_SCHEDULED == "request.retry_scheduled"
+    assert EVENT_REQUEST_END == "request.end"
+    assert EVENT_STREAM_FIRST_EVENT == "stream.first_event"
+    assert EVENT_STREAM_END == "stream.end"
+    assert EVENT_OPERATION_STATE_CHANGED == "operation.state_changed"
+    assert EVENT_OPERATION_WAIT_ENDED == "operation.wait_ended"
+    assert EVENT_CAPABILITIES_LOADED == "capabilities.loaded"
+    assert EVENT_BUDGET_RESERVED == "budget.reserved"
+    assert EVENT_BUDGET_COMMITTED == "budget.committed"
+    assert EVENT_BUDGET_RELEASED == "budget.released"
+    assert EVENT_CONSENT_REQUIRED == "consent.required"
+    assert EVENT_PROCESS_STARTED == "process.started"
+    assert EVENT_PROCESS_ENDED == "process.ended"
+    assert EVENT_ARTIFACT_VERIFIED == "artifact.verified"
+    assert EVENT_EVIDENCE_VERIFIED == "evidence.verified"
+    assert EVENT_TELEMETRY_DROPPED == "telemetry.dropped"
+
+
+def test_d4_event_catalog_has_exactly_seventeen_entries() -> None:
+    all_events = [
+        EVENT_REQUEST_START,
+        EVENT_REQUEST_RETRY_SCHEDULED,
+        EVENT_REQUEST_END,
+        EVENT_STREAM_FIRST_EVENT,
+        EVENT_STREAM_END,
+        EVENT_OPERATION_STATE_CHANGED,
+        EVENT_OPERATION_WAIT_ENDED,
+        EVENT_CAPABILITIES_LOADED,
+        EVENT_BUDGET_RESERVED,
+        EVENT_BUDGET_COMMITTED,
+        EVENT_BUDGET_RELEASED,
+        EVENT_CONSENT_REQUIRED,
+        EVENT_PROCESS_STARTED,
+        EVENT_PROCESS_ENDED,
+        EVENT_ARTIFACT_VERIFIED,
+        EVENT_EVIDENCE_VERIFIED,
+        EVENT_TELEMETRY_DROPPED,
+    ]
+    assert len(all_events) == 17
+    assert len(set(all_events)) == 17

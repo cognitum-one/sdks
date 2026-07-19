@@ -188,6 +188,69 @@ pub const ATTR_ERROR_KIND: &str = "cognitum.error.kind";
 /// `cognitum.retry.count` — integer. Cardinality rule: measurement.
 pub const ATTR_RETRY_COUNT: &str = "cognitum.retry.count";
 
+// ---------------------------------------------------------------------
+// §D4: Telemetry event names emitted "when a sink is configured" (ADR-0028
+// §D4, lines 126-146). These are named string CONSTANTS, one per literal
+// dotted event name in the ADR's catalog — unlike the metric instrument
+// catalog (`./telemetry_metrics.rs`), the ADR gives these as exact wire
+// strings, so no naming decision was required beyond the
+// `EVENT_<SCREAMING_SNAKE_CASE>` constant-naming convention itself. No emit
+// call site exists in this pass — these name the event a future call site
+// MUST use, mirroring the §D3 `ATTR_*` discipline above.
+// ---------------------------------------------------------------------
+
+/// `request.start` — emitted when a request begins.
+pub const EVENT_REQUEST_START: &str = "request.start";
+
+/// `request.retry_scheduled` — emitted when a retry has been scheduled.
+pub const EVENT_REQUEST_RETRY_SCHEDULED: &str = "request.retry_scheduled";
+
+/// `request.end` — emitted when a request completes (success or failure).
+pub const EVENT_REQUEST_END: &str = "request.end";
+
+/// `stream.first_event` — emitted on the first event of a stream.
+pub const EVENT_STREAM_FIRST_EVENT: &str = "stream.first_event";
+
+/// `stream.end` — emitted when a stream completes.
+pub const EVENT_STREAM_END: &str = "stream.end";
+
+/// `operation.state_changed` — emitted on an operation state transition.
+pub const EVENT_OPERATION_STATE_CHANGED: &str = "operation.state_changed";
+
+/// `operation.wait_ended` — emitted when a caller's wait on an operation ends.
+pub const EVENT_OPERATION_WAIT_ENDED: &str = "operation.wait_ended";
+
+/// `capabilities.loaded` — emitted when a capability set has been loaded.
+pub const EVENT_CAPABILITIES_LOADED: &str = "capabilities.loaded";
+
+/// `budget.reserved` — emitted when a cost reservation is made.
+pub const EVENT_BUDGET_RESERVED: &str = "budget.reserved";
+
+/// `budget.committed` — emitted when a reservation is committed.
+pub const EVENT_BUDGET_COMMITTED: &str = "budget.committed";
+
+/// `budget.released` — emitted when a reservation is released.
+pub const EVENT_BUDGET_RELEASED: &str = "budget.released";
+
+/// `consent.required` — emitted when caller consent is required to proceed.
+pub const EVENT_CONSENT_REQUIRED: &str = "consent.required";
+
+/// `process.started` — emitted when a local subprocess starts.
+pub const EVENT_PROCESS_STARTED: &str = "process.started";
+
+/// `process.ended` — emitted when a local subprocess ends.
+pub const EVENT_PROCESS_ENDED: &str = "process.ended";
+
+/// `artifact.verified` — emitted when an artifact has been verified.
+pub const EVENT_ARTIFACT_VERIFIED: &str = "artifact.verified";
+
+/// `evidence.verified` — emitted when evidence has been verified.
+pub const EVENT_EVIDENCE_VERIFIED: &str = "evidence.verified";
+
+/// `telemetry.dropped` — emitted (via the fallback hook, per §D1) when the
+/// SDK drops a telemetry event.
+pub const EVENT_TELEMETRY_DROPPED: &str = "telemetry.dropped";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,5 +328,50 @@ mod tests {
         let round_tripped: TelemetryEvent = serde_json::from_value(json).unwrap();
         assert_eq!(round_tripped.name, "request.end");
         assert_eq!(round_tripped.severity, TelemetrySeverity::Warn);
+    }
+
+    #[test]
+    fn d4_event_constants_match_adr_0028_catalog_exactly() {
+        assert_eq!(EVENT_REQUEST_START, "request.start");
+        assert_eq!(EVENT_REQUEST_RETRY_SCHEDULED, "request.retry_scheduled");
+        assert_eq!(EVENT_REQUEST_END, "request.end");
+        assert_eq!(EVENT_STREAM_FIRST_EVENT, "stream.first_event");
+        assert_eq!(EVENT_STREAM_END, "stream.end");
+        assert_eq!(EVENT_OPERATION_STATE_CHANGED, "operation.state_changed");
+        assert_eq!(EVENT_OPERATION_WAIT_ENDED, "operation.wait_ended");
+        assert_eq!(EVENT_CAPABILITIES_LOADED, "capabilities.loaded");
+        assert_eq!(EVENT_BUDGET_RESERVED, "budget.reserved");
+        assert_eq!(EVENT_BUDGET_COMMITTED, "budget.committed");
+        assert_eq!(EVENT_BUDGET_RELEASED, "budget.released");
+        assert_eq!(EVENT_CONSENT_REQUIRED, "consent.required");
+        assert_eq!(EVENT_PROCESS_STARTED, "process.started");
+        assert_eq!(EVENT_PROCESS_ENDED, "process.ended");
+        assert_eq!(EVENT_ARTIFACT_VERIFIED, "artifact.verified");
+        assert_eq!(EVENT_EVIDENCE_VERIFIED, "evidence.verified");
+        assert_eq!(EVENT_TELEMETRY_DROPPED, "telemetry.dropped");
+    }
+
+    #[test]
+    fn d4_event_catalog_has_exactly_seventeen_entries() {
+        let all = [
+            EVENT_REQUEST_START,
+            EVENT_REQUEST_RETRY_SCHEDULED,
+            EVENT_REQUEST_END,
+            EVENT_STREAM_FIRST_EVENT,
+            EVENT_STREAM_END,
+            EVENT_OPERATION_STATE_CHANGED,
+            EVENT_OPERATION_WAIT_ENDED,
+            EVENT_CAPABILITIES_LOADED,
+            EVENT_BUDGET_RESERVED,
+            EVENT_BUDGET_COMMITTED,
+            EVENT_BUDGET_RELEASED,
+            EVENT_CONSENT_REQUIRED,
+            EVENT_PROCESS_STARTED,
+            EVENT_PROCESS_ENDED,
+            EVENT_ARTIFACT_VERIFIED,
+            EVENT_EVIDENCE_VERIFIED,
+            EVENT_TELEMETRY_DROPPED,
+        ];
+        assert_eq!(all.len(), 17);
     }
 }

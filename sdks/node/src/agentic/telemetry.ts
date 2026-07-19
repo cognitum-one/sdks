@@ -155,3 +155,68 @@ export const ATTR_ERROR_KIND = "cognitum.error.kind";
 
 /** `cognitum.retry.count` -- integer. Cardinality rule: measurement. */
 export const ATTR_RETRY_COUNT = "cognitum.retry.count";
+
+// ---------------------------------------------------------------------
+// §D4: Telemetry event names emitted "when a sink is configured" (ADR-0028
+// §D4, lines 126-146). These are named string CONSTANTS, one per literal
+// dotted event name in the ADR's catalog -- unlike the metric instrument
+// catalog (`./telemetry-metrics.ts`), the ADR gives these as exact wire
+// strings, so no naming decision was required beyond the
+// `EVENT_<SCREAMING_SNAKE_CASE>` constant-naming convention itself. No emit
+// call site exists in this pass -- these name the event a future call site
+// MUST use, mirroring the §D3 `ATTR_*` discipline above.
+// ---------------------------------------------------------------------
+
+/** `request.start` -- emitted when a request begins. */
+export const EVENT_REQUEST_START = "request.start";
+
+/** `request.retry_scheduled` -- emitted when a retry has been scheduled. */
+export const EVENT_REQUEST_RETRY_SCHEDULED = "request.retry_scheduled";
+
+/** `request.end` -- emitted when a request completes (success or failure). */
+export const EVENT_REQUEST_END = "request.end";
+
+/** `stream.first_event` -- emitted on the first event of a stream. */
+export const EVENT_STREAM_FIRST_EVENT = "stream.first_event";
+
+/** `stream.end` -- emitted when a stream completes. */
+export const EVENT_STREAM_END = "stream.end";
+
+/** `operation.state_changed` -- emitted on an operation state transition. */
+export const EVENT_OPERATION_STATE_CHANGED = "operation.state_changed";
+
+/** `operation.wait_ended` -- emitted when a caller's wait on an operation ends. */
+export const EVENT_OPERATION_WAIT_ENDED = "operation.wait_ended";
+
+/** `capabilities.loaded` -- emitted when a capability set has been loaded. */
+export const EVENT_CAPABILITIES_LOADED = "capabilities.loaded";
+
+/** `budget.reserved` -- emitted when a cost reservation is made. */
+export const EVENT_BUDGET_RESERVED = "budget.reserved";
+
+/** `budget.committed` -- emitted when a reservation is committed. */
+export const EVENT_BUDGET_COMMITTED = "budget.committed";
+
+/** `budget.released` -- emitted when a reservation is released. */
+export const EVENT_BUDGET_RELEASED = "budget.released";
+
+/** `consent.required` -- emitted when caller consent is required to proceed. */
+export const EVENT_CONSENT_REQUIRED = "consent.required";
+
+/** `process.started` -- emitted when a local subprocess starts. */
+export const EVENT_PROCESS_STARTED = "process.started";
+
+/** `process.ended` -- emitted when a local subprocess ends. */
+export const EVENT_PROCESS_ENDED = "process.ended";
+
+/** `artifact.verified` -- emitted when an artifact has been verified. */
+export const EVENT_ARTIFACT_VERIFIED = "artifact.verified";
+
+/** `evidence.verified` -- emitted when evidence has been verified. */
+export const EVENT_EVIDENCE_VERIFIED = "evidence.verified";
+
+/**
+ * `telemetry.dropped` -- emitted (via the fallback hook, per §D1) when the
+ * SDK drops a telemetry event.
+ */
+export const EVENT_TELEMETRY_DROPPED = "telemetry.dropped";
