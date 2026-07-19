@@ -542,6 +542,28 @@ var SentinelSecretRedactor = class {
   }
 };
 
+// src/agentic/telemetry.ts
+var NoopTelemetrySink = class {
+  async emit(_event) {
+  }
+  async flush(_deadlineMs) {
+  }
+};
+var ATTR_PRODUCT = "cognitum.product";
+var ATTR_OPERATION = "cognitum.operation";
+var ATTR_PROTOCOL = "cognitum.protocol";
+var ATTR_CONTRACT_VERSION = "cognitum.contract.version";
+var ATTR_REQUEST_ID = "cognitum.request.id";
+var ATTR_TENANT_HASH = "cognitum.tenant.hash";
+var ATTR_MODEL_ALIAS = "cognitum.model.alias";
+var ATTR_TIER = "cognitum.tier";
+var ATTR_ROUTING_PLANE = "cognitum.routing.plane";
+var ATTR_ROUTING_REASON = "cognitum.routing.reason";
+var ATTR_CACHE_RESULT = "cognitum.cache.result";
+var ATTR_OPERATION_STATE = "cognitum.operation.state";
+var ATTR_ERROR_KIND = "cognitum.error.kind";
+var ATTR_RETRY_COUNT = "cognitum.retry.count";
+
 // src/agentic/receipt-verification.ts
 import { createHash as createHash3, createHmac, timingSafeEqual } from "crypto";
 var CANONICALIZATION_VERSION = "cognitum-canonical-json-v1";
@@ -811,10 +833,25 @@ function verifyLineageChain(chain, opts) {
   };
 }
 export {
+  ATTR_CACHE_RESULT,
+  ATTR_CONTRACT_VERSION,
+  ATTR_ERROR_KIND,
+  ATTR_MODEL_ALIAS,
+  ATTR_OPERATION,
+  ATTR_OPERATION_STATE,
+  ATTR_PRODUCT,
+  ATTR_PROTOCOL,
+  ATTR_REQUEST_ID,
+  ATTR_RETRY_COUNT,
+  ATTR_ROUTING_PLANE,
+  ATTR_ROUTING_REASON,
+  ATTR_TENANT_HASH,
+  ATTR_TIER,
   AgenticError,
   ConsentRequiredError,
   DEFAULT_API_KEY_ENV_VAR,
   DEFAULT_RETRY_POLICY,
+  NoopTelemetrySink,
   OAuthTokenCredentialProvider,
   PermissionDeniedError,
   RedactedSecret,

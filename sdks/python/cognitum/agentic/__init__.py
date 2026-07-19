@@ -18,7 +18,7 @@ Sources:
 - docs/adr/0019-agentic-platform-bounded-contexts.md (D2, D3, D5, D6)
 - docs/adr/0022-agentic-auth-tenant-budget-secret-and-consent-isolation.md (D1, D6, D10)
 - docs/adr/0023-agentic-errors-retries-idempotency-cancellation-and-time-budgets.md (D1, D3-D9)
-- docs/adr/0028-agentic-telemetry-usage-receipts-lineage-and-redaction.md (D7-D9)
+- docs/adr/0028-agentic-telemetry-usage-receipts-lineage-and-redaction.md (D1, D3, D7-D9)
 - docs/adr/0005-cross-cutting-retry-backoff.md (equal-jitter formula)
 
 This package is imported eagerly by callers of ``cognitum.agentic`` but is
@@ -105,6 +105,27 @@ from cognitum.agentic.static_api_key_provider import (
     DEFAULT_API_KEY_ENV_VAR,
     StaticApiKeyCredentialProvider,
 )
+from cognitum.agentic.telemetry import (
+    ATTR_CACHE_RESULT,
+    ATTR_CONTRACT_VERSION,
+    ATTR_ERROR_KIND,
+    ATTR_MODEL_ALIAS,
+    ATTR_OPERATION,
+    ATTR_OPERATION_STATE,
+    ATTR_PRODUCT,
+    ATTR_PROTOCOL,
+    ATTR_REQUEST_ID,
+    ATTR_RETRY_COUNT,
+    ATTR_ROUTING_PLANE,
+    ATTR_ROUTING_REASON,
+    ATTR_TENANT_HASH,
+    ATTR_TIER,
+    NoopTelemetrySink,
+    TelemetryEvent,
+    TelemetrySeverity,
+    TelemetrySink,
+    TraceContext,
+)
 
 __all__ = [
     # Capability negotiation
@@ -178,4 +199,24 @@ __all__ = [
     "VerifyReceiptOptions",
     "VerifyLineageChainOptions",
     "LineageChainVerification",
+    # Telemetry sink / event / attributes (ADR-0028 D1, D3; issue #70)
+    "TelemetrySeverity",
+    "TraceContext",
+    "TelemetryEvent",
+    "TelemetrySink",
+    "NoopTelemetrySink",
+    "ATTR_PRODUCT",
+    "ATTR_OPERATION",
+    "ATTR_PROTOCOL",
+    "ATTR_CONTRACT_VERSION",
+    "ATTR_REQUEST_ID",
+    "ATTR_TENANT_HASH",
+    "ATTR_MODEL_ALIAS",
+    "ATTR_TIER",
+    "ATTR_ROUTING_PLANE",
+    "ATTR_ROUTING_REASON",
+    "ATTR_CACHE_RESULT",
+    "ATTR_OPERATION_STATE",
+    "ATTR_ERROR_KIND",
+    "ATTR_RETRY_COUNT",
 ]
