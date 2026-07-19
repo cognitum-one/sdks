@@ -30,6 +30,8 @@ pub mod forwarding;
 mod http;
 pub mod routing;
 pub mod status;
+pub mod stream;
+pub mod time_budget;
 
 /// Product identity used in requests, credential scoping, and error fields.
 pub(crate) const PRODUCT: &str = "meta-proxy";
@@ -50,3 +52,11 @@ pub use envelope::{MetaProxyResponseMeta, MetaProxyResult, MetaProxyUpstreamRece
 pub use forwarding::MetaProxyChatCallOptions;
 pub use routing::RoutingIntent;
 pub use status::{MetaProxyRoutingReceipt, MetaProxyStatus, RoutingPlane, WorkloadPolicy};
+pub use stream::{
+    chat_completions_stream, MetaProxyChatCompletionsStream, MetaProxyStreamEnvelope,
+    MetaProxyStreamMeta,
+};
+pub use time_budget::{
+    resolve_proxy_time_budget, ProxyTimeBudget, ResolvedProxyTimeBudget,
+    DEFAULT_PROXY_CONNECT_TIMEOUT_MS,
+};

@@ -116,13 +116,15 @@ export interface ChatForwardDeps {
   telemetry?: MetaProxyTelemetryHooks;
 }
 
-function newRequestId(): string {
+/** Exported so `./stream/chat-completions-stream.js` can mint the same shape of request ID. */
+export function newRequestId(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `req_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 }
 
-function newIdempotencyKey(): string {
+/** Exported so `./stream/chat-completions-stream.js` can mint a stable idempotency key. */
+export function newIdempotencyKey(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : newRequestId();
@@ -153,8 +155,11 @@ export function rejectRedirectResponse(
   );
 }
 
-/** Filter a caller header bag down to the forwarding allowlist (case-insensitive). */
-function filterForwardHeaders(
+/**
+ * Filter a caller header bag down to the forwarding allowlist (case-insensitive).
+ * Exported so `./stream/chat-completions-stream.js` applies the identical filter.
+ */
+export function filterForwardHeaders(
   bag: Record<string, string> | undefined,
 ): { forwarded: Record<string, string>; idempotencyKey?: string } {
   const forwarded: Record<string, string> = {};
@@ -173,7 +178,8 @@ function filterForwardHeaders(
   return { forwarded, idempotencyKey };
 }
 
-function applyBearer(deps: ChatForwardDeps, headers: Record<string, string>, credential: Credential): void {
+/** Exported so `./stream/chat-completions-stream.js` places the bearer identically. */
+export function applyBearer(deps: ChatForwardDeps, headers: Record<string, string>, credential: Credential): void {
   // Defense in depth (ADR-0025a §D6/§D10): never attach the bearer to a
   // non-loopback origin unless allowNonLoopback was explicitly set. Construction
   // already guarantees this, so reaching the throw means config was mutated.
@@ -189,7 +195,8 @@ function applyBearer(deps: ChatForwardDeps, headers: Record<string, string>, cre
   headers.Authorization = `Bearer ${credential.secret.reveal()}`;
 }
 
-async function requireCredential(deps: ChatForwardDeps): Promise<Credential> {
+/** Exported so `./stream/chat-completions-stream.js` acquires a credential identically. */
+export async function requireCredential(deps: ChatForwardDeps): Promise<Credential> {
   const provider = deps.credentialProvider;
   if (!provider) {
     throw new AgenticError(
@@ -212,8 +219,12 @@ function pick(data: Record<string, unknown>, snake: string, camel: string): unkn
   return data[snake] ?? data[camel];
 }
 
-/** Decode a Proxy routing receipt from an inference body (ADR-0025a §D4/§D7). */
-function parseRoutingReceipt(value: unknown): MetaProxyRoutingReceipt | undefined {
+/**
+ * Decode a Proxy routing receipt from an inference body (ADR-0025a §D4/§D7).
+ * Exported so `./stream/chat-completions-stream.js` decodes a streaming
+ * terminal receipt with the identical logic.
+ */
+export function parseRoutingReceipt(value: unknown): MetaProxyRoutingReceipt | undefined {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
   const r = value as Record<string, unknown>;
   return {

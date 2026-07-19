@@ -85,6 +85,19 @@ var AgenticError = class extends Error {
     Object.setPrototypeOf(this, new.target.prototype);
   }
 };
+var UnsupportedCapabilityError = class extends AgenticError {
+  capability;
+  constructor(product, operation, capability, message) {
+    super(
+      "unsupported_capability",
+      message ?? `capability "${capability}" is unsupported or unknown for ${product}/${operation}`,
+      { product, operation, retryable: false }
+    );
+    this.name = "UnsupportedCapabilityError";
+    this.capability = capability;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
 
 // src/agentic/credentials.ts
 var REDACT_INSPECT = /* @__PURE__ */ Symbol.for("nodejs.util.inspect.custom");
@@ -494,8 +507,733 @@ async function forwardChatCompletion(deps, request, options) {
   }
 }
 
-// src/meta-proxy/client.ts
+// src/meta-proxy/time-budget.ts
+var DEFAULT_PROXY_CONNECT_TIMEOUT_MS = 1e4;
+function resolveProxyTimeBudget(budget) {
+  return {
+    connectTimeoutMs: budget?.connectTimeoutMs ?? DEFAULT_PROXY_CONNECT_TIMEOUT_MS,
+    firstByteTimeoutMs: budget?.firstByteTimeoutMs,
+    idleStreamTimeoutMs: budget?.idleStreamTimeoutMs,
+    overallDeadlineMs: budget?.overallDeadlineMs
+  };
+}
+
+// src/meta-llm/types/money.ts
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function parseMoney(raw) {
+  if (!isRecord(raw)) return void 0;
+  const amountRaw = raw.amount;
+  const currency = raw.currency ?? raw.currency_code ?? raw.currencyCode;
+  if ((typeof amountRaw === "string" || typeof amountRaw === "number") && typeof currency === "string") {
+    return { amount: String(amountRaw), currency };
+  }
+  return void 0;
+}
+
+// src/meta-llm/types/receipt.ts
+var KNOWN_RECEIPT_KEYS = /* @__PURE__ */ new Set([
+  "request_id",
+  "requestId",
+  "resolved_tier",
+  "resolvedTier",
+  "resolved_model",
+  "resolvedModel",
+  "escalated",
+  "cap_degraded",
+  "capDegraded",
+  "routing_reason",
+  "routingReason",
+  "price",
+  "cache_result",
+  "cacheResult",
+  "cache_savings",
+  "cacheSavings",
+  "prompt_cache_savings",
+  "promptCacheSavings",
+  "fallback_used",
+  "fallbackUsed",
+  "breaker_counts",
+  "breakerCounts",
+  "sub_tenant_id",
+  "subTenantId",
+  "safety_summary",
+  "safetySummary",
+  "usage",
+  "costs"
+]);
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function parseCostObservation(raw) {
+  if (!isRecord2(raw)) return void 0;
+  const { source, amount, currency, finality } = raw;
+  if (typeof source !== "string" || typeof currency !== "string" || typeof finality !== "string") {
+    return void 0;
+  }
+  return {
+    source,
+    amount: typeof amount === "number" ? amount : Number(amount),
+    currency,
+    finality
+  };
+}
+function parseSafetySummary(raw) {
+  if (!isRecord2(raw)) return void 0;
+  const known = /* @__PURE__ */ new Set(["mode", "detector_classes", "detectorClasses", "blocked"]);
+  const detectorClassesRaw = raw.detector_classes ?? raw.detectorClasses;
+  const rawRemainder = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (!known.has(key)) rawRemainder[key] = value;
+  }
+  return {
+    mode: typeof raw.mode === "string" ? raw.mode : void 0,
+    detectorClasses: Array.isArray(detectorClassesRaw) ? detectorClassesRaw.filter((v) => typeof v === "string") : void 0,
+    blocked: typeof raw.blocked === "boolean" ? raw.blocked : void 0,
+    raw: Object.keys(rawRemainder).length > 0 ? rawRemainder : void 0
+  };
+}
+function parseMetaLlmReceipt(raw) {
+  if (!isRecord2(raw)) return void 0;
+  const requestIdRaw = raw.request_id ?? raw.requestId;
+  const requestId = typeof requestIdRaw === "string" ? requestIdRaw : "";
+  const costsRaw = raw.costs;
+  const costs = Array.isArray(costsRaw) ? costsRaw.map(parseCostObservation).filter((c) => c !== void 0) : [];
+  const rawRemainder = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (!KNOWN_RECEIPT_KEYS.has(key)) rawRemainder[key] = value;
+  }
+  const resolvedTierRaw = raw.resolved_tier ?? raw.resolvedTier;
+  const resolvedModelRaw = raw.resolved_model ?? raw.resolvedModel;
+  const capDegradedRaw = raw.cap_degraded ?? raw.capDegraded;
+  const routingReasonRaw = raw.routing_reason ?? raw.routingReason;
+  const cacheResultRaw = raw.cache_result ?? raw.cacheResult;
+  const fallbackUsedRaw = raw.fallback_used ?? raw.fallbackUsed;
+  const breakerCountsRaw = raw.breaker_counts ?? raw.breakerCounts;
+  const subTenantIdRaw = raw.sub_tenant_id ?? raw.subTenantId;
+  return {
+    requestId,
+    resolvedTier: typeof resolvedTierRaw === "string" ? resolvedTierRaw : void 0,
+    resolvedModel: typeof resolvedModelRaw === "string" ? resolvedModelRaw : void 0,
+    escalated: typeof raw.escalated === "boolean" ? raw.escalated : void 0,
+    capDegraded: typeof capDegradedRaw === "boolean" ? capDegradedRaw : void 0,
+    routingReason: typeof routingReasonRaw === "string" ? routingReasonRaw : void 0,
+    price: parseMoney(raw.price),
+    cacheResult: typeof cacheResultRaw === "string" ? cacheResultRaw : void 0,
+    cacheSavings: parseMoney(raw.cache_savings ?? raw.cacheSavings),
+    promptCacheSavings: parseMoney(raw.prompt_cache_savings ?? raw.promptCacheSavings),
+    fallbackUsed: typeof fallbackUsedRaw === "boolean" ? fallbackUsedRaw : void 0,
+    breakerCounts: isRecord2(breakerCountsRaw) ? breakerCountsRaw : void 0,
+    subTenantId: typeof subTenantIdRaw === "string" ? subTenantIdRaw : void 0,
+    safetySummary: parseSafetySummary(raw.safety_summary ?? raw.safetySummary),
+    usage: isRecord2(raw.usage) ? raw.usage : void 0,
+    costs,
+    raw: Object.keys(rawRemainder).length > 0 ? rawRemainder : void 0
+  };
+}
+
+// src/meta-llm/stream/openai-events.ts
+var KNOWN_TOP_LEVEL_KEYS = /* @__PURE__ */ new Set([
+  "id",
+  "object",
+  "created",
+  "model",
+  "choices",
+  "usage",
+  "cognitum_receipt",
+  "system_fingerprint",
+  "error"
+]);
+function isRecord3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function decodeOpenAiSseEvent(raw) {
+  const trimmed = raw.data.trim();
+  if (trimmed === "[DONE]") {
+    return { events: [{ type: "done" }] };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw.data);
+  } catch {
+    return { events: [{ type: "unknown", raw: raw.data }] };
+  }
+  if (!isRecord3(parsed)) {
+    return { events: [{ type: "unknown", raw: parsed }] };
+  }
+  const events = [];
+  if (isRecord3(parsed.error)) {
+    const e = parsed.error;
+    events.push({
+      type: "error",
+      error: {
+        message: typeof e.message === "string" ? e.message : "unknown error",
+        type: typeof e.type === "string" ? e.type : void 0,
+        code: typeof e.code === "string" ? e.code : void 0,
+        param: typeof e.param === "string" ? e.param : void 0
+      }
+    });
+  }
+  if (Array.isArray(parsed.choices)) {
+    for (const choiceRaw of parsed.choices) {
+      if (!isRecord3(choiceRaw)) continue;
+      const index = typeof choiceRaw.index === "number" ? choiceRaw.index : 0;
+      const delta = isRecord3(choiceRaw.delta) ? choiceRaw.delta : {};
+      if (typeof delta.role === "string") {
+        events.push({ type: "role", index, role: delta.role });
+      }
+      if (typeof delta.content === "string" && delta.content.length > 0) {
+        events.push({ type: "content_delta", index, delta: delta.content });
+      }
+      if (Array.isArray(delta.tool_calls)) {
+        for (const toolCallRaw of delta.tool_calls) {
+          if (!isRecord3(toolCallRaw)) continue;
+          const fn = isRecord3(toolCallRaw.function) ? toolCallRaw.function : {};
+          events.push({
+            type: "tool_call_delta",
+            index,
+            toolCallIndex: typeof toolCallRaw.index === "number" ? toolCallRaw.index : 0,
+            id: typeof toolCallRaw.id === "string" ? toolCallRaw.id : void 0,
+            functionName: typeof fn.name === "string" ? fn.name : void 0,
+            argumentsDelta: typeof fn.arguments === "string" ? fn.arguments : void 0
+          });
+        }
+      }
+      if (typeof choiceRaw.finish_reason === "string") {
+        events.push({ type: "finish_reason", index, finishReason: choiceRaw.finish_reason });
+      }
+    }
+  }
+  if (isRecord3(parsed.usage)) {
+    const u = parsed.usage;
+    events.push({
+      type: "usage",
+      usage: {
+        promptTokens: Number(u.prompt_tokens ?? 0),
+        completionTokens: Number(u.completion_tokens ?? 0),
+        totalTokens: Number(u.total_tokens ?? 0)
+      }
+    });
+  }
+  if (parsed.cognitum_receipt !== void 0) {
+    const receipt = parseMetaLlmReceipt(parsed.cognitum_receipt);
+    if (receipt) events.push({ type: "receipt", receipt });
+  }
+  if (events.length === 0) {
+    events.push({ type: "unknown", raw: parsed });
+  }
+  const unknownFields = {};
+  for (const key of Object.keys(parsed)) {
+    if (!KNOWN_TOP_LEVEL_KEYS.has(key)) unknownFields[key] = parsed[key];
+  }
+  return { events, unknownFields: Object.keys(unknownFields).length > 0 ? unknownFields : void 0 };
+}
+
+// src/sse/parser.ts
+var DEFAULT_MAX_LINE_BYTES = 64 * 1024;
+var DEFAULT_MAX_EVENT_BYTES = 256 * 1024;
+var DEFAULT_MAX_BUFFERED_BYTES = 1024 * 1024;
+var DEFAULT_MAX_MALFORMED_EVENTS = 50;
+var SseParseError = class extends Error {
+  code;
+  constructor(code, message) {
+    super(message);
+    this.name = "SseParseError";
+    this.code = code;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
+var LF = 10;
+var CR = 13;
+var SseParser = class {
+  maxLineBytes;
+  maxEventBytes;
+  maxBufferedBytes;
+  maxMalformedEvents;
+  buffer = new Uint8Array(0);
+  lineDecoder = new TextDecoder("utf-8", { fatal: false });
+  fieldEncoder = new TextEncoder();
+  eventType;
+  dataLines = [];
+  dataBytesLen = 0;
+  eventId;
+  retryMs;
+  poisoned = false;
+  malformedCount = 0;
+  constructor(options) {
+    this.maxLineBytes = options?.maxLineBytes ?? DEFAULT_MAX_LINE_BYTES;
+    this.maxEventBytes = options?.maxEventBytes ?? DEFAULT_MAX_EVENT_BYTES;
+    this.maxBufferedBytes = options?.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
+    this.maxMalformedEvents = options?.maxMalformedEvents ?? DEFAULT_MAX_MALFORMED_EVENTS;
+  }
+  /**
+   * Feed the next chunk of raw bytes (any size, any split point — including
+   * mid-UTF-8-codepoint). Returns zero or more fully-dispatched events, in
+   * order. Throws {@link SseParseError} if a hard limit is exceeded.
+   */
+  feed(chunk) {
+    this.appendToBuffer(chunk);
+    const events = [];
+    for (; ; ) {
+      const line = this.takeLine(false);
+      if (line === void 0) break;
+      const event = this.processLine(line);
+      if (event) events.push(event);
+    }
+    return events;
+  }
+  /**
+   * Signal end of stream (no more bytes will ever arrive). Resolves the one
+   * ambiguity `feed()` cannot: a trailing lone CR with nothing after it is
+   * held back by `feed()` because a following LF (making it CRLF) might
+   * still arrive — at true EOF that ambiguity is resolved (no more bytes
+   * are coming, so a trailing CR IS a terminator), and this may therefore
+   * flush one final event. Any OTHER undispatched partial event/line
+   * (i.e. real data with no terminator at all) is dropped, matching the
+   * SSE spec: dispatch only happens on a blank line, and a stream that
+   * closes mid-event never sends one. This does NOT throw — whether an
+   * incomplete stream is an error is protocol-specific (e.g. "did we see
+   * `[DONE]`?"), which is the caller's decision, not this generic parser's.
+   */
+  finish() {
+    const events = [];
+    for (; ; ) {
+      const line = this.takeLine(true);
+      if (line === void 0) break;
+      const event = this.processLine(line);
+      if (event) events.push(event);
+    }
+    return {
+      events,
+      hadUndispatchedData: this.dataLines.length > 0 || this.buffer.length > 0,
+      malformedEventCount: this.malformedCount
+    };
+  }
+  appendToBuffer(chunk) {
+    const merged = new Uint8Array(this.buffer.length + chunk.length);
+    merged.set(this.buffer, 0);
+    merged.set(chunk, this.buffer.length);
+    this.buffer = merged;
+    if (this.buffer.length > this.maxBufferedBytes) {
+      throw new SseParseError(
+        "buffer_overflow",
+        `SSE parser buffered ${this.buffer.length} bytes without a line terminator (limit ${this.maxBufferedBytes})`
+      );
+    }
+  }
+  /**
+   * Removes and returns the next complete line's raw bytes (terminator
+   * excluded), or `undefined` if no complete line is available yet.
+   * Accepts LF, CRLF, and lone CR (SSE/HTML spec line-terminator rule).
+   *
+   * A trailing CR with no following byte yet is ambiguous — it might be
+   * the first half of a CRLF pair whose LF just hasn't arrived, or it
+   * might be a lone-CR terminator. `feed()` calls this with `atEof=false`
+   * and withholds judgement until a following byte (or true end of
+   * stream) disambiguates it, so a CRLF pair split exactly at the CR/LF
+   * boundary across two `feed()` calls is handled correctly. `finish()`
+   * calls this with `atEof=true`, resolving that same trailing CR as a
+   * valid terminator since no more bytes will ever arrive.
+   */
+  takeLine(atEof) {
+    for (let i = 0; i < this.buffer.length; i += 1) {
+      const byte = this.buffer[i];
+      if (byte === LF) {
+        const line = this.buffer.slice(0, i);
+        this.buffer = this.buffer.slice(i + 1);
+        return line;
+      }
+      if (byte === CR) {
+        if (i + 1 < this.buffer.length) {
+          const consumed = this.buffer[i + 1] === LF ? i + 2 : i + 1;
+          const line = this.buffer.slice(0, i);
+          this.buffer = this.buffer.slice(consumed);
+          return line;
+        }
+        if (atEof) {
+          const line = this.buffer.slice(0, i);
+          this.buffer = this.buffer.slice(i + 1);
+          return line;
+        }
+        return void 0;
+      }
+    }
+    return void 0;
+  }
+  noteMalformed() {
+    this.malformedCount += 1;
+    if (this.malformedCount > this.maxMalformedEvents) {
+      throw new SseParseError(
+        "too_many_malformed_events",
+        `SSE parser exceeded ${this.maxMalformedEvents} malformed/oversized lines or events`
+      );
+    }
+  }
+  processLine(lineBytes) {
+    if (lineBytes.length > this.maxLineBytes) {
+      this.noteMalformed();
+      return void 0;
+    }
+    const line = this.lineDecoder.decode(lineBytes);
+    if (line.length === 0) {
+      return this.dispatch();
+    }
+    if (line.startsWith(":")) {
+      return void 0;
+    }
+    const colonIdx = line.indexOf(":");
+    let field;
+    let value;
+    if (colonIdx === -1) {
+      field = line;
+      value = "";
+    } else {
+      field = line.slice(0, colonIdx);
+      value = line.slice(colonIdx + 1);
+      if (value.startsWith(" ")) value = value.slice(1);
+    }
+    switch (field) {
+      case "event":
+        this.eventType = value;
+        break;
+      case "data": {
+        const additional = this.fieldEncoder.encode(value).length + (this.dataLines.length > 0 ? 1 : 0);
+        if (!this.poisoned && this.dataBytesLen + additional > this.maxEventBytes) {
+          this.poisoned = true;
+          this.noteMalformed();
+        }
+        if (!this.poisoned) {
+          this.dataLines.push(value);
+          this.dataBytesLen += additional;
+        }
+        break;
+      }
+      case "id":
+        if (!value.includes("\0")) this.eventId = value;
+        break;
+      case "retry":
+        if (/^[0-9]+$/.test(value)) this.retryMs = Number(value);
+        break;
+      default:
+        break;
+    }
+    return void 0;
+  }
+  dispatch() {
+    const hadData = this.dataLines.length > 0;
+    const event = hadData && !this.poisoned ? { event: this.eventType, data: this.dataLines.join("\n"), id: this.eventId, retry: this.retryMs } : void 0;
+    this.eventType = void 0;
+    this.dataLines = [];
+    this.dataBytesLen = 0;
+    this.eventId = void 0;
+    this.retryMs = void 0;
+    this.poisoned = false;
+    return event;
+  }
+};
+
+// src/meta-proxy/stream/chat-completions-stream.ts
 var PRODUCT5 = "meta-proxy";
+var CHAT_PATH2 = "/v1/chat/completions";
+var OPERATION2 = "chat.completionsStream";
+function deadlineError(requestId, code, message, sequence) {
+  return new AgenticError("deadline_exceeded", message, {
+    product: PRODUCT5,
+    operation: OPERATION2,
+    requestId,
+    retryable: false,
+    code,
+    details: { partial: true, eventsReceived: sequence }
+  });
+}
+function raceAgainstTimeout(promise, ms) {
+  if (ms === void 0) return promise;
+  promise.catch(() => {
+  });
+  let timer;
+  const timeoutPromise = new Promise((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), ms);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
+}
+async function openStreamWithPreByteRetry(deps, request, requestId, idempotencyKey, forwarded, budget, overallStartedAt) {
+  let credential = await requireCredential(deps);
+  const body = JSON.stringify({ ...request, stream: true });
+  let refreshedOnce = false;
+  for (; ; ) {
+    const now = Date.now();
+    if (budget.overallDeadlineMs !== void 0 && now - overallStartedAt > budget.overallDeadlineMs) {
+      throw deadlineError(
+        requestId,
+        "overall_deadline_exceeded",
+        `${OPERATION2} exceeded overallDeadlineMs (${budget.overallDeadlineMs}ms) before a response was received`,
+        0
+      );
+    }
+    const overallRemaining = budget.overallDeadlineMs !== void 0 ? Math.max(0, budget.overallDeadlineMs - (now - overallStartedAt)) : void 0;
+    const connectRemaining = overallRemaining !== void 0 ? Math.min(budget.connectTimeoutMs, overallRemaining) : budget.connectTimeoutMs;
+    const headers = {
+      ...forwarded,
+      Accept: "text/event-stream",
+      "Content-Type": "application/json",
+      "X-Cognitum-Request-Id": requestId,
+      "Idempotency-Key": idempotencyKey
+    };
+    applyBearer(deps, headers, credential);
+    const url = `${deps.origin}${CHAT_PATH2}`;
+    const abortController = new AbortController();
+    let response;
+    try {
+      const raced = await raceAgainstTimeout(
+        deps.transport(url, { method: "POST", headers, body, redirect: "manual", signal: abortController.signal }),
+        connectRemaining
+      );
+      if (raced === "timeout") {
+        abortController.abort();
+        const overallExceeded = budget.overallDeadlineMs !== void 0 && Date.now() - overallStartedAt > budget.overallDeadlineMs;
+        throw deadlineError(
+          requestId,
+          overallExceeded ? "overall_deadline_exceeded" : "connect_timeout",
+          overallExceeded ? `${OPERATION2} exceeded overallDeadlineMs (${budget.overallDeadlineMs}ms) before a response was received` : `${OPERATION2} exceeded connectTimeoutMs (${budget.connectTimeoutMs}ms) waiting for a response`,
+          0
+        );
+      }
+      response = raced;
+    } catch (cause) {
+      if (cause instanceof AgenticError) throw cause;
+      throw new AgenticError("transport", `${OPERATION2} request failed: ${cause}`, {
+        product: PRODUCT5,
+        operation: OPERATION2,
+        requestId,
+        retryable: true,
+        cause
+      });
+    }
+    rejectRedirectResponse(response, OPERATION2, requestId);
+    if (response.ok) return { response, abortController };
+    const err = await mapMetaProxyHttpError(response, OPERATION2, requestId);
+    const retryAfterHeader = response.headers.get("retry-after");
+    if (err.retryAfterMs === void 0 && retryAfterHeader) {
+      err.retryAfterMs = Number(retryAfterHeader) * 1e3;
+    }
+    if (err.status === 401 && !refreshedOnce) {
+      refreshedOnce = true;
+      await deps.credentialProvider?.invalidate("401 challenge from meta-proxy");
+      credential = await requireCredential(deps);
+      continue;
+    }
+    throw err;
+  }
+}
+function decodeProxyChunk(rawEvent) {
+  const decoded = decodeOpenAiSseEvent(rawEvent);
+  const routingReceipt = parseRoutingReceipt(decoded.unknownFields?.cognitum_routing_receipt);
+  const upstreamReceipt = decoded.unknownFields?.cognitum_upstream_receipt;
+  return { ...decoded, routingReceipt, upstreamReceipt };
+}
+function remainingPostByteBudgetMs(now, overallStartedAt, lastByteAt, receivedFirstByte, budget) {
+  const candidates = [];
+  if (budget.overallDeadlineMs !== void 0) {
+    candidates.push(Math.max(0, budget.overallDeadlineMs - (now - overallStartedAt)));
+  }
+  const idleLimit = receivedFirstByte ? budget.idleStreamTimeoutMs : budget.firstByteTimeoutMs;
+  if (idleLimit !== void 0) {
+    candidates.push(Math.max(0, idleLimit - (now - lastByteAt)));
+  }
+  return candidates.length > 0 ? Math.min(...candidates) : void 0;
+}
+async function* readProxySseBody(body, requestId, headers, budget, overallStartedAt, cancellation, abortController, routingIntent) {
+  const reader = body.getReader();
+  const parser = new SseParser();
+  let sequence = 0;
+  let sawNativeTerminal = false;
+  const lastByteAtBox = { value: overallStartedAt };
+  let receivedFirstByte = false;
+  let latestRoutingReceipt;
+  let latestUpstreamReceipt;
+  const proxyMetaBase = {
+    productVersion: headers.get("x-cognitum-product-version") ?? void 0,
+    protocolVersion: headers.get("x-cognitum-protocol-version") ?? void 0
+  };
+  function buildEnvelopes(rawEvent) {
+    const decoded = decodeProxyChunk(rawEvent);
+    if (decoded.routingReceipt) latestRoutingReceipt = decoded.routingReceipt;
+    if (decoded.upstreamReceipt !== void 0) latestUpstreamReceipt = decoded.upstreamReceipt;
+    return decoded.events.map((event) => {
+      sequence += 1;
+      return {
+        event,
+        sequence,
+        receivedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        requestId,
+        rawEventName: rawEvent.event,
+        unknownFields: decoded.unknownFields,
+        proxyMeta: {
+          ...proxyMetaBase,
+          routingReceipt: latestRoutingReceipt,
+          upstreamReceipt: latestUpstreamReceipt
+        }
+      };
+    });
+  }
+  try {
+    for (; ; ) {
+      if (cancellation?.isCancelled) {
+        throw new AgenticError("cancelled", `${OPERATION2} was cancelled locally`, {
+          product: PRODUCT5,
+          operation: OPERATION2,
+          requestId,
+          retryable: false,
+          code: "local_cancellation",
+          details: { partial: true, eventsReceived: sequence }
+        });
+      }
+      const now = Date.now();
+      if (budget.overallDeadlineMs !== void 0 && now - overallStartedAt > budget.overallDeadlineMs) {
+        throw deadlineError(
+          requestId,
+          "overall_deadline_exceeded",
+          `${OPERATION2} exceeded overallDeadlineMs (${budget.overallDeadlineMs}ms)`,
+          sequence
+        );
+      }
+      const idleLimit = receivedFirstByte ? budget.idleStreamTimeoutMs : budget.firstByteTimeoutMs;
+      if (idleLimit !== void 0 && now - lastByteAtBox.value > idleLimit) {
+        throw deadlineError(
+          requestId,
+          receivedFirstByte ? "idle_stream_timeout" : "first_byte_timeout",
+          `${OPERATION2} exceeded ${receivedFirstByte ? "idleStreamTimeoutMs" : "firstByteTimeoutMs"} (${idleLimit}ms)`,
+          sequence
+        );
+      }
+      const remainingMs = remainingPostByteBudgetMs(
+        now,
+        overallStartedAt,
+        lastByteAtBox.value,
+        receivedFirstByte,
+        budget
+      );
+      let readResult;
+      try {
+        const raced = await raceAgainstTimeout(reader.read(), remainingMs);
+        if (raced === "timeout") {
+          abortController.abort();
+          continue;
+        }
+        readResult = raced;
+      } catch (cause) {
+        throw new AgenticError("transport", `${OPERATION2} stream read failed: ${cause}`, {
+          product: PRODUCT5,
+          operation: OPERATION2,
+          requestId,
+          retryable: false,
+          code: "stream_disconnected",
+          details: { partial: true, eventsReceived: sequence },
+          cause
+        });
+      }
+      if (readResult.done) break;
+      receivedFirstByte = true;
+      lastByteAtBox.value = Date.now();
+      let rawEvents;
+      try {
+        rawEvents = parser.feed(readResult.value);
+      } catch (cause) {
+        throw new AgenticError("protocol", `${OPERATION2} SSE parse failure: ${cause}`, {
+          product: PRODUCT5,
+          operation: OPERATION2,
+          requestId,
+          retryable: false,
+          code: "sse_parse_error",
+          details: { partial: true, eventsReceived: sequence },
+          cause
+        });
+      }
+      for (const rawEvent of rawEvents) {
+        for (const envelope of buildEnvelopes(rawEvent)) {
+          if (envelope.event.type === "done" || envelope.event.type === "finish_reason" || envelope.event.type === "error") {
+            sawNativeTerminal = true;
+          }
+          yield envelope;
+        }
+      }
+    }
+    let finishResult;
+    try {
+      finishResult = parser.finish();
+    } catch (cause) {
+      throw new AgenticError("protocol", `${OPERATION2} SSE parse failure at end of stream: ${cause}`, {
+        product: PRODUCT5,
+        operation: OPERATION2,
+        requestId,
+        retryable: false,
+        code: "sse_parse_error",
+        details: { partial: true, eventsReceived: sequence },
+        cause
+      });
+    }
+    for (const rawEvent of finishResult.events) {
+      for (const envelope of buildEnvelopes(rawEvent)) {
+        if (envelope.event.type === "done" || envelope.event.type === "finish_reason" || envelope.event.type === "error") {
+          sawNativeTerminal = true;
+        }
+        yield envelope;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (!sawNativeTerminal) {
+    throw new AgenticError("protocol", `${OPERATION2} stream ended without ever observing a terminal event`, {
+      product: PRODUCT5,
+      operation: OPERATION2,
+      requestId,
+      retryable: false,
+      code: "stream_ended_without_terminal_event",
+      details: { partial: true, eventsReceived: sequence }
+    });
+  }
+  assertRoutingReceiptMatchesIntent(routingIntent, latestRoutingReceipt);
+}
+async function* forwardChatCompletionStream(deps, request, options) {
+  const { forwarded, idempotencyKey: callerKey } = filterForwardHeaders(options?.forwardHeaders);
+  const idempotencyKey = callerKey ?? newIdempotencyKey();
+  const requestId = options?.requestContext?.requestId ?? newRequestId();
+  const budget = resolveProxyTimeBudget(options?.timeBudget);
+  const overallStartedAt = Date.now();
+  const { response, abortController } = await openStreamWithPreByteRetry(
+    deps,
+    request,
+    requestId,
+    idempotencyKey,
+    forwarded,
+    budget,
+    overallStartedAt
+  );
+  if (!response.body) {
+    throw new AgenticError("protocol", `${OPERATION2} response had no readable body`, {
+      product: PRODUCT5,
+      operation: OPERATION2,
+      requestId,
+      retryable: false,
+      code: "no_response_body"
+    });
+  }
+  yield* readProxySseBody(
+    response.body,
+    requestId,
+    response.headers,
+    budget,
+    overallStartedAt,
+    options?.cancellation,
+    abortController,
+    options?.routingIntent
+  );
+}
+
+// src/meta-proxy/client.ts
+var PRODUCT6 = "meta-proxy";
 var DEFAULT_CAPABILITY_VERSION = "0.0.0";
 var KNOWN_STATUS_KEYS = /* @__PURE__ */ new Set([
   "product_version",
@@ -599,7 +1337,7 @@ var MetaProxyClient = class {
       );
     }
     const capabilities = {
-      product: PRODUCT5,
+      product: PRODUCT6,
       productVersion: status.productVersion || DEFAULT_CAPABILITY_VERSION,
       protocol: snapshot?.protocol ?? "cognitum.meta-proxy.http",
       protocolVersion: status.protocolVersion ?? snapshot?.protocolVersion ?? "1.0",
@@ -627,7 +1365,49 @@ var MetaProxyClient = class {
    * retry, redirect, and ambient-proxy rules.
    */
   chat = {
-    completions: (request, options) => forwardChatCompletion(this.forwardingDeps(), request, options)
+    completions: (request, options) => forwardChatCompletion(this.forwardingDeps(), request, options),
+    /**
+     * `POST /v1/chat/completions` through the Proxy with `stream: true`
+     * (ADR-0025a §D8). Returns an async generator of
+     * `MetaProxyStreamEnvelope<OpenAiStreamEvent>` — iterate with `for await`.
+     * See `./stream/chat-completions-stream.js` for the full streaming
+     * contract (reused SSE parser/decoder, `ProxyTimeBudget`, no auto-retry,
+     * required-plane verification on the terminal receipt).
+     */
+    completionsStream: (request, options) => forwardChatCompletionStream(this.forwardingDeps(), request, options)
+  };
+  /**
+   * `client.preview.sponsored.chatCompletions` (ADR-0025a §D1 topology,
+   * §D9 preview maturity). Sponsored forwarding itself (budget, receipts,
+   * atomic spend) is explicitly OUT of scope this pass (§D9 defers to
+   * ADR-0025b's lifecycle/state fixes) — this method exists ONLY to
+   * fail fast, with zero HTTP I/O, per §D1 ("Such a call returns
+   * `UnsupportedCapabilityError` before HTTP I/O") and §D8 ("Sponsored
+   * `stream = true` fails locally until an end-to-end stream capability
+   * exists"). Streaming and non-streaming sponsored calls both fail this
+   * pass; the error message distinguishes the two so a caller who only
+   * hit the streaming restriction isn't told sponsor support is entirely
+   * absent when non-stream sponsor lands in a later pass.
+   */
+  preview = {
+    sponsored: {
+      chatCompletions: async (request, _options) => {
+        if (request.stream) {
+          throw new UnsupportedCapabilityError(
+            PRODUCT6,
+            "preview.sponsored.chatCompletions",
+            "sponsored-inference-streaming",
+            "Sponsored stream=true fails locally until an end-to-end stream capability exists (ADR-0025a \xA7D8) \u2014 this SDK pass does not implement sponsored streaming at all."
+          );
+        }
+        throw new UnsupportedCapabilityError(
+          PRODUCT6,
+          "preview.sponsored.chatCompletions",
+          "sponsored-inference",
+          "Sponsored chat.completions forwarding is not implemented this pass (ADR-0025a \xA7D9 consent/sponsor-budget/usage is explicitly out of scope; ADR-0025b's lifecycle/state fixes are a prerequisite for stable sponsor support)."
+        );
+      }
+    }
   };
   /** Assemble the `./forwarding.js` dependency bag from resolved config. */
   forwardingDeps() {
@@ -654,7 +1434,7 @@ var MetaProxyClient = class {
     const provider = this.config.localCredentialProvider;
     if (!provider) return void 0;
     return provider.acquire({
-      product: PRODUCT5,
+      product: PRODUCT6,
       normalizedOrigin: this.config.origin,
       audience: this.config.origin,
       requiredScopes: ["meta-proxy.status"],
@@ -668,7 +1448,7 @@ var MetaProxyClient = class {
       throw new AgenticError(
         "protocol",
         `refusing to attach the local bearer to non-loopback origin "${this.config.origin}" (ADR-0025a \xA7D6/\xA7D10)`,
-        { product: PRODUCT5, retryable: false }
+        { product: PRODUCT6, retryable: false }
       );
     }
     if (credential.scheme.toLowerCase() === "bearer") {
@@ -686,7 +1466,7 @@ var MetaProxyClient = class {
       credential = await this.resolveCredential(operation);
     } catch (cause) {
       throw new AgenticError("authentication", `failed to acquire local credential: ${cause}`, {
-        product: PRODUCT5,
+        product: PRODUCT6,
         operation,
         requestId,
         retryable: false,
@@ -697,7 +1477,7 @@ var MetaProxyClient = class {
       throw new AgenticError(
         "authentication",
         `MetaProxyClient.${operation} requires a localCredentialProvider (ADR-0025a Context: "GET /status | Authenticated local runtime and routing state")`,
-        { product: PRODUCT5, operation, requestId, retryable: false }
+        { product: PRODUCT6, operation, requestId, retryable: false }
       );
     }
     const headers = {
@@ -717,7 +1497,7 @@ var MetaProxyClient = class {
         durationMs: Date.now() - startedAt
       });
       throw new AgenticError("transport", `${operation} request failed: ${cause}`, {
-        product: PRODUCT5,
+        product: PRODUCT6,
         operation,
         requestId,
         retryable: true,
@@ -750,14 +1530,17 @@ var MetaProxyClient = class {
 export {
   DEFAULT_META_PROXY_ORIGIN,
   DEFAULT_META_PROXY_TOKEN_ENV_VAR,
+  DEFAULT_PROXY_CONNECT_TIMEOUT_MS,
   LocalBearerTokenCredentialProvider,
   MetaProxyClient,
   PROXY_CHAT_FORWARD_HEADER_ALLOWLIST,
   __resetMetaProxyNonLoopbackWarnLatch,
   assertRoutingReceiptMatchesIntent,
   forwardChatCompletion,
+  forwardChatCompletionStream,
   isBearerAttachmentAllowed,
   rejectRedirectResponse,
-  resolveMetaProxyClientConfig
+  resolveMetaProxyClientConfig,
+  resolveProxyTimeBudget
 };
 //# sourceMappingURL=index.js.map

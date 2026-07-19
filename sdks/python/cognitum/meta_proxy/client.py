@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from cognitum.agentic import AgenticError
+from cognitum.agentic import AgenticError, UnsupportedCapabilityError
 from cognitum.meta_proxy.config import MetaProxyClientConfig
 from cognitum.meta_proxy.envelope import MetaProxyResponseMeta, MetaProxyResult
 from cognitum.meta_proxy.http_errors import map_meta_proxy_http_error
@@ -52,12 +52,15 @@ from cognitum.meta_proxy.routing import (
     assert_routing_receipt_matches_intent,
 )
 from cognitum.meta_proxy.status import MetaProxyStatus
+from cognitum.meta_proxy.stream.chat_completions_stream import chat_completions_stream
+from cognitum.meta_proxy.time_budget import ProxyTimeBudget
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import AsyncIterator, Mapping
 
     from cognitum.agentic import Credential, RequestContext
     from cognitum.meta_llm.types import ChatCompletion, ChatCompletionRequest
+    from cognitum.meta_proxy.stream.envelope import MetaProxyStreamEnvelope
 
 _PRODUCT = "meta-proxy"
 _DEFAULT_CAPABILITY_VERSION = "0.0.0"
@@ -183,6 +186,88 @@ class _ChatNamespace:
 
         return MetaProxyResult(data=parse_chat_completion(data), meta=meta)
 
+    def completions_stream(
+        self,
+        request: ChatCompletionRequest,
+        options: MetaProxyChatCallOptions | None = None,
+        *,
+        time_budget: ProxyTimeBudget | None = None,
+        cancellation: Any = None,
+    ) -> AsyncIterator[MetaProxyStreamEnvelope]:
+        """``POST /v1/chat/completions`` through the Proxy with
+        ``stream=True`` (ADR-0025a §D8). Async-generator method -- iterate
+        with ``async for``. Reuses the same §D7 forwarding allowlist,
+        credential acquisition, and routing-receipt decode as
+        :meth:`completions`; adds `ProxyTimeBudget`, plane/version stream
+        metadata, and the §D5 rule 7 required-plane check applied to the
+        final observed streaming receipt. See
+        :mod:`cognitum.meta_proxy.stream.chat_completions_stream` for the
+        full contract.
+        """
+        from dataclasses import asdict
+
+        opts = options or MetaProxyChatCallOptions()
+        body = asdict(request)
+        return chat_completions_stream(
+            self._client._config,
+            self._client._transport,
+            body,
+            forward_headers=opts.forward_headers,
+            routing_intent=opts.routing_intent,
+            time_budget=time_budget,
+            cancellation=cancellation,
+        )
+
+
+class _SponsoredChatNamespace:
+    """``client.preview.sponsored.chat`` namespace (ADR-0025a §D1 topology, §D9 preview).
+
+    Sponsored forwarding itself (budget, receipts, atomic spend) is
+    explicitly OUT of scope this pass (§D9 defers to ADR-0025b's
+    lifecycle/state fixes) -- this namespace exists ONLY to fail fast, with
+    zero HTTP I/O, per §D1 ("Such a call returns ``UnsupportedCapabilityError``
+    before HTTP I/O") and §D8 ("Sponsored ``stream = true`` fails locally
+    until an end-to-end stream capability exists"). Streaming and
+    non-streaming sponsored calls both fail this pass; the error message
+    distinguishes the two so a caller who only hit the streaming
+    restriction isn't told sponsor support is entirely absent when
+    non-stream sponsor lands in a later pass.
+    """
+
+    async def completions(
+        self, request: ChatCompletionRequest, **_kwargs: Any
+    ) -> MetaProxyResult[ChatCompletion]:
+        if getattr(request, "stream", False):
+            raise UnsupportedCapabilityError(
+                _PRODUCT,
+                "preview.sponsored.chat.completions",
+                "sponsored-inference-streaming",
+                "Sponsored stream=True fails locally until an end-to-end stream "
+                "capability exists (ADR-0025a §D8) -- this SDK pass does not "
+                "implement sponsored streaming at all.",
+            )
+        raise UnsupportedCapabilityError(
+            _PRODUCT,
+            "preview.sponsored.chat.completions",
+            "sponsored-inference",
+            "Sponsored chat.completions forwarding is not implemented this pass "
+            "(ADR-0025a §D9 consent/sponsor-budget/usage is explicitly out of "
+            "scope; ADR-0025b's lifecycle/state fixes are a prerequisite for "
+            "stable sponsor support).",
+        )
+
+
+class _PreviewNamespace:
+    """``client.preview`` namespace (ADR-0025a §D1)."""
+
+    def __init__(self) -> None:
+        self.sponsored = _SponsoredNamespace()
+
+
+class _SponsoredNamespace:
+    def __init__(self) -> None:
+        self.chat = _SponsoredChatNamespace()
+
 
 class MetaProxyClient:
     """Client for an already-running, authenticated, loopback Meta Proxy
@@ -210,6 +295,7 @@ class MetaProxyClient:
             trust_env=False, follow_redirects=False
         )
         self.chat = _ChatNamespace(self)
+        self.preview = _PreviewNamespace()
 
     @property
     def config(self) -> MetaProxyClientConfig:
