@@ -223,6 +223,11 @@ pub struct WaitForOperationExtras<'a> {
 /// guaranteed `Serialize` for an unconstrained generic. The caller already
 /// holds the handle it passed in, so resuming the wait doesn't require it
 /// to be re-attached to the error.
+///
+/// Not implemented here: D9's "state regression, identity change, or a
+/// second different terminal state is a ProtocolError" — detecting that
+/// requires a real durable-operation client to observe actual regression
+/// behavior against, same rationale as this module's D6 deferral above.
 pub async fn wait_for_operation<S: OperationSource>(
     source: &S,
     options: WaitOptions,
@@ -253,29 +258,27 @@ pub async fn wait_for_operation<S: OperationSource>(
             }
         }
 
-        let snapshot = match source.get().await {
-            Ok(snapshot) => snapshot,
-            Err(cause) if cause.retryable => {
-                // Poll transient failures consume the wait budget, not the
-                // request's own HTTP retry budget (D9) — a non-retryable
-                // failure propagates immediately below; a retryable one
-                // falls through to the same backoff loop bounded by
-                // wait_deadline_ms, without fabricating a snapshot.
-                let delay_ms = equal_jitter_delay_ms(attempt, &poll_policy, 0, jitter_ms(attempt));
-                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                attempt += 1;
-                continue;
+        match source.get().await {
+            Ok(snapshot) => {
+                last_summary = Some(serde_json::json!({
+                    "id": snapshot.id,
+                    "state": snapshot.state,
+                    "updated_at": snapshot.updated_at,
+                }));
+                if is_wait_terminal(snapshot.state) {
+                    return Ok(snapshot);
+                }
             }
+            // Poll transient failures consume the wait budget, not the
+            // request's own HTTP retry budget (D9) — a non-retryable
+            // failure propagates immediately below; a retryable one falls
+            // through to the same deadline check and backoff loop bounded
+            // by wait_deadline_ms, without fabricating a snapshot. This
+            // MUST still hit the deadline check below on every iteration —
+            // an always-retryable `get()` (a flapping backend) must not
+            // bypass wait_deadline_ms and loop forever.
+            Err(cause) if cause.retryable => {}
             Err(cause) => return Err(cause),
-        };
-        last_summary = Some(serde_json::json!({
-            "id": snapshot.id,
-            "state": snapshot.state,
-            "updated_at": snapshot.updated_at,
-        }));
-
-        if is_wait_terminal(snapshot.state) {
-            return Ok(snapshot);
         }
 
         if let Some(wait_deadline_ms) = options.wait_deadline_ms {

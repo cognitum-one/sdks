@@ -109,6 +109,45 @@ async fn keeps_polling_through_cancellation_requested_until_real_terminal_state(
 }
 
 #[tokio::test(start_paused = true)]
+async fn deadline_exceeded_fires_even_when_get_always_returns_a_retryable_error() {
+    // Regression test: a flapping backend (every get() call returns a
+    // retryable transport error, never a snapshot) must still be bounded
+    // by wait_deadline_ms — the retryable-error branch must not bypass
+    // the deadline check and loop forever. Caught by independent review.
+    struct AlwaysRetryable;
+    #[async_trait]
+    impl OperationSource for AlwaysRetryable {
+        type Result = String;
+        async fn get(&self) -> Result<OperationSnapshot<String>, AgenticError> {
+            let mut err = AgenticError::new(AgenticErrorKind::Transport, "always flaky");
+            err.retryable = true;
+            Err(err)
+        }
+    }
+    let options = WaitOptions {
+        wait_deadline_ms: Some(1_000),
+        poll_interval_ms: Some(1),
+    };
+    // No manual `tokio::time::advance` here: with `start_paused = true`,
+    // the runtime auto-advances virtual time to the next pending timer
+    // whenever nothing else is runnable. Wrapping in a generously-longer
+    // outer timeout lets the inner ~1s deadline race fairly against it —
+    // if `wait_for_operation` is genuinely unbounded, auto-advance keeps
+    // satisfying its internal sleeps forever and the outer timeout is
+    // what eventually fires (proving the hang); if bounded correctly, the
+    // inner deadline_exceeded resolves first.
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        wait_for_operation(&AlwaysRetryable, options, WaitForOperationExtras::default()),
+    )
+    .await;
+    let err = result
+        .expect("wait_for_operation must resolve within wait_deadline_ms, not hang forever")
+        .expect_err("an always-retryable get() must still end in deadline_exceeded");
+    assert_eq!(err.kind, AgenticErrorKind::DeadlineExceeded);
+}
+
+#[tokio::test(start_paused = true)]
 async fn deadline_exceeded_carries_latest_state_summary_never_marks_op_failed() {
     let source = FakeSource {
         states: vec![OperationState::Running; 50],

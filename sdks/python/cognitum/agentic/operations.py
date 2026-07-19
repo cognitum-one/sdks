@@ -211,6 +211,11 @@ async def wait_for_operation(
     is expected to delegate to this helper rather than re-implementing
     backoff by hand -- this is the "same bounded jitter policy" D9
     requires every product client to share.
+
+    Not implemented here: D9's "state regression, identity change, or a
+    second different terminal state is a ProtocolError" -- detecting that
+    requires a real durable-operation client to observe actual regression
+    behavior against, same rationale as this module's D6 deferral above.
     """
     effective_jitter = jitter_ms or (lambda _attempt: 0)
     poll_policy = (

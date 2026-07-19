@@ -114,7 +114,14 @@ export interface WaitForOperationOptions extends WaitOptions {
   retryPolicy?: RetryPolicy;
   /** Local-only cancellation (ADR-0023 §D7) — never sends a remote cancel. */
   cancellation?: { readonly isCancelled: boolean };
-  /** Injectable clock, milliseconds since epoch. Defaults to `Date.now`. */
+  /**
+   * Injectable clock, milliseconds. Defaults to the monotonic
+   * `performance.now()` (available in Node, browsers, Deno, and Bun via
+   * the standard Performance API) rather than `Date.now()`, since a wall
+   * clock can jump backward or forward (NTP step, VM suspend/resume)
+   * mid-wait and corrupt the elapsed-time comparison against
+   * `waitDeadlineMs`.
+   */
   now?: () => number;
   /** Injectable sleep, for deterministic tests. Defaults to a real `setTimeout`. */
   sleep?: (ms: number) => Promise<void>;
@@ -124,6 +131,10 @@ export interface WaitForOperationOptions extends WaitOptions {
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function defaultNow(): number {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
 }
 
 /**
@@ -143,13 +154,18 @@ function defaultSleep(ms: number): Promise<void> {
  * expected to delegate to this helper rather than re-implementing backoff
  * by hand — this is the "same bounded jitter policy" D9 requires every
  * product client to share.
+ *
+ * Not implemented here: D9's "state regression, identity change, or a
+ * second different terminal state is a ProtocolError" — detecting that
+ * requires a real durable-operation client to observe actual regression
+ * behavior against, same rationale as this module's D6 deferral above.
  */
 export async function waitForOperation<TResult>(
   handle: Pick<OperationHandle<TResult>, "get">,
   options?: WaitForOperationOptions,
 ): Promise<OperationSnapshot<TResult>> {
   const policy = options?.retryPolicy ?? DEFAULT_RETRY_POLICY;
-  const now = options?.now ?? Date.now;
+  const now = options?.now ?? defaultNow;
   const sleep = options?.sleep ?? defaultSleep;
   const jitterMs = options?.jitterMs ?? (() => 0);
   const waitDeadlineMs = options?.waitDeadlineMs;
