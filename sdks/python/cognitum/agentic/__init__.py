@@ -45,6 +45,19 @@ from cognitum.agentic.credentials import (
     SecretClassification,
     SecretRedactor,
 )
+from cognitum.agentic.diagnostics import (
+    D10_RELEVANT_CATEGORIES,
+    NEVER_CAPTURABLE_CATEGORIES,
+    DiagnosticBundle,
+    DiagnosticManifest,
+    DiagnosticPolicy,
+    DiagnosticSink,
+    DiagnosticSinkKind,
+    RedactionReport,
+    RetentionPolicy,
+    is_never_capturable,
+    preview_diagnostic_manifest,
+)
 from cognitum.agentic.errors import (
     DEFAULT_RETRY_POLICY,
     AgenticError,
@@ -220,6 +233,18 @@ __all__ = [
     "SecretRedactor",
     "D12Category",
     "SentinelSecretRedactor",
+    # Diagnostic capture policy / manifest preview (ADR-0028 D10; issue #70)
+    "DiagnosticSinkKind",
+    "DiagnosticSink",
+    "RetentionPolicy",
+    "DiagnosticPolicy",
+    "D10_RELEVANT_CATEGORIES",
+    "NEVER_CAPTURABLE_CATEGORIES",
+    "is_never_capturable",
+    "DiagnosticManifest",
+    "preview_diagnostic_manifest",
+    "RedactionReport",
+    "DiagnosticBundle",
     # Operations / pagination
     "OperationState",
     "OperationSnapshot",

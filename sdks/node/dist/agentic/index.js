@@ -542,6 +542,38 @@ var SentinelSecretRedactor = class {
   }
 };
 
+// src/agentic/diagnostics.ts
+var D10_RELEVANT_CATEGORIES = [
+  "prompts",
+  "messages",
+  "source",
+  "patches",
+  "tool-arguments-results",
+  "environment-values"
+];
+var NEVER_CAPTURABLE_CATEGORIES = [
+  "credentials",
+  "signed-urls"
+];
+function isNeverCapturable(category) {
+  return NEVER_CAPTURABLE_CATEGORIES.includes(category);
+}
+function previewDiagnosticManifest(policy) {
+  const wouldCapture = [];
+  const blockedByPolicy = [];
+  for (const category of D10_RELEVANT_CATEGORIES) {
+    if (isNeverCapturable(category)) {
+      continue;
+    }
+    if (policy.allowedCategories.has(category)) {
+      wouldCapture.push(category);
+    } else {
+      blockedByPolicy.push(category);
+    }
+  }
+  return { wouldCapture, blockedByPolicy };
+}
+
 // src/agentic/telemetry.ts
 var NoopTelemetrySink = class {
   async emit(_event) {
@@ -1065,6 +1097,7 @@ export {
   ATTR_TIER,
   AgenticError,
   ConsentRequiredError,
+  D10_RELEVANT_CATEGORIES,
   DEFAULT_API_KEY_ENV_VAR,
   DEFAULT_RETRY_POLICY,
   DEFAULT_TRACE_FLAGS,
@@ -1106,6 +1139,7 @@ export {
   METRIC_SAFETY_TOKEN_COUNT,
   METRIC_STREAM_DURATION,
   METRIC_VERIFICATION_RESULT_COUNT,
+  NEVER_CAPTURABLE_CATEGORIES,
   NoopTelemetrySink,
   OAuthTokenCredentialProvider,
   PermissionDeniedError,
@@ -1122,6 +1156,7 @@ export {
   formatTraceState,
   generateTraceParent,
   harnessaasSpanName,
+  isNeverCapturable,
   joinOrGenerateTraceContext,
   measurementKindOf,
   metaLlmSpanName,
@@ -1129,6 +1164,7 @@ export {
   metaharnessSpanName,
   parseTraceParent,
   parseTraceState,
+  previewDiagnosticManifest,
   sha256Hex,
   shapeCheckExecutionReceipt,
   shapeCheckLineageReference,

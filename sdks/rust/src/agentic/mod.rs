@@ -22,6 +22,7 @@
 pub mod capability;
 pub mod context;
 pub mod credentials;
+pub mod diagnostics;
 pub mod errors;
 pub mod oauth_token_provider;
 pub mod operations;
@@ -41,6 +42,11 @@ pub use credentials::{
     SecretClassification, SecretRedactor,
 };
 pub use sentinel::{D12Category, SentinelSecretRedactor};
+pub use diagnostics::{
+    is_never_capturable, preview_diagnostic_manifest, DiagnosticBundle, DiagnosticManifest,
+    DiagnosticPolicy, DiagnosticSink, RedactionReport, RetentionPolicy,
+    D10_RELEVANT_CATEGORIES, NEVER_CAPTURABLE_CATEGORIES,
+};
 pub use errors::{
     equal_jitter_delay_ms, AgenticError, AgenticErrorKind, CancellationReason, CancellationToken,
     ConsentGrant, ConsentGrantKind, ConsentRequiredError, IdempotencyBindingV1,

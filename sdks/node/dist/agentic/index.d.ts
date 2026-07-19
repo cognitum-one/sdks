@@ -536,6 +536,183 @@ declare class SentinelSecretRedactor implements SecretRedactor {
 }
 
 /**
+ * `DiagnosticPolicy` / manifest-preview scaffolding (ADR-0028 §D10).
+ * Tracking issue #70 (M6). This pass freezes the policy/manifest/bundle
+ * shapes and implements the one piece of real logic §D10 actually
+ * specifies at this layer -- "the SDK previews a manifest of categories
+ * before capture" -- as a pure computation over a caller-supplied policy.
+ *
+ * Explicitly NOT in scope for this pass (matching the discipline already
+ * established by `./telemetry.ts`'s `TelemetrySink` freeze and
+ * `./receipts.ts`'s `ExecutionReceipt` freeze):
+ * - no real capture/collection logic (no reading of prompts, source,
+ *   patches, tool arguments, or environment values from anywhere);
+ * - no upload logic -- per §D10, "Upload is a separate source-upload
+ *   consent operation; capture never uploads automatically";
+ * - no product client (meta_llm/meta_proxy/metaharness/harnessaas)
+ *   references any symbol in this module yet.
+ *
+ * Sources: docs/adr/0028-agentic-telemetry-usage-receipts-lineage-and-redaction.md
+ * §D10 (lines 325-343), reusing the §D12/§D13 `D12Category` taxonomy
+ * already frozen in `./sentinel.ts`.
+ */
+
+/**
+ * Where a captured diagnostic bundle is written (ADR-0028 §D10: "local
+ * sink path or callback"). The `callback` variant is a marker discriminant
+ * only: this pass has no real capture pipeline to invoke a callback from,
+ * so it does not model an actual callback function type (design decision,
+ * not an ADR quote) -- a future capture implementation attaches a real
+ * callback type to this variant. Discriminated on `kind` so the wire shape
+ * is `{ kind: "local_path", path: "..." }` / `{ kind: "callback" }`.
+ */
+type DiagnosticSink = {
+    kind: "local_path";
+    path: string;
+} | {
+    kind: "callback";
+};
+/**
+ * Retention/expiry policy for a captured diagnostic bundle (ADR-0028 §D10
+ * "retention/expiry" bullet). `maxAgeMs: undefined` means the caller has
+ * not declared a retention bound in this pass -- no enforcement exists yet
+ * (no capture pipeline exists to enforce it against).
+ */
+interface RetentionPolicy {
+    maxAgeMs?: number;
+}
+/**
+ * Caller-declared diagnostic-capture policy (ADR-0028 §D10). Every field
+ * maps directly onto one bullet of the ADR's list:
+ * - `includedFields` <- "included schema-classified fields". No validation
+ *   against a real field schema/registry exists in this pass (design
+ *   decision, not an ADR quote) -- this is a plain caller-supplied list of
+ *   field names the policy scopes capture to.
+ * - `maxBytes` / `maxDurationMs` <- "maximum bytes and duration".
+ * - `sink` <- "local sink path or callback".
+ * - `encryptionRequired` / `accessExpectation` <- "encryption and access
+ *   expectations". The ADR does not specify a structured shape here, so a
+ *   boolean + free-text string is a deliberately simple, honest
+ *   simplification (design decision, not an ADR quote).
+ * - `retention` <- "retention/expiry".
+ * - `allowedCategories` <- "whether prompt, output, source, patch, tool,
+ *   and environment categories are individually allowed". Reuses the
+ *   existing {@link D12Category} taxonomy (`./sentinel.ts`) rather than a
+ *   parallel type -- see {@link D10_RELEVANT_CATEGORIES} for the exact
+ *   6-of-11 mapping from §D10's prose names onto `D12Category` values.
+ *
+ * Constructing a `DiagnosticPolicy` performs no I/O, capture, or schema
+ * validation -- it is a plain value type, mirroring how `TelemetrySink`
+ * (`./telemetry.ts`) was frozen as an interface before any real emission
+ * pipeline existed.
+ */
+interface DiagnosticPolicy {
+    includedFields: string[];
+    maxBytes: number;
+    maxDurationMs: number;
+    sink: DiagnosticSink;
+    encryptionRequired: boolean;
+    accessExpectation?: string;
+    retention: RetentionPolicy;
+    allowedCategories: Set<D12Category>;
+}
+/**
+ * The 6 of {@link D12Category}'s 11 values that §D10 governs, in the ADR's
+ * own prose order ("prompt, output, source, patch, tool, and environment
+ * categories"). This mapping is a design decision, not a literal ADR
+ * quote, since §D10 uses its own short names rather than the §D12/§D13
+ * category names:
+ * - prompt -> `"prompts"`
+ * - output -> `"messages"`
+ * - source -> `"source"`
+ * - patch -> `"patches"`
+ * - tool -> `"tool-arguments-results"`
+ * - environment -> `"environment-values"`
+ */
+declare const D10_RELEVANT_CATEGORIES: readonly D12Category[];
+/**
+ * Hard-coded, policy-independent never-capturable set (ADR-0028 §D10):
+ * "Credentials, signing private keys, proxy tokens, cookies, repository
+ * credentials, and pre-signed URLs are never capturable." `D12Category` has
+ * no finer split than `"credentials"` for signing keys, proxy tokens,
+ * cookies, and repository credentials -- all are secret-bearing
+ * authentication material, matching §D13's own key-name rule, which
+ * already classifies "secret", "token", "password", "accesskey" fields as
+ * `"credentials"` regardless of which specific kind of credential they
+ * hold; there is no separate signing-keys/proxy-tokens/cookies category to
+ * map onto. `"signed-urls"` covers pre-signed URLs directly. This mapping
+ * is a design decision, not a literal ADR quote: it resolves the ADR's
+ * six-item prose list onto exactly 2 `D12Category` values, not 6, because
+ * the ADR's own taxonomy is coarser than its prose list.
+ */
+declare const NEVER_CAPTURABLE_CATEGORIES: readonly D12Category[];
+/**
+ * Whether `category` is unconditionally excluded from capture, regardless
+ * of what any {@link DiagnosticPolicy.allowedCategories} claims. This is
+ * the real, enforced check backing {@link previewDiagnosticManifest}'s
+ * hard block -- not merely documentation.
+ */
+declare function isNeverCapturable(category: D12Category): boolean;
+/**
+ * A preview of which §D10-relevant categories a policy would and would not
+ * capture (ADR-0028 §D10: "The SDK previews a manifest of categories
+ * before capture").
+ */
+interface DiagnosticManifest {
+    wouldCapture: D12Category[];
+    blockedByPolicy: D12Category[];
+}
+/**
+ * Computes the manifest a caller would see before capture starts. Pure
+ * computation over `policy` -- performs no I/O and does not read, touch,
+ * or capture any real prompt/source/patch/tool/environment content.
+ *
+ * `wouldCapture` is the intersection of `policy.allowedCategories`
+ * (restricted to {@link D10_RELEVANT_CATEGORIES}) minus
+ * {@link NEVER_CAPTURABLE_CATEGORIES}. The hard block applies even if a
+ * caller's policy explicitly lists `"credentials"` or `"signed-urls"` in
+ * `allowedCategories` -- a policy can never override it, which is why the
+ * loop below only ever iterates the 6 §D10-relevant categories (neither
+ * hard-blocked category is a member of that set, so neither can ever reach
+ * `wouldCapture` through this function, no matter what the policy claims).
+ *
+ * `blockedByPolicy` lists the §D10-relevant categories the policy did NOT
+ * allow -- distinct from the hard-blocked categories, which never appear
+ * in either list returned here since they are outside
+ * {@link D10_RELEVANT_CATEGORIES} entirely.
+ */
+declare function previewDiagnosticManifest(policy: DiagnosticPolicy): DiagnosticManifest;
+/**
+ * Minimal redaction-report shape (ADR-0028 §D10: "Diagnostic bundles
+ * include a redaction report..."). `SentinelSecretRedactor`
+ * (`./sentinel.ts`) does not currently return a report-shaped value --
+ * `redact` returns the redacted value itself, not a summary of what was
+ * redacted -- so this is a new minimal type, matching the "shape freeze"
+ * convention already used by `ExecutionReceipt` (`./receipts.ts`): no
+ * bundle-construction pipeline computes a real value for this type in this
+ * pass.
+ */
+interface RedactionReport {
+    redactionCount: number;
+    categoriesRedacted: D12Category[];
+}
+/**
+ * Frozen diagnostic-bundle field shape (ADR-0028 §D10): "Diagnostic
+ * bundles include a redaction report, SDK and contract versions, and
+ * SHA-256 digest." Type-only stub, matching `ExecutionReceipt`
+ * (`./receipts.ts`)'s freeze discipline -- no bundle-construction pipeline
+ * exists in this pass; nothing populates a `DiagnosticBundle` from real
+ * captured content, and no upload logic exists (§D10: "capture never
+ * uploads automatically").
+ */
+interface DiagnosticBundle {
+    redactionReport: RedactionReport;
+    sdkVersion: string;
+    contractVersion: string;
+    sha256Digest: string;
+}
+
+/**
  * Shared per-call request context (ADR-0019 §D5) and budget policy
  * (ADR-0022 §D6). Type-only scaffolding — issue #52 / M1.
  */
@@ -1197,4 +1374,4 @@ interface LineageChainVerification {
  */
 declare function verifyLineageChain(chain: LineageReference[], opts: VerifyLineageChainOptions): LineageChainVerification;
 
-export { ALL_METRIC_INSTRUMENT_KINDS, ATTR_CACHE_RESULT, ATTR_CONTRACT_VERSION, ATTR_ERROR_KIND, ATTR_MODEL_ALIAS, ATTR_OPERATION, ATTR_OPERATION_STATE, ATTR_PRODUCT, ATTR_PROTOCOL, ATTR_REQUEST_ID, ATTR_RETRY_COUNT, ATTR_ROUTING_PLANE, ATTR_ROUTING_REASON, ATTR_TENANT_HASH, ATTR_TIER, AgenticError, type AgenticErrorKind, type BudgetPolicy, type BuildExecutionReceiptInput, type CancellationReason, type CancellationToken, type CapabilitySet, type CapabilitySource, type ConsentGrant, type ConsentGrantKind, ConsentRequiredError, type CostFinality, type CostObservation, type Credential, type CredentialAuthority, type CredentialProvider, type CredentialRequest, type D12Category, DEFAULT_API_KEY_ENV_VAR, DEFAULT_RETRY_POLICY, DEFAULT_TRACE_FLAGS, EVENT_ARTIFACT_VERIFIED, EVENT_BUDGET_COMMITTED, EVENT_BUDGET_RELEASED, EVENT_BUDGET_RESERVED, EVENT_CAPABILITIES_LOADED, EVENT_CONSENT_REQUIRED, EVENT_EVIDENCE_VERIFIED, EVENT_OPERATION_STATE_CHANGED, EVENT_OPERATION_WAIT_ENDED, EVENT_PROCESS_ENDED, EVENT_PROCESS_STARTED, EVENT_REQUEST_END, EVENT_REQUEST_RETRY_SCHEDULED, EVENT_REQUEST_START, EVENT_STREAM_END, EVENT_STREAM_FIRST_EVENT, EVENT_TELEMETRY_DROPPED, type EventStreamOptions, type ExecutionReceipt, type IdempotencyBindingV1, type LineageChainVerification, type LineageReference, MAX_TRACESTATE_MEMBERS, MEASUREMENT_KIND_BY_INSTRUMENT, METRIC_CACHE_TOKEN_COUNT, METRIC_CANCELLATION_COUNT, METRIC_COST_COMMITTED, METRIC_COST_RECONCILED, METRIC_COST_RELEASED, METRIC_COST_RESERVED, METRIC_ERROR_COUNT, METRIC_FIRST_EVENT_LATENCY, METRIC_INPUT_TOKEN_COUNT, METRIC_OPERATION_STATE_TRANSITION_COUNT, METRIC_OUTPUT_TOKEN_COUNT, METRIC_PROCESS_EXIT_COUNT, METRIC_PROCESS_FORCED_TERMINATION_COUNT, METRIC_REQUEST_COUNT, METRIC_REQUEST_DURATION, METRIC_RETRY_COUNT, METRIC_SAFETY_TOKEN_COUNT, METRIC_STREAM_DURATION, METRIC_VERIFICATION_RESULT_COUNT, type MeasurementKind, type MetricInstrumentKind, NoopTelemetrySink, OAuthTokenCredentialProvider, type OAuthTokenCredentialProviderOptions, type OAuthTokenSource, type OAuthTokenSourceResult, type OnUnknownEstimate, type OperationEvent, type OperationHandle, type OperationRetryClass, type OperationSnapshot, type OperationState, type Page, type PageRequest, PermissionDeniedError, RedactedSecret, type RequestContext, type RetryPolicy, type SecretClassification, type SecretRedactor, SentinelSecretRedactor, StaticApiKeyCredentialProvider, type StaticApiKeyCredentialProviderOptions, TRACE_VERSION, type TelemetryEvent, type TelemetrySeverity, type TelemetrySink, type TenantContext, type TimeBudget, type TraceContext, type TraceStateMember, UnsupportedCapabilityError, UnsupportedRuntimeError, type VerificationLevel, type VerificationResult, type VerifyLineageChainOptions, type VerifyReceiptOptions, type WaitOptions, assertScopeGranted, buildExecutionReceipt, canonicalJson, equalJitterDelayMs, formatTraceState, generateTraceParent, harnessaasSpanName, joinOrGenerateTraceContext, measurementKindOf, metaLlmSpanName, metaProxySpanName, metaharnessSpanName, parseTraceParent, parseTraceState, sha256Hex, shapeCheckExecutionReceipt, shapeCheckLineageReference, verifyExecutionReceipt, verifyLineageChain };
+export { ALL_METRIC_INSTRUMENT_KINDS, ATTR_CACHE_RESULT, ATTR_CONTRACT_VERSION, ATTR_ERROR_KIND, ATTR_MODEL_ALIAS, ATTR_OPERATION, ATTR_OPERATION_STATE, ATTR_PRODUCT, ATTR_PROTOCOL, ATTR_REQUEST_ID, ATTR_RETRY_COUNT, ATTR_ROUTING_PLANE, ATTR_ROUTING_REASON, ATTR_TENANT_HASH, ATTR_TIER, AgenticError, type AgenticErrorKind, type BudgetPolicy, type BuildExecutionReceiptInput, type CancellationReason, type CancellationToken, type CapabilitySet, type CapabilitySource, type ConsentGrant, type ConsentGrantKind, ConsentRequiredError, type CostFinality, type CostObservation, type Credential, type CredentialAuthority, type CredentialProvider, type CredentialRequest, D10_RELEVANT_CATEGORIES, type D12Category, DEFAULT_API_KEY_ENV_VAR, DEFAULT_RETRY_POLICY, DEFAULT_TRACE_FLAGS, type DiagnosticBundle, type DiagnosticManifest, type DiagnosticPolicy, type DiagnosticSink, EVENT_ARTIFACT_VERIFIED, EVENT_BUDGET_COMMITTED, EVENT_BUDGET_RELEASED, EVENT_BUDGET_RESERVED, EVENT_CAPABILITIES_LOADED, EVENT_CONSENT_REQUIRED, EVENT_EVIDENCE_VERIFIED, EVENT_OPERATION_STATE_CHANGED, EVENT_OPERATION_WAIT_ENDED, EVENT_PROCESS_ENDED, EVENT_PROCESS_STARTED, EVENT_REQUEST_END, EVENT_REQUEST_RETRY_SCHEDULED, EVENT_REQUEST_START, EVENT_STREAM_END, EVENT_STREAM_FIRST_EVENT, EVENT_TELEMETRY_DROPPED, type EventStreamOptions, type ExecutionReceipt, type IdempotencyBindingV1, type LineageChainVerification, type LineageReference, MAX_TRACESTATE_MEMBERS, MEASUREMENT_KIND_BY_INSTRUMENT, METRIC_CACHE_TOKEN_COUNT, METRIC_CANCELLATION_COUNT, METRIC_COST_COMMITTED, METRIC_COST_RECONCILED, METRIC_COST_RELEASED, METRIC_COST_RESERVED, METRIC_ERROR_COUNT, METRIC_FIRST_EVENT_LATENCY, METRIC_INPUT_TOKEN_COUNT, METRIC_OPERATION_STATE_TRANSITION_COUNT, METRIC_OUTPUT_TOKEN_COUNT, METRIC_PROCESS_EXIT_COUNT, METRIC_PROCESS_FORCED_TERMINATION_COUNT, METRIC_REQUEST_COUNT, METRIC_REQUEST_DURATION, METRIC_RETRY_COUNT, METRIC_SAFETY_TOKEN_COUNT, METRIC_STREAM_DURATION, METRIC_VERIFICATION_RESULT_COUNT, type MeasurementKind, type MetricInstrumentKind, NEVER_CAPTURABLE_CATEGORIES, NoopTelemetrySink, OAuthTokenCredentialProvider, type OAuthTokenCredentialProviderOptions, type OAuthTokenSource, type OAuthTokenSourceResult, type OnUnknownEstimate, type OperationEvent, type OperationHandle, type OperationRetryClass, type OperationSnapshot, type OperationState, type Page, type PageRequest, PermissionDeniedError, RedactedSecret, type RedactionReport, type RequestContext, type RetentionPolicy, type RetryPolicy, type SecretClassification, type SecretRedactor, SentinelSecretRedactor, StaticApiKeyCredentialProvider, type StaticApiKeyCredentialProviderOptions, TRACE_VERSION, type TelemetryEvent, type TelemetrySeverity, type TelemetrySink, type TenantContext, type TimeBudget, type TraceContext, type TraceStateMember, UnsupportedCapabilityError, UnsupportedRuntimeError, type VerificationLevel, type VerificationResult, type VerifyLineageChainOptions, type VerifyReceiptOptions, type WaitOptions, assertScopeGranted, buildExecutionReceipt, canonicalJson, equalJitterDelayMs, formatTraceState, generateTraceParent, harnessaasSpanName, isNeverCapturable, joinOrGenerateTraceContext, measurementKindOf, metaLlmSpanName, metaProxySpanName, metaharnessSpanName, parseTraceParent, parseTraceState, previewDiagnosticManifest, sha256Hex, shapeCheckExecutionReceipt, shapeCheckLineageReference, verifyExecutionReceipt, verifyLineageChain };
