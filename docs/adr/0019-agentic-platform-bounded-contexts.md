@@ -329,6 +329,20 @@ CI MUST enforce all of the following:
 7. A proxy test proves an unsupported Meta LLM governance call is rejected
    locally and never reaches `/v1/*` on the proxy fixture.
 
+**Issue #74 reconciliation note (this test suite pass):** item 3 is already fully
+CI-enforced today and is deliberately NOT duplicated as a source-level test.
+`.github/workflows/ci.yml`'s `rust-feature-matrix` job builds `cognitum-one` with
+each of `default`, `native-tls`, `seed`, `stream`, `blocking`, `mdns`, `meta-llm`,
+`meta-proxy`, `metaharness`, and `harnessaas` enabled ALONE (one job per feature),
+and the `rust` job separately builds, tests, and clippies the crate with every
+feature except `live-seed-tests` enabled together (all-features mode for this
+ADR's purposes). Items 1, 5, 6, and 7 are implemented as real automated tests in
+each of `sdks/node/tests/adr-0019-*.test.ts`, `sdks/python/tests/test_adr0019_*.py`,
+and `sdks/rust/tests/adr_0019_*.rs`; item 2 (Node-only) and item 4 (Python-only)
+likewise. See the closing "Acceptance test" paragraph below, implemented
+identically as `adr-0019-acceptance.test.ts` / `test_adr0019_acceptance.py` /
+`adr_0019_acceptance.rs`.
+
 ### Acceptance test
 
 For each of Node, Python, and Rust, instantiate all four clients with fake local
