@@ -121,3 +121,20 @@ jobs:
           else
             cargo build --features "${{ matrix.feature }}"
           fi
+
+  capability-manifest:
+    name: capability manifest (schema + registry drift check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # Validates capabilities/sdk-release.v1.json against
+      # capabilities/sdk-release.schema.json, then independently re-checks
+      # each language's claimed registryVersion against the live npm/PyPI/
+      # crates.io APIs -- the exact class of drift (source committed,
+      # registry never actually updated) that slipped through undetected in
+      # the 2026-07-19 crates.io 0.3.0 publish gap. See issue #123 and
+      # cognitum-one/website ADR-101 ("Drift prevention").
+      - run: node scripts/verify-release-manifest.mjs
