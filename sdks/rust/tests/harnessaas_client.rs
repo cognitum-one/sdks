@@ -558,6 +558,30 @@ async fn lineage_fails_closed_without_credential_provider() {
     assert_eq!(err.kind, AgenticErrorKind::Authentication);
 }
 
+// Issue #110: PR #109 added `lineage()`'s defense-in-depth capability
+// check (mirroring `solve()`'s `solve_fails_closed_when_snapshot_does_not_
+// mark_solve_supported` above), but only ever exercised the pass-through/
+// allowed case (`lineage_fetches_and_parses_records`) — the reject path
+// itself had no test. Proven the same way `solve()`'s reject tests are:
+// a capability snapshot that does not mark `lineage` supported must throw
+// `UnsupportedCapabilityError` (surfaced as `AgenticErrorKind::UnsupportedCapability`)
+// BEFORE any HTTP call, verified via `server.received_requests()` being
+// empty rather than trusting the error alone (a mock server with no route
+// mounted would otherwise mask a real request as a different failure).
+#[tokio::test]
+async fn lineage_fails_closed_when_snapshot_does_not_mark_lineage_supported() {
+    let server = MockServer::start().await;
+    // No mock mounted -- any HTTP request would be unmatched by wiremock.
+    let mut config = insecure_config(server.uri());
+    config.credential_provider = Some(credential_provider(&server.uri()));
+    config.capabilities_snapshot = Some(unrecognized_version_snapshot());
+    let client = HarnessaaSClient::new(config).unwrap();
+
+    let err = client.lineage("req_abc123").await.expect_err("must fail closed");
+    assert_eq!(err.kind, AgenticErrorKind::UnsupportedCapability);
+    assert_eq!(server.received_requests().await.unwrap().len(), 0);
+}
+
 #[tokio::test]
 async fn lineage_retries_503_bounded_safe_read() {
     let server = MockServer::start().await;

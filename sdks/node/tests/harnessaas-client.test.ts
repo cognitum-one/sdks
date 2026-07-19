@@ -501,6 +501,37 @@ describe("HarnessaaSClient.lineage()", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  // Issue #110: PR #109 added lineage()'s defense-in-depth capability check
+  // (mirroring solve()'s "fails closed when an operator-supplied
+  // capabilitiesSnapshot ... doesn't mark solve supported" test above), but
+  // only ever exercised the pass-through/allowed case ("fetches GET
+  // /lineage/:id and parses records" above) — the reject path itself had no
+  // test. Proven the same way solve()'s reject tests are: a capability
+  // snapshot that does not mark `lineage` supported must throw
+  // UnsupportedCapabilityError BEFORE any HTTP call, proven via the fetch
+  // spy never being invoked.
+  it("fails closed when an operator-supplied capabilitiesSnapshot for an unrecognized version doesn't mark lineage supported", async () => {
+    const fetchSpy = vi.fn();
+    const client = new HarnessaaSClient({
+      baseUrl: BASE_URL,
+      transport: fetchSpy,
+      credentialProvider: makeCredentialProvider(),
+      capabilitiesSnapshot: {
+        product: "harnessaas",
+        productVersion: "9.9.9-unknown",
+        protocol: "cognitum.harnessaas.http",
+        protocolVersion: "1.0",
+        features: {},
+        limitations: ["unrecognized server version — minimum-safe set"],
+        authMethods: [],
+        source: "static-compatibility-table",
+      },
+    });
+
+    await expect(client.lineage("req_abc123")).rejects.toBeInstanceOf(UnsupportedCapabilityError);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it(
     "retries a 503 (bounded, safe-read) and eventually succeeds",
     async () => {

@@ -164,6 +164,25 @@ describe("MetaProxyClient.status()", () => {
     });
   });
 
+  it("captures a genuinely unknown response header but excludes known ones (issue #92)", async () => {
+    const fetchSpy = mockFetch(200, FULL_STATUS_BODY, {
+      "x-a-brand-new-header-the-sdk-does-not-know-about": "surprise",
+      "content-type": "application/json",
+    });
+    const client = new MetaProxyClient({
+      transport: fetchSpy,
+      localCredentialProvider: localBearerProvider(),
+    });
+
+    const result = await client.status();
+
+    expect(result.meta.unknownHeaders).toBeDefined();
+    expect(result.meta.unknownHeaders?.["x-a-brand-new-header-the-sdk-does-not-know-about"]).toBe(
+      "surprise",
+    );
+    expect(result.meta.unknownHeaders?.["content-type"]).toBeUndefined();
+  });
+
   it("fails closed without a localCredentialProvider (Proxy /status is authenticated)", async () => {
     const fetchSpy = vi.fn();
     const client = new MetaProxyClient({ transport: fetchSpy });

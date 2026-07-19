@@ -342,6 +342,32 @@ var LocalBearerTokenCredentialProvider = class {
   }
 };
 
+// src/meta-proxy/envelope.ts
+var KNOWN_RESPONSE_HEADERS = /* @__PURE__ */ new Set([
+  "x-cognitum-product-version",
+  "x-cognitum-protocol-version",
+  "x-cognitum-request-id",
+  "retry-after",
+  "content-type",
+  "content-length",
+  "content-encoding",
+  "transfer-encoding",
+  "connection",
+  "keep-alive",
+  "date",
+  "server",
+  "vary",
+  "location"
+]);
+function collectUnknownHeaders(headers) {
+  const unknown = {};
+  headers.forEach((value, name) => {
+    if (KNOWN_RESPONSE_HEADERS.has(name.toLowerCase())) return;
+    unknown[name.toLowerCase()] = value;
+  });
+  return Object.keys(unknown).length > 0 ? unknown : void 0;
+}
+
 // src/meta-proxy/http-errors.ts
 var PRODUCT5 = "meta-proxy";
 function nonEmpty(value, fallback) {
@@ -560,7 +586,8 @@ async function sendOnce(deps, body, credential, idempotencyKey, forwarded) {
     httpStatus: response.status,
     retryAfter: retryAfterHeader ? Number(retryAfterHeader) : void 0,
     routingReceipt,
-    upstreamReceipt
+    upstreamReceipt,
+    unknownHeaders: collectUnknownHeaders(response.headers)
   };
   return { data: rawJson, meta };
 }
@@ -1617,7 +1644,8 @@ var MetaProxyClient = class {
       productVersion: response.headers.get("x-cognitum-product-version") ?? void 0,
       protocolVersion: response.headers.get("x-cognitum-protocol-version") ?? void 0,
       httpStatus: response.status,
-      retryAfter: retryAfterHeader ? Number(retryAfterHeader) : void 0
+      retryAfter: retryAfterHeader ? Number(retryAfterHeader) : void 0,
+      unknownHeaders: collectUnknownHeaders(response.headers)
     };
     return { data, meta };
   }

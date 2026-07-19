@@ -213,6 +213,39 @@ async fn status_preserves_unrecognized_fields_verbatim_under_raw() {
 }
 
 #[tokio::test]
+async fn status_captures_a_genuinely_unknown_response_header_but_excludes_known_ones() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/status"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(full_status_body())
+                .insert_header("x-a-brand-new-header-the-sdk-does-not-know-about", "surprise")
+                .insert_header("content-type", "application/json"),
+        )
+        .mount(&server)
+        .await;
+
+    let mut config = MetaProxyClientConfig::with_origin(server.uri());
+    config.local_credential_provider = Some(local_bearer_provider(&server.uri()));
+    let client = MetaProxyClient::new(config).unwrap();
+
+    let result = client.status().await.unwrap();
+    let unknown = result
+        .meta
+        .unknown_headers
+        .expect("a genuinely unknown header must populate unknown_headers (issue #92)");
+    assert_eq!(
+        unknown.get("x-a-brand-new-header-the-sdk-does-not-know-about"),
+        Some(&"surprise".to_owned())
+    );
+    assert!(
+        !unknown.contains_key("content-type"),
+        "a known/allowlisted header must never be captured as unknown"
+    );
+}
+
+#[tokio::test]
 async fn status_fails_closed_without_a_local_credential_provider() {
     let server = MockServer::start().await;
     // Deliberately no Mock registered: a request would panic/fail the test.

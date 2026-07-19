@@ -171,6 +171,34 @@ async def test_status_preserves_unrecognized_fields_verbatim_under_raw() -> None
 
 
 @pytest.mark.asyncio
+@respx.mock
+async def test_status_captures_a_genuinely_unknown_header_but_excludes_known_ones() -> None:
+    respx.get(f"{ORIGIN}/status").mock(
+        return_value=httpx.Response(
+            200,
+            json=FULL_STATUS_BODY,
+            headers={
+                "x-a-brand-new-header-the-sdk-does-not-know-about": "surprise",
+                "content-type": "application/json",
+            },
+        )
+    )
+    client = MetaProxyClient(
+        MetaProxyClientConfig(local_credential_provider=_local_bearer_provider())
+    )
+
+    result = await client.status()
+
+    assert result.meta.unknown_headers is not None
+    assert (
+        result.meta.unknown_headers["x-a-brand-new-header-the-sdk-does-not-know-about"]
+        == "surprise"
+    )
+    assert "content-type" not in result.meta.unknown_headers
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_status_fails_closed_without_a_local_credential_provider() -> None:
     with respx.mock:
         client = MetaProxyClient(MetaProxyClientConfig())

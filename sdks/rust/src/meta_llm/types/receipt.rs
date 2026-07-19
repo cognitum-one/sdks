@@ -33,8 +33,17 @@ pub type ReceiptCacheResult = String;
 /// "Warn and redact expose only contract-safe detector classes and
 /// counts. Prompts, matches, secrets, and unredacted content are
 /// excluded").
+// `Serialize`/`Deserialize` are derived only because this type is
+// embedded in `MetaLlmReceipt` below, which is in turn embedded in
+// `crate::meta_llm::envelope::MetaLlmResponseMeta` (a struct that itself
+// derives `Serialize`/`Deserialize`) -- `parse_safety_summary` is the
+// only decode path that actually runs. The wire contract is snake_case
+// (string-literal `"detector_classes"`/`"blocked"` keys below), so the
+// rename matches `MetaLlmRoutingControls`'s convention (`super::routing`)
+// rather than the inert-but-mismatched `camelCase` this previously
+// carried (issue #90).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct SafetySummary {
     pub mode: Option<String>,
     pub detector_classes: Option<Vec<String>>,
@@ -44,8 +53,17 @@ pub struct SafetySummary {
 }
 
 /// ADR-0024b §D3's `MetaLlmReceipt`.
+///
+/// Same rationale as [`SafetySummary`] above: `Serialize`/`Deserialize`
+/// are derived only because `crate::meta_llm::envelope::MetaLlmResponseMeta`
+/// embeds this type and itself derives them; every actual decode path
+/// uses `parse_meta_llm_receipt` below, never this derive. The rename
+/// is snake_case to match the hand-written parser's string-literal keys
+/// (`"request_id"`, `"resolved_tier"`, ...) and `MetaLlmRoutingControls`'s
+/// convention, replacing the previously inert-but-mismatched `camelCase`
+/// (issue #90).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct MetaLlmReceipt {
     pub request_id: String,
     pub resolved_tier: Option<ReceiptModelTier>,
@@ -203,4 +221,57 @@ pub fn parse_meta_llm_receipt(raw: &Value) -> Option<MetaLlmReceipt> {
             Some(raw_remainder)
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    /// Round-trip through the (otherwise-inert) `Serialize`/`Deserialize`
+    /// derive itself, using multi-word field names where `camelCase` and
+    /// `snake_case` actually diverge -- unlike `Money`'s single-word
+    /// `amount`/`currency`, these keys genuinely distinguish the two
+    /// conventions, so this test would fail if the rename regressed back
+    /// to `camelCase` (issue #90's actual regression-guard gap: the
+    /// existing `Money` test can't detect this because its fields are
+    /// single words, identical under either convention).
+    #[test]
+    fn safety_summary_derive_round_trips_snake_case() {
+        let summary = SafetySummary {
+            mode: Some("warn".to_owned()),
+            detector_classes: Some(vec!["pii".to_owned(), "self_harm".to_owned()]),
+            blocked: Some(false),
+            raw: None,
+        };
+        let wire = serde_json::to_value(&summary).unwrap();
+        assert_eq!(wire["detector_classes"], json!(["pii", "self_harm"]));
+        assert!(
+            wire.get("detectorClasses").is_none(),
+            "must not emit the camelCase key"
+        );
+        let round_tripped: SafetySummary = serde_json::from_value(wire).unwrap();
+        assert_eq!(round_tripped, summary);
+    }
+
+    #[test]
+    fn meta_llm_receipt_derive_round_trips_snake_case() {
+        let receipt = MetaLlmReceipt {
+            request_id: "req_1".to_owned(),
+            resolved_tier: Some("high".to_owned()),
+            cache_result: Some("hit".to_owned()),
+            ..Default::default()
+        };
+        let wire = serde_json::to_value(&receipt).unwrap();
+        assert_eq!(wire["request_id"], "req_1");
+        assert_eq!(wire["resolved_tier"], "high");
+        assert_eq!(wire["cache_result"], "hit");
+        assert!(
+            wire.get("requestId").is_none() && wire.get("resolvedTier").is_none(),
+            "must not emit camelCase keys"
+        );
+        let round_tripped: MetaLlmReceipt = serde_json::from_value(wire).unwrap();
+        assert_eq!(round_tripped, receipt);
+    }
 }
