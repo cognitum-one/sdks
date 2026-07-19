@@ -31,10 +31,14 @@ export type {
   CancellationReason,
   CancellationToken,
   TimeBudget,
+  ConsentGrantKind,
+  ConsentGrant,
 } from "./errors.js";
 export {
   AgenticError,
   UnsupportedCapabilityError,
+  ConsentRequiredError,
+  UnsupportedRuntimeError,
   DEFAULT_RETRY_POLICY,
   equalJitterDelayMs,
 } from "./errors.js";

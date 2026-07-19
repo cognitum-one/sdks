@@ -125,6 +125,88 @@ class UnsupportedCapabilityError(AgenticError):
         self.capability = capability
 
 
+#: ADR-0022 §D7 consent grant kinds. A locally recorded ``ConsentGrant``
+#: names exactly one of these -- never a generic boolean -- so consent for
+#: one kind never implies another ("Consent for sponsored inference does
+#: not imply cloud fallback or training contribution").
+ConsentGrantKind = Literal[
+    "sponsored_inference",
+    "power_saver_routing",
+    "cloud_fallback",
+    "source_upload",
+    "artifact_retention",
+    "training_data_contribution",
+    "external_webhook_delivery",
+]
+
+
+@dataclass(frozen=True)
+class ConsentGrant:
+    """A narrow, locally-recorded (or signed) consent grant (ADR-0022 §D7).
+
+    The grant must match product, origin, subject, and action before it
+    satisfies a gated call -- the SDK never infers consent from credential
+    presence, a prior operation on another origin, environment variables, or
+    a retry policy.
+
+    Type-only scaffolding: this class does not verify signatures or attest
+    server-persisted grants (§D7's "consequential kind" re-check
+    requirement) -- it only defines the shape and the presence/expiry check
+    that product clients (starting with ``MetaProxyClient``, ADR-0025a §D9)
+    apply before a gated call.
+    """
+
+    kind: ConsentGrantKind
+    product: str
+    origin: str
+    subject: str
+    scope: str
+    issued_at: str
+    #: ``None`` means the grant does not expire.
+    expires_at: str | None = None
+    #: Present when the grant is signed or attested by the issuing service.
+    #: §D7: consequential kinds (``sponsored_inference``,
+    #: ``training_data_contribution``, ``source_upload``,
+    #: ``artifact_retention``, ``external_webhook_delivery``) require this;
+    #: the low-stakes kinds (``power_saver_routing``, ``cloud_fallback``) may
+    #: be an unsigned local record without one.
+    evidence_id: str | None = None
+
+
+class ConsentRequiredError(AgenticError):
+    """Fail-closed error raised when a gated operation requires an
+    ADR-0022 §D7 consent grant that is absent, expired, or does not match
+    the call (product/origin/subject/action).
+
+    Credential presence is never a substitute for consent (§D7/ADR-0025a
+    §D9): "Headless clients return ``ConsentRequiredError`` rather than
+    prompt." Carries a machine-readable ``required_kind`` per §D7 ("Headless
+    SDKs return ``ConsentRequiredError`` with a machine-readable required
+    kind").
+    """
+
+    def __init__(
+        self,
+        product: str,
+        operation: str,
+        required_kind: ConsentGrantKind,
+        message: str | None = None,
+    ) -> None:
+        super().__init__(
+            "consent_required",
+            message
+            or (
+                f'operation "{operation}" on {product} requires an unexpired ADR-0022 '
+                f'consent grant of kind "{required_kind}" -- credential presence alone '
+                "is not consent"
+            ),
+            product=product,
+            operation=operation,
+            retryable=False,
+        )
+        self.required_kind = required_kind
+
+
 @dataclass(frozen=True)
 class RetryPolicy:
     """Retry-policy shape (ADR-0023 §D4).
@@ -222,6 +304,9 @@ __all__ = [
     "OperationRetryClass",
     "AgenticError",
     "UnsupportedCapabilityError",
+    "ConsentGrantKind",
+    "ConsentGrant",
+    "ConsentRequiredError",
     "RetryPolicy",
     "DEFAULT_RETRY_POLICY",
     "equal_jitter_delay_ms",

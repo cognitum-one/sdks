@@ -2,11 +2,14 @@
  * Meta Proxy client (ADR-0025a). Product namespace per ADR-0019 §D2:
  * `@cognitum-one/sdk/meta-proxy`.
  *
- * Issue #61 / M3 start: `MetaProxyClient` construction (§D3) and real
- * `status()` / `capabilities()` implementations (§D4). Data-plane forwarding
- * (§D5-§D9) and loopback/browser security beyond loopback-origin
- * construction validation (§D10) are deliberately out of scope — see the
- * `./client.js` module doc comment for the full deferred list.
+ * Issue #61 / M3: `MetaProxyClient` construction (§D3), `status()` /
+ * `capabilities()` (§D4), routing intent + chat.completions forwarding
+ * (§D5-§D7), streaming (§D8), the tractable consent-gating slice of §D9
+ * (`./consent.js` — `cognitum_cloud` plane gated on a `cloud_fallback`
+ * grant; sponsor budget/usage remain BLOCKED on ADR-0025b), and loopback +
+ * browser-runtime security (§D10 — `./config.js`'s loopback-origin
+ * validation plus `./browser-guard.js`'s construction-time runtime check).
+ * See the `./client.js` module doc comment for the full deferred list.
  *
  * Per ADR-0019 §D4, this module depends on `../agentic/index.js` and MUST
  * NOT be imported by any other product module (`meta-llm`, `metaharness`,
@@ -37,6 +40,16 @@ export type { MetaProxyRoutingReceipt, MetaProxyStatus, RoutingPlane, WorkloadPo
 
 export { assertRoutingReceiptMatchesIntent } from "./routing.js";
 export type { ConsentGrantId, RoutingIntent } from "./routing.js";
+
+export {
+  CLOUD_ROUTING_CONSENT_KIND,
+  assertConsentForRoutingIntent,
+  hasValidConsentGrant,
+  intentTouchesPlane,
+  isConsentGrantValid,
+} from "./consent.js";
+
+export { assertNodeRuntime, isBrowserLikeRuntime } from "./browser-guard.js";
 
 export {
   DEFAULT_META_PROXY_TOKEN_ENV_VAR,

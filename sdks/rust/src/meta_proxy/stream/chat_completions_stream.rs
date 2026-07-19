@@ -57,6 +57,7 @@ use crate::meta_llm::types::openai::ChatCompletionRequest;
 use crate::sse::SseParser;
 
 use super::super::client::MetaProxyClient;
+use super::super::consent::assert_consent_for_routing_intent;
 use super::super::forwarding::{build_forward_headers, MetaProxyChatCallOptions};
 use super::super::http::INFERENCE_SCOPE;
 use super::super::routing::{assert_routing_receipt_matches_intent, RoutingIntent};
@@ -668,6 +669,18 @@ pub async fn chat_completions_stream(
     cancellation: Option<Arc<dyn CancellationToken>>,
 ) -> Result<MetaProxyChatCompletionsStream, AgenticError> {
     let options = options.unwrap_or_default();
+
+    // ADR-0025a §D9: same fail-closed consent gate as non-streaming
+    // `chat_completions` (`../client.rs`) — this function opens the
+    // connection eagerly (`open_stream_with_pre_byte_retry` below), so the
+    // check MUST run first, before any HTTP I/O.
+    assert_consent_for_routing_intent(
+        options.routing_intent.as_ref(),
+        &client.config().consent_grants,
+        &client.config().origin,
+        "chat_completions_stream",
+    )?;
+
     let idempotency_key = options
         .idempotency_key
         .clone()

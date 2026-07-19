@@ -28,7 +28,13 @@ from urllib.parse import urlparse
 if TYPE_CHECKING:
     import httpx
 
-    from cognitum.agentic import BudgetPolicy, CapabilitySet, CredentialProvider, RequestContext
+    from cognitum.agentic import (
+        BudgetPolicy,
+        CapabilitySet,
+        ConsentGrant,
+        CredentialProvider,
+        RequestContext,
+    )
 
 #: Default loopback origin -- matches the Rust proxy binary's default bind
 #: (ADR-0025a Context).
@@ -147,6 +153,13 @@ class MetaProxyClientConfig:
     #: alongside the real ``/status`` call (ADR-0025a §D4).
     capabilities_snapshot: CapabilitySet | None = None
     telemetry: MetaProxyTelemetryHooks | None = None
+    #: Locally-held ADR-0022 §D7 consent grants this caller presents to the
+    #: client (ADR-0025a §D9). Checked before any data-plane call whose
+    #: ``RoutingIntent`` allows or requires a consent-gated plane -- currently
+    #: ``cognitum_cloud``, gated on a ``cloud_fallback`` grant
+    #: (``cognitum.meta_proxy.consent``). Credential presence
+    #: (``local_credential_provider``) is NEVER a substitute for an entry here.
+    consent_grants: list[ConsentGrant] | None = None
 
     def __post_init__(self) -> None:
         origin = (self.origin or DEFAULT_META_PROXY_ORIGIN).rstrip("/")

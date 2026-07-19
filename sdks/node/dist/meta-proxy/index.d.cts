@@ -18,6 +18,44 @@ interface CapabilitySet {
     source: CapabilitySource;
 }
 
+/**
+ * ADR-0022 §D7 consent grant kinds. A locally recorded `ConsentGrant` names
+ * exactly one of these — never a generic boolean — so consent for one kind
+ * never implies another ("Consent for sponsored inference does not imply
+ * cloud fallback or training contribution").
+ */
+type ConsentGrantKind = "sponsored_inference" | "power_saver_routing" | "cloud_fallback" | "source_upload" | "artifact_retention" | "training_data_contribution" | "external_webhook_delivery";
+/**
+ * A narrow, locally-recorded (or signed) consent grant (ADR-0022 §D7). The
+ * grant must match product, origin, subject, and action before it satisfies
+ * a gated call — the SDK never infers consent from credential presence, a
+ * prior operation on another origin, environment variables, or a retry
+ * policy.
+ *
+ * Type-only scaffolding: this module does not verify signatures or attest
+ * server-persisted grants (§D7's "consequential kind" re-check requirement)
+ * — it only defines the shape and the presence/expiry check that product
+ * clients (starting with `MetaProxyClient`, ADR-0025a §D9) apply before a
+ * gated call.
+ */
+interface ConsentGrant {
+    kind: ConsentGrantKind;
+    product: string;
+    origin: string;
+    subject: string;
+    scope: string;
+    issuedAt: string;
+    /** Absent means the grant does not expire. */
+    expiresAt?: string;
+    /**
+     * Present when the grant is signed or attested by the issuing service.
+     * §D7: consequential kinds (`sponsored_inference`, `training_data_contribution`,
+     * `source_upload`, `artifact_retention`, `external_webhook_delivery`)
+     * require this; the low-stakes kinds (`power_saver_routing`, `cloud_fallback`)
+     * may be an unsigned local record without one.
+     */
+    evidenceId?: string;
+}
 /** Why a {@link CancellationToken} was cancelled (ADR-0023 §D7). */
 type CancellationReason = "caller" | "deadline" | "shutdown";
 /**
@@ -253,6 +291,15 @@ interface MetaProxyClientConfig {
      */
     capabilitiesSnapshot?: CapabilitySet;
     telemetry?: MetaProxyTelemetryHooks;
+    /**
+     * Locally-held ADR-0022 §D7 consent grants this caller presents to the
+     * client (ADR-0025a §D9). Checked before any data-plane call whose
+     * `RoutingIntent` allows or requires a consent-gated plane — currently
+     * `cognitum_cloud`, gated on a `cloud_fallback` grant (`./consent.js`).
+     * Credential presence (`localCredentialProvider`) is NEVER a substitute
+     * for an entry here.
+     */
+    consentGrants?: ConsentGrant[];
 }
 /** Normalized, defaulted construction state held by {@link MetaProxyClient}. */
 interface ResolvedMetaProxyClientConfig extends MetaProxyClientConfig {
@@ -467,6 +514,100 @@ interface RoutingIntent {
  * A no-op when `intent` is undefined or carries no `requiredPlane`.
  */
 declare function assertRoutingReceiptMatchesIntent(intent: RoutingIntent | undefined, receipt: MetaProxyRoutingReceipt | undefined): void;
+
+/**
+ * Consent gating for `MetaProxyClient` data-plane calls (ADR-0025a §D9).
+ *
+ * §D9: "Separate ADR-0022 grants cover Cognitum cloud routing, sponsor,
+ * power saver, direct Anthropic, and training contribution. Credential
+ * presence is not consent. Headless clients return `ConsentRequiredError`
+ * rather than prompt."
+ *
+ * This module is intentionally narrow. Stable sponsor support is BLOCKED on
+ * ADR-0025b's lifecycle/state fixes (§D9: "interprocess locking, atomic
+ * replace, fail-closed corruption, schema and pricing version, server
+ * reconciliation, and crash/concurrency/date/clock tests") and is NOT
+ * implemented here. The one gate this pass DOES implement is the tractable
+ * slice: routing to the `cognitum_cloud` plane requires a matching, unexpired
+ * `cloud_fallback` consent grant (ADR-0022 §D7's kind for "routing from local
+ * to Cognitum cloud") — checked BEFORE any HTTP I/O, never inferred from
+ * credential presence.
+ *
+ * `RoutingIntent.consentGrants` (`./routing.js`) is a distinct, unrelated
+ * concept: it is the opaque set of ADR-0022 grant IDs the SDK *forwards as
+ * intent* to the Proxy (PR #93) — the SDK does not interpret its structure.
+ * This module instead checks the caller's *locally held* `ConsentGrant`
+ * objects (`MetaProxyClientConfig.consentGrants`, ADR-0022 §D7's typed shape)
+ * against the plane the call's `RoutingIntent` would allow/require.
+ */
+
+/**
+ * ADR-0022 §D7's consent-grant kind that covers Cognitum-cloud routing.
+ * The ADR's kind list has no `cognitum_cloud_routing` entry; `cloud_fallback`
+ * ("routing from local to Cognitum cloud") is the matching kind — it is a
+ * low-stakes kind (an unsigned local record is sufficient per §D7), unlike
+ * `sponsored_inference`.
+ */
+declare const CLOUD_ROUTING_CONSENT_KIND: "cloud_fallback";
+/** `true` when `intent` would allow or require routing through `plane`. */
+declare function intentTouchesPlane(intent: RoutingIntent, plane: RoutingPlane): boolean;
+/**
+ * `true` when `grant` is unexpired at `now` and matches `kind`/`product`/`origin`.
+ * Pure, no I/O — does not verify signatures or re-attest server-persisted
+ * grants (§D7's consequential-kind re-check remains a follow-up).
+ */
+declare function isConsentGrantValid(grant: ConsentGrant, kind: ConsentGrant["kind"], product: string, origin: string, now?: Date): boolean;
+/** `true` when `grants` contains at least one grant satisfying {@link isConsentGrantValid}. */
+declare function hasValidConsentGrant(grants: readonly ConsentGrant[], kind: ConsentGrant["kind"], product: string, origin: string, now?: Date): boolean;
+/**
+ * Fail-closed gate applied BEFORE any HTTP I/O (ADR-0025a §D9). When
+ * `intent` allows or requires the `cognitum_cloud` plane and `grants`
+ * contains no matching, unexpired {@link CLOUD_ROUTING_CONSENT_KIND} grant
+ * for `product`/`origin`, throws {@link ConsentRequiredError} — a valid
+ * local bearer credential does NOT satisfy this check ("Credential presence
+ * is not consent").
+ *
+ * A no-op when `intent` is undefined or does not touch `cognitum_cloud`.
+ */
+declare function assertConsentForRoutingIntent(intent: RoutingIntent | undefined, grants: readonly ConsentGrant[], origin: string, operation: string, now?: Date): void;
+
+/**
+ * Browser-runtime rejection for `MetaProxyClient` (ADR-0025a §D10, ADR-0029 §D2).
+ *
+ * §D10: "Browser packages reject Meta Proxy at build time or immediately
+ * before reading a credential or opening a loopback socket, consistent with
+ * ADR-0029." ADR-0029 §D2 names the exact contract: "`./meta-proxy` |
+ * Browser import permitted: no ... Meta Proxy is excluded because its
+ * loopback token, local consent, process ownership, and CORS behavior are
+ * not a browser contract ... If a bundler resolves a Node-only entry for a
+ * browser target, construction MUST throw `UnsupportedRuntimeError` before
+ * reading a credential, opening a socket, importing an installer, or
+ * executing a process."
+ *
+ * This package ships one universal build per subpath (no separate
+ * browser/node bundle split in `tsup.config.ts`), so "reject ... at build
+ * time" is not wired up via conditional bundler exports here — the runtime
+ * guard below is what actually enforces §D10/§D2 regardless of which
+ * bundler resolves this module. It is checked as literally the first
+ * statement of `MetaProxyClient`'s constructor (`./client.js`), before
+ * `resolveMetaProxyClientConfig` or anything else runs, so it fires before
+ * any credential read or socket open.
+ */
+/**
+ * `true` when the current global environment looks like a browser (or any
+ * non-Node runtime lacking Node's `process.versions.node`) rather than
+ * Node.js. Detection is deliberately permissive in the "reject" direction:
+ * presence of `window`/`document` is browser evidence; ABSENCE of
+ * `process.versions.node` is treated the same way, since a bundler that
+ * resolved this Node-only entry for a browser target typically strips or
+ * never polyfills that field.
+ */
+declare function isBrowserLikeRuntime(): boolean;
+/**
+ * Throws {@link UnsupportedRuntimeError} when {@link isBrowserLikeRuntime}
+ * is true. Zero I/O — must run before any credential read or socket open.
+ */
+declare function assertNodeRuntime(operation: string): void;
 
 /**
  * Proxy authentication credentials (ADR-0025a §D6).
@@ -819,6 +960,8 @@ interface ChatForwardDeps {
     allowNonLoopback?: boolean;
     defaultRequestContext?: Partial<RequestContext>;
     telemetry?: MetaProxyTelemetryHooks;
+    /** ADR-0025a §D9 — see `MetaProxyClientConfig.consentGrants` (`./config.js`). */
+    consentGrants?: ConsentGrant[];
 }
 /**
  * Reject a redirect response outright (ADR-0025a §D6/§D10: "Cross-origin
@@ -1207,14 +1350,23 @@ declare function forwardChatCompletionStream(deps: ChatForwardDeps, request: Cha
  * `MetaLlmResult` — see `./envelope.js`'s doc comment for why.
  *
  * Deferred to follow-up M3 passes (see issue #61 and ADR-0025a):
- *  - §D5 data-plane and policy model (`RoutingIntent`, plane/policy rules);
+ *  - §D5 data-plane and policy model (`RoutingIntent`, plane/policy rules) —
+ *    implemented by a later pass (`./routing.js`);
  *  - §D6 authentication and workload capabilities beyond the minimal
  *    `CredentialProvider` this pass's constructor accepts;
- *  - §D7 inference/forwarding contract (`chat.completions`, `messages`);
- *  - §D8 streaming, errors, cancellation, and retry for the data plane;
- *  - §D9 consent, sponsor budget, and usage;
- *  - §D10 loopback and browser security beyond the loopback-origin
- *    validation already enforced by `./config.js`'s `resolveMetaProxyClientConfig`.
+ *  - §D7 inference/forwarding contract (`chat.completions`, `messages`) —
+ *    implemented by a later pass (`./forwarding.js`);
+ *  - §D8 streaming, errors, cancellation, and retry for the data plane —
+ *    implemented by a later pass (`./stream/chat-completions-stream.js`);
+ *  - §D9 consent, sponsor budget, and usage — the TRACTABLE slice (consent
+ *    gating for the `cognitum_cloud` plane, `./consent.js`) is implemented;
+ *    sponsor budget/usage remain BLOCKED on ADR-0025b's lifecycle/state
+ *    fixes and are explicitly out of scope (see `preview.sponsored` below);
+ *  - §D10 loopback and browser security — loopback-origin validation
+ *    (`./config.js`'s `resolveMetaProxyClientConfig`) and the browser-runtime
+ *    construction guard (`./browser-guard.js`, checked first in the
+ *    constructor below) are both implemented; non-loopback remote exposure
+ *    remains dangerous preview, unimplemented by design (§D10).
  */
 
 /** Options accepted by every operation method (mirrors `MetaLlmCallOptions`). */
@@ -1328,4 +1480,4 @@ interface CapabilitiesResult {
     selectedPlane?: string;
 }
 
-export { type CapabilitiesResult, type ChatForwardDeps, type ConsentGrantId, DEFAULT_META_PROXY_ORIGIN, DEFAULT_META_PROXY_TOKEN_ENV_VAR, DEFAULT_PROXY_CONNECT_TIMEOUT_MS, type LocalBearerToken, LocalBearerTokenCredentialProvider, type LocalBearerTokenCredentialProviderOptions, type MetaProxyCallOptions, type MetaProxyChatCallOptions, type MetaProxyChatStreamCallOptions, type MetaProxyChatStreamEnvelope, MetaProxyClient, type MetaProxyClientConfig, type MetaProxyResponseMeta, type MetaProxyResult, type MetaProxyRoutingReceipt, type MetaProxyStatus, type MetaProxyStreamEnvelope, type MetaProxyStreamMeta, type MetaProxyTelemetryEvent, type MetaProxyTelemetryHooks, type MetaProxyTransport, type MetaProxyUpstreamReceipt, PROXY_CHAT_FORWARD_HEADER_ALLOWLIST, type ProxyCredential, type ProxyTimeBudget, type ResolvedMetaProxyClientConfig, type ResolvedProxyTimeBudget, type RoutingIntent, type RoutingPlane, type WorkloadCapability, type WorkloadCapabilityClaims, type WorkloadPolicy, __resetMetaProxyNonLoopbackWarnLatch, assertRoutingReceiptMatchesIntent, forwardChatCompletion, forwardChatCompletionStream, isBearerAttachmentAllowed, rejectRedirectResponse, resolveMetaProxyClientConfig, resolveProxyTimeBudget };
+export { CLOUD_ROUTING_CONSENT_KIND, type CapabilitiesResult, type ChatForwardDeps, type ConsentGrantId, DEFAULT_META_PROXY_ORIGIN, DEFAULT_META_PROXY_TOKEN_ENV_VAR, DEFAULT_PROXY_CONNECT_TIMEOUT_MS, type LocalBearerToken, LocalBearerTokenCredentialProvider, type LocalBearerTokenCredentialProviderOptions, type MetaProxyCallOptions, type MetaProxyChatCallOptions, type MetaProxyChatStreamCallOptions, type MetaProxyChatStreamEnvelope, MetaProxyClient, type MetaProxyClientConfig, type MetaProxyResponseMeta, type MetaProxyResult, type MetaProxyRoutingReceipt, type MetaProxyStatus, type MetaProxyStreamEnvelope, type MetaProxyStreamMeta, type MetaProxyTelemetryEvent, type MetaProxyTelemetryHooks, type MetaProxyTransport, type MetaProxyUpstreamReceipt, PROXY_CHAT_FORWARD_HEADER_ALLOWLIST, type ProxyCredential, type ProxyTimeBudget, type ResolvedMetaProxyClientConfig, type ResolvedProxyTimeBudget, type RoutingIntent, type RoutingPlane, type WorkloadCapability, type WorkloadCapabilityClaims, type WorkloadPolicy, __resetMetaProxyNonLoopbackWarnLatch, assertConsentForRoutingIntent, assertNodeRuntime, assertRoutingReceiptMatchesIntent, forwardChatCompletion, forwardChatCompletionStream, hasValidConsentGrant, intentTouchesPlane, isBearerAttachmentAllowed, isBrowserLikeRuntime, isConsentGrantValid, rejectRedirectResponse, resolveMetaProxyClientConfig, resolveProxyTimeBudget };

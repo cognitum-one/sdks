@@ -60,11 +60,14 @@ export default defineConfig([
   },
   {
     // Meta Proxy client subpath — @cognitum-one/sdk/meta-proxy
-    // (ADR-0019 §D2, ADR-0025a). Depends only on the agentic subpath and
-    // `fetch`, so this stays safe for browser-facing bundles too — though
-    // ADR-0025a §D10 means an actual browser build should reject
-    // constructing this client before opening a loopback socket (deferred
-    // to a follow-up pass; not implemented in this subpath yet).
+    // (ADR-0019 §D2, ADR-0025a §D10, ADR-0029 §D2). This package ships one
+    // universal build per subpath (no separate browser/node target here),
+    // so "reject at build time" is not wired up via conditional bundler
+    // exports — instead `./src/meta-proxy/browser-guard.js` runs a runtime
+    // check as the FIRST statement of `MetaProxyClient`'s constructor and
+    // throws `UnsupportedRuntimeError` before reading a credential or
+    // opening a loopback socket, regardless of which bundler resolves this
+    // module for a browser target.
     entry: { "meta-proxy/index": "src/meta-proxy/index.ts" },
     format: ["esm", "cjs"],
     dts: true,

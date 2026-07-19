@@ -22,7 +22,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::agentic::{
-    AgenticError, AgenticErrorKind, BudgetPolicy, CapabilitySet, CredentialProvider, RequestContext,
+    AgenticError, AgenticErrorKind, BudgetPolicy, CapabilitySet, ConsentGrant, CredentialProvider,
+    RequestContext,
 };
 
 /// Build the default `reqwest::Client` for a Meta Proxy client when the caller
@@ -110,6 +111,13 @@ pub struct MetaProxyClientConfig {
     /// alongside the real `/status` call (ADR-0025a §D4).
     pub capabilities_snapshot: Option<CapabilitySet>,
     pub telemetry: Option<Arc<dyn MetaProxyTelemetryHooks>>,
+    /// Locally-held ADR-0022 §D7 consent grants this caller presents to the
+    /// client (ADR-0025a §D9). Checked before any data-plane call whose
+    /// `RoutingIntent` allows or requires a consent-gated plane — currently
+    /// `cognitum_cloud`, gated on a `CloudFallback` grant (`super::consent`).
+    /// Credential presence (`local_credential_provider`) is NEVER a
+    /// substitute for an entry here.
+    pub consent_grants: Vec<ConsentGrant>,
 }
 
 impl fmt::Debug for MetaProxyClientConfig {
@@ -125,6 +133,7 @@ impl fmt::Debug for MetaProxyClientConfig {
             .field("budget_policy", &self.budget_policy)
             .field("expected_proxy_version", &self.expected_proxy_version)
             .field("capabilities_snapshot", &self.capabilities_snapshot)
+            .field("consent_grants", &self.consent_grants)
             .finish_non_exhaustive()
     }
 }
@@ -141,6 +150,7 @@ impl Default for MetaProxyClientConfig {
             expected_proxy_version: None,
             capabilities_snapshot: None,
             telemetry: None,
+            consent_grants: Vec::new(),
         }
     }
 }
