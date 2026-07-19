@@ -87,7 +87,12 @@ fn fail_result(checked_at: String, failure: String) -> VerificationResult {
 // Timestamps (minimal RFC3339 subset; see module docs for scope limit)
 // ---------------------------------------------------------------------------
 
-fn parse_rfc3339_unix(s: &str) -> Option<i64> {
+/// `pub(crate)` (rather than private) so `meta_llm::nonstream`'s bounded-
+/// retry loop can reuse this exact parser to check a `Credential`'s
+/// `expires_at` for local expiry (issue #100), instead of duplicating a
+/// third RFC3339-subset parser alongside this one and
+/// `meta_proxy::consent::parse_rfc3339_unix_seconds`.
+pub(crate) fn parse_rfc3339_unix(s: &str) -> Option<i64> {
     if s.len() < 20 || !(s.ends_with('Z') || s.ends_with('z')) {
         return None;
     }

@@ -14,7 +14,12 @@
  * - 429/502/503: bounded retry using the frozen `RetryPolicy` /
  *   `equalJitterDelayMs` (ADR-0005/ADR-0023 verbatim), gated on the
  *   idempotency-with-key binding built in `./idempotency.js` — this is
- *   what makes the replay safe.
+ *   what makes the replay safe. Issue #100: before each bounded-retry
+ *   attempt (not just the initial acquire), the credential is checked for
+ *   local expiry (`Credential.expiresAt`) and proactively re-acquired if
+ *   it has already expired locally — see `isCredentialLocallyExpired`
+ *   below — rather than resending a known-expired bearer token and
+ *   waiting for the guaranteed 401.
  * - 400/403/404/409/402/422 and anything else: never retried.
  */
 
@@ -123,6 +128,25 @@ export async function requireCredential(deps: NonstreamDeps, operation: string):
   // the server remains authoritative for that case.
   assertScopeGranted(PRODUCT, operation, requiredScope, credential);
   return credential;
+}
+
+/**
+ * True when `credential.expiresAt` is set and already at or before "now"
+ * (issue #100). Checked before each bounded 429/502/503 retry attempt so
+ * an OAuth credential (unlike a static API key, it carries a real
+ * `expiresAt`) that expired during the retry-delay window is proactively
+ * re-acquired — triggering a refresh via the provider's callback, if one
+ * is configured — instead of resending an already-locally-known-expired
+ * bearer token and waiting for the guaranteed 401 on the next attempt. A
+ * missing or unparsable `expiresAt` is never treated as expired here — the
+ * server remains authoritative, same as the scope-preflight check above.
+ */
+function isCredentialLocallyExpired(credential: Credential, now: () => number = Date.now): boolean {
+  if (credential.expiresAt === undefined) {
+    return false;
+  }
+  const expiresAtMs = Date.parse(credential.expiresAt);
+  return Number.isFinite(expiresAtMs) && expiresAtMs <= now();
 }
 
 /** One HTTP attempt. Never retries by itself — the caller owns that. */
@@ -301,6 +325,13 @@ export async function postJsonIdempotent<T>(
         sleepBudgetUsedMs += delayMs;
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         attempt += 1;
+        // Issue #100: the delay above may have crossed the credential's
+        // expiry. Proactively re-acquire instead of resending an
+        // already-locally-expired bearer token and waiting for the wasted
+        // 401 round trip.
+        if (isCredentialLocallyExpired(credential)) {
+          credential = await requireCredential(deps, operation);
+        }
         continue;
       }
 

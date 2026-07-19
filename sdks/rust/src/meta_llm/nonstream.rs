@@ -18,7 +18,12 @@
 //! - 429/502/503: bounded retry using the frozen `RetryPolicy` /
 //!   `equal_jitter_delay_ms` (ADR-0005/ADR-0023 verbatim), gated on the
 //!   idempotency-with-key binding built in `./idempotency.rs` — this is
-//!   what makes the replay safe.
+//!   what makes the replay safe. Issue #100: before each bounded-retry
+//!   attempt (not just the initial acquire), the credential is checked
+//!   for local expiry (`Credential::expires_at`) and proactively
+//!   re-acquired if it has already expired locally -- see
+//!   `credential_is_locally_expired` below -- rather than resending a
+//!   known-expired bearer token and waiting for the guaranteed 401.
 //! - 400/403/404/409/402/422 and anything else: never retried.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -26,6 +31,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::agentic::receipt_verification::parse_rfc3339_unix;
 use crate::agentic::{
     assert_scope_granted, equal_jitter_delay_ms, AgenticError, AgenticErrorKind, Credential,
     CredentialRequest, RetryPolicy,
@@ -80,6 +86,30 @@ pub(super) fn random_jitter_ms(bound: u64) -> u64 {
         .map(|d| d.subsec_nanos() as u64)
         .unwrap_or(0);
     nanos % (bound + 1)
+}
+
+/// True when `credential.expires_at` is set, parses, and is already at or
+/// before "now" (issue #100). Checked before each bounded 429/502/503
+/// retry attempt so an OAuth credential (unlike a static API key, it
+/// carries a real `expires_at`) that expired during the retry-delay
+/// window is proactively re-acquired -- triggering a refresh via the
+/// provider's callback, if one is configured -- instead of resending an
+/// already-locally-known-expired bearer token and waiting for the
+/// guaranteed 401 on the next attempt. A missing or unparsable
+/// `expires_at` is never treated as expired here -- the server remains
+/// authoritative, same as the scope-preflight check above.
+fn credential_is_locally_expired(credential: &Credential) -> bool {
+    let Some(expires_at) = credential.expires_at.as_deref() else {
+        return false;
+    };
+    let Some(expires_at_unix) = parse_rfc3339_unix(expires_at) else {
+        return false;
+    };
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    expires_at_unix <= now_unix
 }
 
 impl MetaLlmClient {
@@ -152,6 +182,14 @@ impl MetaLlmClient {
                         sleep_budget_used_ms += delay_ms;
                         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                         attempt += 1;
+                        // Issue #100: the delay above may have crossed the
+                        // credential's expiry. Proactively re-acquire
+                        // instead of resending an already-locally-expired
+                        // bearer token and waiting for the wasted 401
+                        // round trip.
+                        if credential_is_locally_expired(&credential) {
+                            credential = self.require_credential(operation).await?;
+                        }
                         continue;
                     }
 
