@@ -33,7 +33,7 @@ try:  # pragma: no cover — exercised by test_discovery_mdns stubs
 except ImportError as exc:  # pragma: no cover — import-guard branch
     raise ImportError(
         "cognitum.seed.discovery.MdnsDiscovery requires the 'mdns' extra. "
-        "Install with: pip install cognitum[mdns]"
+        "Install with: pip install cognitum-sdk[mdns]"
     ) from exc
 
 
