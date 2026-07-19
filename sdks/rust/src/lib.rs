@@ -63,3 +63,12 @@ pub mod meta_proxy;
 /// the full ADR-0026a §D7 blocker list this pass is gated on.
 #[cfg(feature = "metaharness")]
 pub mod metaharness;
+
+/// HarnessaaS client (ADR-0019 §D2, ADR-0027a). Issue #67/#68 / M5 start —
+/// `HarnessaaSClient` construction and real `health()`/`solve()`/
+/// `lineage()` against the REAL, deployed, synchronous upstream surface.
+/// See `harnessaas`'s module doc comment for the full scope note (the
+/// ADR-0027a proposed async job/poll/SSE/approval contract is NOT
+/// implemented here).
+#[cfg(feature = "harnessaas")]
+pub mod harnessaas;

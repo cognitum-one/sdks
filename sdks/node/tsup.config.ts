@@ -96,6 +96,21 @@ export default defineConfig([
     outDir: "dist",
   },
   {
+    // HarnessaaS client subpath — @cognitum-one/sdk/harnessaas (ADR-0019
+    // §D2, ADR-0027a). Depends only on the agentic subpath and `fetch`
+    // (same as meta-llm) — this stays safe for browser-facing bundles too;
+    // no browser-runtime guard is needed here, unlike meta-proxy/
+    // metaharness (ADR-0019 §D2's browser-safe-bundle note names Meta LLM
+    // and HarnessaaS together).
+    entry: { "harnessaas/index": "src/harnessaas/index.ts" },
+    format: ["esm", "cjs"],
+    dts: true,
+    clean: false,
+    sourcemap: true,
+    target: "es2022",
+    outDir: "dist",
+  },
+  {
     // Protocol-agnostic SSE parser subpath — @cognitum-one/sdk/sse
     // (ADR-0024a §D5). Zero product knowledge, zero dependencies beyond
     // `TextDecoder`/`TextEncoder` — safe for browser-facing bundles.
