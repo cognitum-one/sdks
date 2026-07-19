@@ -343,6 +343,28 @@ likewise. See the closing "Acceptance test" paragraph below, implemented
 identically as `adr-0019-acceptance.test.ts` / `test_adr0019_acceptance.py` /
 `adr_0019_acceptance.rs`.
 
+**Issue #74 follow-up (closed):** the first cut of this test suite pass caught a
+genuine, live gap in item 6's coverage rather than just its tests: `HarnessaaSClient.solve()`
+(already shipped to `main` via #108) made its HTTP call with no capability-version
+check at all, despite being simultaneously a mutation, a spend trigger, and (per
+HarnessaaS's untrusted-repository/command-execution trust boundary) a code-execution
+trigger — `capabilities()` existed but had zero call sites. That gap is now closed in
+all three languages: `solve()` calls `self.capabilities()`/`this.capabilities()` and
+fails closed with `UnsupportedCapabilityError` (before any HTTP I/O) whenever the
+resolved capability set doesn't affirmatively mark both the base `solve` feature and
+the requested `vertical`'s specific feature (`solve.vertical.<vertical>`) as
+supported — the concrete, non-vacuous dimension being that only the `code-repair`
+vertical is modeled/serialized by this SDK pass (the other three verticals each need
+a compound request field this client does not build). `lineage()` additionally gets
+the same style of gate as defense in depth, though it is a safe read and not itself
+one of item 6's five named categories. Item 6's test files
+(`adr-0019-capability-fail-closed.test.ts` / `test_adr0019_capability_fail_closed.py` /
+`adr_0019_capability_fail_closed.rs`) now exercise `HarnessaaSClient.solve()` directly
+for the `mutation`, `spend`, and `code execution` categories (asserting zero HTTP calls
+via a refusing transport/mock), replacing the unrelated `MetaHarnessClient`/
+`MetaProxyClient` stand-ins those three categories previously used. Item 6 is
+therefore now genuinely closed for all four product clients, with no residual gap.
+
 ### Acceptance test
 
 For each of Node, Python, and Rust, instantiate all four clients with fake local

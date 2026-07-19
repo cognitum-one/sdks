@@ -227,6 +227,19 @@ var AgenticError = class extends Error {
     Object.setPrototypeOf(this, new.target.prototype);
   }
 };
+var UnsupportedCapabilityError = class extends AgenticError {
+  capability;
+  constructor(product, operation, capability, message) {
+    super(
+      "unsupported_capability",
+      message ?? `capability "${capability}" is unsupported or unknown for ${product}/${operation}`,
+      { product, operation, retryable: false }
+    );
+    this.name = "UnsupportedCapabilityError";
+    this.capability = capability;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
 var DEFAULT_RETRY_POLICY = {
   baseMs: 500,
   capMs: 3e4,
@@ -349,6 +362,31 @@ async function mapHarnessaaSHttpError(response, operation, requestId) {
 // src/harnessaas/client.ts
 var PRODUCT2 = "harnessaas";
 var DEFAULT_CAPABILITY_VERSION = "0.0.0";
+var DEFAULT_VERTICAL = "code-repair";
+var SOLVE_FEATURE = "solve";
+var LINEAGE_FEATURE = "lineage";
+function solveVerticalFeature(vertical) {
+  return `solve.vertical.${vertical}`;
+}
+var DEFAULT_CAPABILITY_SNAPSHOT = {
+  product: PRODUCT2,
+  productVersion: DEFAULT_CAPABILITY_VERSION,
+  protocol: "cognitum.harnessaas.http",
+  protocolVersion: "1.0",
+  features: {
+    [SOLVE_FEATURE]: true,
+    [LINEAGE_FEATURE]: true,
+    [solveVerticalFeature("code-repair")]: true,
+    [solveVerticalFeature("security-remediation")]: false,
+    [solveVerticalFeature("dependency-migration")]: false,
+    [solveVerticalFeature("test-generation")]: false
+  },
+  limitations: [
+    "solve() is verified only for the code-repair vertical; security-remediation, dependency-migration, and test-generation each require a compound request field (finding/scanner_command, migration/build_command, test_generation/coverage_command respectively) this SDK pass does not model, so those verticals are not locally supported even though the server may accept them"
+  ],
+  authMethods: ["X-API-Key", "Authorization: Bearer"],
+  source: "static-compatibility-table"
+};
 function newRequestId() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `req_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 }
@@ -368,16 +406,37 @@ var HarnessaaSClient = class {
    * proven-safe capabilities, never the union (ADR-0019 §D6).
    */
   capabilities() {
-    return this.config.capabilitiesSnapshot ?? {
-      product: PRODUCT2,
-      productVersion: DEFAULT_CAPABILITY_VERSION,
-      protocol: "cognitum.harnessaas.http",
-      protocolVersion: "1.0",
-      features: {},
-      limitations: ["no capabilities_snapshot configured"],
-      authMethods: [],
-      source: "static-compatibility-table"
-    };
+    return this.config.capabilitiesSnapshot ?? DEFAULT_CAPABILITY_SNAPSHOT;
+  }
+  /**
+   * Fail closed BEFORE any HTTP call if the resolved capability set (an
+   * operator-supplied `capabilitiesSnapshot`, or this SDK's own
+   * known-tested default) does not affirmatively mark `solve` and the
+   * requested `vertical` as supported (ADR-0019 §D6). `solve()` is
+   * simultaneously a mutation, a spend trigger, and — given HarnessaaS's
+   * untrusted-repository/command-execution trust boundary — a
+   * code-execution trigger, so an unknown or unsupported capability MUST
+   * be rejected locally rather than reaching the network.
+   */
+  assertSolveCapability(vertical) {
+    const caps = this.capabilities();
+    if (caps.features[SOLVE_FEATURE] !== true) {
+      throw new UnsupportedCapabilityError(
+        PRODUCT2,
+        "solve",
+        SOLVE_FEATURE,
+        `HarnessaaSClient.solve is unsupported or unknown for the resolved capability set (product_version "${caps.productVersion}"). Refusing to call POST /solve \u2014 a mutating, billable, code-execution-triggering operation \u2014 before verifying support (ADR-0019 \xA7D6).`
+      );
+    }
+    const verticalFeature = solveVerticalFeature(vertical);
+    if (caps.features[verticalFeature] !== true) {
+      throw new UnsupportedCapabilityError(
+        PRODUCT2,
+        "solve",
+        verticalFeature,
+        `HarnessaaSClient.solve vertical "${vertical}" is unsupported or unknown for the resolved capability set (product_version "${caps.productVersion}"). Only the "code-repair" vertical is modeled/verified by this SDK pass; refusing to send an incomplete request for a vertical whose compound fields this client does not serialize, before any spend or code execution occurs (ADR-0019 \xA7D6).`
+      );
+    }
   }
   /**
    * `GET /health` — process health only, no identity/readiness semantics.
@@ -413,6 +472,7 @@ var HarnessaaSClient = class {
    * `permission_denied` `AgenticError` — see `./http-errors.js`.
    */
   async solve(request, options) {
+    this.assertSolveCapability(request.vertical ?? DEFAULT_VERTICAL);
     const body = toSolveRequestWire(request);
     let credential = await this.requireCredential("solve");
     let refreshedOnce = false;
@@ -447,6 +507,14 @@ var HarnessaaSClient = class {
         operation: "lineage",
         retryable: false
       });
+    }
+    if (this.capabilities().features[LINEAGE_FEATURE] !== true) {
+      throw new UnsupportedCapabilityError(
+        PRODUCT2,
+        "lineage",
+        LINEAGE_FEATURE,
+        `HarnessaaSClient.lineage is unsupported or unknown for the resolved capability set (product_version "${this.capabilities().productVersion}").`
+      );
     }
     const path = `/lineage/${encodeURIComponent(requestId)}`;
     let credential = await this.requireCredential("lineage");

@@ -1,4 +1,4 @@
-#![cfg(all(feature = "meta-proxy", feature = "metaharness"))]
+#![cfg(all(feature = "meta-proxy", feature = "metaharness", feature = "harnessaas"))]
 
 //! ADR-0019 "Compliance and verification" #6 (issue #74): capability
 //! fail-closed tests across five categories.
@@ -15,26 +15,40 @@
 //! write-up; summary: `tests/metaharness_client.rs` and
 //! `tests/meta_proxy_consent.rs`/`tests/meta_proxy_chat_completions_stream.rs`
 //! already cover these operations individually, but not framed against
-//! these five named categories. Genuine gap found: `HarnessaaSClient::solve()`
-//! has NO capability-version check before its HTTP call, despite being
-//! simultaneously a mutation, a spend, and (per HarnessaaS's "untrusted
-//! repository and command execution" trust boundary) a code-execution
-//! trigger -- flagged as a follow-up rather than asserted here as passing
-//! behavior that does not exist.
+//! these five named categories. Gap CLOSED (this pass):
+//! `HarnessaaSClient::solve()` previously had NO capability-version check
+//! before its HTTP call, despite being simultaneously a mutation, a spend,
+//! and (per HarnessaaS's "untrusted repository and command execution" trust
+//! boundary) a code-execution trigger. `solve()` now calls
+//! `self.capabilities()` and fails closed with `UnsupportedCapabilityError`
+//! BEFORE any HTTP I/O when either the base `solve` feature or the
+//! requested vertical's specific feature (`solve.vertical.<vertical>`) is
+//! not affirmatively `true` in the resolved capability set -- the real,
+//! non-vacuous dimension being that only the `code-repair` vertical is
+//! modeled/serialized by this SDK pass (`src/harnessaas/types.rs`'s doc
+//! comment: the other three verticals each need a compound request field
+//! this client does not build).
 //!
-//! Category mapping used below (all backed by real, currently-passing
-//! production behavior):
+//! Category mapping used below. `installation` has no HarnessaaS analog
+//! (HarnessaaS installs nothing), so it stays on
+//! `MetaHarnessClient::plan_scaffold()`; every other category now exercises
+//! real, currently-passing production behavior against
+//! `HarnessaaSClient::solve()` directly:
 //!
-//!   mutation        -> MetaHarnessClient::scaffold()   (applies a plan)
-//!   spend           -> MetaProxyClient::sponsored_chat_completions()
+//!   mutation        -> HarnessaaSClient::solve() (unsupported vertical, mutating remote solve)
+//!   spend           -> HarnessaaSClient::solve() (unsupported vertical, billable model spend)
 //!   consent         -> MetaProxyClient::chat_completions() (cognitum_cloud, no grant)
 //!   installation    -> MetaHarnessClient::plan_scaffold() (blocked in part on
 //!                       package/template version disagreement, ADR-0026a §D7 #3)
-//!   code execution  -> MetaHarnessClient::analyze_repository()
+//!   code execution  -> HarnessaaSClient::solve() (unsupported vertical, untrusted sandbox execution)
 
 use std::sync::Arc;
 
+use cognitum_one::agentic::static_api_key_provider::{
+    StaticApiKeyCredentialProvider, StaticApiKeyCredentialProviderOptions,
+};
 use cognitum_one::agentic::AgenticErrorKind;
+use cognitum_one::harnessaas::{HarnessaaSClient, HarnessaaSClientConfig, HarnessaaSSolveRequest, HarnessaaSVertical};
 use cognitum_one::meta_llm::types::openai::{
     ChatCompletionRequest, ChatMessage, ChatMessageContent, ChatRole,
 };
@@ -43,11 +57,40 @@ use cognitum_one::meta_proxy::{
     MetaProxyChatCallOptions, MetaProxyClient, MetaProxyClientConfig, RoutingIntent, RoutingPlane,
     WorkloadPolicy,
 };
-use cognitum_one::metaharness::{
-    ApplyApproval, GeneratorIdentity, LocalRepository, MetaHarnessClient, MetaHarnessConfig,
-    RepositorySource, ScaffoldPlan, ScaffoldRequestV1, TemplateIdentity,
-};
+use cognitum_one::metaharness::{MetaHarnessClient, MetaHarnessConfig, ScaffoldRequestV1};
 use wiremock::MockServer;
+
+/// A `HarnessaaSClient` actually wired to the given wiremock server origin
+/// (with no mock mounted), so "zero HTTP calls" below proves the capability
+/// gate fired before any I/O reached this client's own configured
+/// transport -- not merely that some unrelated origin was never dialed.
+fn harnessaas_client(origin: &str) -> HarnessaaSClient {
+    let mut config = HarnessaaSClientConfig::new(origin);
+    config.allow_insecure_http = true;
+    config.credential_provider = Some(Arc::new(
+        StaticApiKeyCredentialProvider::new(
+            "harnessaas",
+            origin,
+            origin,
+            StaticApiKeyCredentialProviderOptions {
+                api_key: Some("cog_compliance_canary".to_owned()),
+                ..Default::default()
+            },
+        )
+        .unwrap(),
+    ));
+    HarnessaaSClient::new(config).unwrap()
+}
+
+fn unsupported_vertical_solve_request(vertical: HarnessaaSVertical) -> HarnessaaSSolveRequest {
+    let mut request = HarnessaaSSolveRequest::new(
+        "https://github.com/acme/widget.git",
+        "pytest -k test_widget",
+        "Widget renders twice",
+    );
+    request.vertical = Some(vertical);
+    request
+}
 
 fn refusing_proxy_client(origin: &str) -> MetaProxyClient {
     let mut config = MetaProxyClientConfig::with_origin(origin.to_owned());
@@ -93,52 +136,23 @@ fn chat_request() -> ChatCompletionRequest {
     }
 }
 
-fn local_repo(path: &str) -> RepositorySource {
-    RepositorySource::Local(LocalRepository {
-        canonical_path: path.to_owned(),
-        expected_tree_digest: None,
-    })
-}
-
+/// `HarnessaaSClient::solve()` with a vertical this SDK pass does not model
+/// (`security-remediation` needs a `finding`/`scanner_command` compound
+/// field this client does not serialize -- see `src/harnessaas/types.rs`).
+/// One real call embodies all three of ADR-0019's `mutation`, `spend`, and
+/// `code execution` categories simultaneously (HarnessaaS's own "untrusted
+/// repository and command execution" trust boundary), so the tests below
+/// each assert the same fail-closed outcome against the category they
+/// specifically care about.
 #[tokio::test]
-async fn mutation_scaffold_fails_closed() {
-    let client = MetaHarnessClient::new(MetaHarnessConfig::new()).unwrap();
-    let plan = ScaffoldPlan {
-        plan_id: "plan_1".to_owned(),
-        plan_digest: "sha256:deadbeef".to_owned(),
-        created_at: "2026-07-18T00:00:00Z".to_owned(),
-        expires_at: "2026-07-18T00:10:00Z".to_owned(),
-        generator_identity: GeneratorIdentity {
-            product: "metaharness-oss".to_owned(),
-            package_version: None,
-            generator_version: None,
-            source_revision: None,
-            raw: Default::default(),
-        },
-        template_identity: TemplateIdentity {
-            template: "default".to_owned(),
-            template_version: None,
-            raw: Default::default(),
-        },
-        repository_commit: None,
-        canonical_target: "/tmp/target".to_owned(),
-        target_before_digest: "sha256:before".to_owned(),
-        request_digest: "sha256:request".to_owned(),
-        actions: vec![],
-        unresolved_variables: vec![],
-        warnings: vec![],
-        destructive: false,
-        estimated_files: 0,
-        estimated_bytes: 0,
-        raw: Default::default(),
-    };
-    let approval = ApplyApproval {
-        plan_digest: "sha256:deadbeef".to_owned(),
-        approved_at: "2026-07-18T00:00:00Z".to_owned(),
-        approved_by: None,
-    };
-    let err = client.scaffold(&plan, &approval).await.expect_err("must fail closed");
+async fn mutation_harnessaas_solve_fails_closed() {
+    let server = MockServer::start().await;
+    // No mock mounted -- any HTTP request would be unmatched by wiremock.
+    let client = harnessaas_client(&server.uri());
+    let request = unsupported_vertical_solve_request(HarnessaaSVertical::SecurityRemediation);
+    let err = client.solve(&request).await.expect_err("must fail closed");
     assert_eq!(err.kind, AgenticErrorKind::UnsupportedCapability);
+    assert_eq!(server.received_requests().await.unwrap().len(), 0);
 }
 
 #[tokio::test]
@@ -159,22 +173,21 @@ async fn installation_plan_scaffold_fails_closed() {
 }
 
 #[tokio::test]
-async fn code_execution_analyze_repository_fails_closed() {
-    let client = MetaHarnessClient::new(MetaHarnessConfig::new()).unwrap();
-    let source = local_repo("/tmp/repo");
-    let err = client.analyze_repository(&source).await.expect_err("must fail closed");
+async fn code_execution_harnessaas_solve_fails_closed() {
+    let server = MockServer::start().await;
+    let client = harnessaas_client(&server.uri());
+    let request = unsupported_vertical_solve_request(HarnessaaSVertical::DependencyMigration);
+    let err = client.solve(&request).await.expect_err("must fail closed");
     assert_eq!(err.kind, AgenticErrorKind::UnsupportedCapability);
+    assert_eq!(server.received_requests().await.unwrap().len(), 0);
 }
 
 #[tokio::test]
-async fn spend_sponsored_chat_completions_fails_closed_before_http() {
+async fn spend_harnessaas_solve_fails_closed_before_billable_http() {
     let server = MockServer::start().await;
-    // No mock mounted -- any HTTP request would be unmatched.
-    let client = refusing_proxy_client(&server.uri());
-    let err = client
-        .sponsored_chat_completions(&chat_request())
-        .await
-        .expect_err("must fail closed");
+    let client = harnessaas_client(&server.uri());
+    let request = unsupported_vertical_solve_request(HarnessaaSVertical::TestGeneration);
+    let err = client.solve(&request).await.expect_err("must fail closed");
     assert_eq!(err.kind, AgenticErrorKind::UnsupportedCapability);
     assert_eq!(server.received_requests().await.unwrap().len(), 0);
 }

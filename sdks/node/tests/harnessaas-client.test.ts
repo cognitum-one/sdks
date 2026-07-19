@@ -4,6 +4,7 @@ import { HarnessaaSClient } from "../src/harnessaas/client.js";
 import { __resetHarnessaaSInsecureHttpWarnLatch } from "../src/harnessaas/config.js";
 import { toSolveRequestWire } from "../src/harnessaas/types.js";
 import { StaticApiKeyCredentialProvider } from "../src/agentic/static-api-key-provider.js";
+import { UnsupportedCapabilityError } from "../src/agentic/errors.js";
 import type { Credential, CredentialProvider, CredentialRequest } from "../src/agentic/credentials.js";
 
 /**
@@ -153,13 +154,39 @@ describe("HarnessaaSClient construction", () => {
 });
 
 describe("HarnessaaSClient.capabilities()", () => {
-  it("returns an intersection-safe default with no I/O", () => {
+  it("returns the known-tested default (solve/lineage supported, only code-repair vertical) with no I/O", () => {
     const fetchSpy = vi.fn();
     const client = new HarnessaaSClient({ baseUrl: BASE_URL, transport: fetchSpy });
     const caps = client.capabilities();
-    expect(caps.features).toEqual({});
+    expect(caps.features).toEqual({
+      solve: true,
+      lineage: true,
+      "solve.vertical.code-repair": true,
+      "solve.vertical.security-remediation": false,
+      "solve.vertical.dependency-migration": false,
+      "solve.vertical.test-generation": false,
+    });
     expect(caps.source).toBe("static-compatibility-table");
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("an operator-supplied capabilitiesSnapshot for an unrecognized version overrides the default (unknown -> unsupported)", () => {
+    const fetchSpy = vi.fn();
+    const client = new HarnessaaSClient({
+      baseUrl: BASE_URL,
+      transport: fetchSpy,
+      capabilitiesSnapshot: {
+        product: "harnessaas",
+        productVersion: "9.9.9-unknown",
+        protocol: "cognitum.harnessaas.http",
+        protocolVersion: "1.0",
+        features: {},
+        limitations: ["unrecognized server version — minimum-safe set"],
+        authMethods: [],
+        source: "static-compatibility-table",
+      },
+    });
+    expect(client.capabilities().features).toEqual({});
   });
 });
 
@@ -197,6 +224,74 @@ describe("HarnessaaSClient.health()", () => {
     const client = new HarnessaaSClient({ baseUrl: BASE_URL, transport: fetchSpy });
 
     await expect(client.health()).rejects.toMatchObject({ kind: "protocol", retryable: false, status: 500 });
+  });
+});
+
+describe("HarnessaaSClient.solve() — capability fail-closed (ADR-0019 §D6, issue #74)", () => {
+  it("fails closed with UnsupportedCapabilityError for an unsupported vertical, before any HTTP call", async () => {
+    const fetchSpy = vi.fn(() => {
+      throw new Error("no HTTP call is expected — the capability gate must fire first");
+    });
+    const client = new HarnessaaSClient({
+      baseUrl: BASE_URL,
+      transport: fetchSpy,
+      credentialProvider: makeCredentialProvider(),
+    });
+
+    await expect(
+      client.solve({ ...SOLVE_REQUEST, vertical: "security-remediation" }),
+    ).rejects.toBeInstanceOf(UnsupportedCapabilityError);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for every non-code-repair vertical this SDK pass does not model", async () => {
+    for (const vertical of ["security-remediation", "dependency-migration", "test-generation"] as const) {
+      const fetchSpy = vi.fn();
+      const client = new HarnessaaSClient({
+        baseUrl: BASE_URL,
+        transport: fetchSpy,
+        credentialProvider: makeCredentialProvider(),
+      });
+      await expect(client.solve({ ...SOLVE_REQUEST, vertical })).rejects.toBeInstanceOf(
+        UnsupportedCapabilityError,
+      );
+      expect(fetchSpy).not.toHaveBeenCalled();
+    }
+  });
+
+  it("fails closed when an operator-supplied capabilitiesSnapshot for an unrecognized version doesn't mark solve supported", async () => {
+    const fetchSpy = vi.fn();
+    const client = new HarnessaaSClient({
+      baseUrl: BASE_URL,
+      transport: fetchSpy,
+      credentialProvider: makeCredentialProvider(),
+      capabilitiesSnapshot: {
+        product: "harnessaas",
+        productVersion: "9.9.9-unknown",
+        protocol: "cognitum.harnessaas.http",
+        protocolVersion: "1.0",
+        features: {},
+        limitations: ["unrecognized server version — minimum-safe set"],
+        authMethods: [],
+        source: "static-compatibility-table",
+      },
+    });
+
+    await expect(client.solve(SOLVE_REQUEST)).rejects.toBeInstanceOf(UnsupportedCapabilityError);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("allows the default code-repair vertical (implicit and explicit) through to HTTP", async () => {
+    for (const request of [SOLVE_REQUEST, { ...SOLVE_REQUEST, vertical: "code-repair" as const }]) {
+      const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(200, SOLVE_RESPONSE_BODY));
+      const client = new HarnessaaSClient({
+        baseUrl: BASE_URL,
+        transport: fetchSpy,
+        credentialProvider: makeCredentialProvider(),
+      });
+      await client.solve(request);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    }
   });
 });
 

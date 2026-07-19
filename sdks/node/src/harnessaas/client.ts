@@ -43,6 +43,7 @@
 import {
   AgenticError,
   DEFAULT_RETRY_POLICY,
+  UnsupportedCapabilityError,
   equalJitterDelayMs,
   type CapabilitySet,
   type Credential,
@@ -64,10 +65,78 @@ import {
   type HarnessaaSLineageResult,
   type HarnessaaSSolveRequest,
   type HarnessaaSSolveResponse,
+  type HarnessaaSVertical,
 } from "./types.js";
 
 const PRODUCT = "harnessaas";
 const DEFAULT_CAPABILITY_VERSION = "0.0.0";
+const DEFAULT_VERTICAL: HarnessaaSVertical = "code-repair";
+
+/**
+ * Feature key for the base `solve` operation (ADR-0019 §D6). A
+ * caller-supplied `capabilitiesSnapshot` for an unrecognized/future
+ * HarnessaaS version that omits this key is treated as unknown/unsupported,
+ * never as "assume supported" — see `solve()` below.
+ */
+const SOLVE_FEATURE = "solve";
+
+/**
+ * Feature key for the `lineage` read. Defense in depth only: `lineage()` is
+ * a safe read and is not one of ADR-0019 §D6's five gated categories
+ * (mutation, spend, consent, installation, code execution), so this flag
+ * being false/absent is a soft signal, not itself mandated by the ADR.
+ */
+const LINEAGE_FEATURE = "lineage";
+
+/**
+ * Per-vertical feature key for `solve()` (ADR-0011's `vertical` field, this
+ * module's own `HarnessaaSVertical` type). Only `code-repair` is modeled by
+ * this SDK pass — `./types.js`'s doc comment explains that the other three
+ * verticals each require a compound request field
+ * (`finding`/`scanner_command`, `migration`/`build_command`,
+ * `test_generation`/`coverage_command`) this client does not type or
+ * serialize. Sending one of those verticals without its compound field is
+ * real, currently-reachable misuse (a caller can set
+ * `vertical: "security-remediation"` today and this client would happily
+ * POST an incomplete request), so this is the genuine capability dimension
+ * `solve()` gates on locally — not a vacuous always-true check.
+ */
+function solveVerticalFeature(vertical: HarnessaaSVertical): string {
+  return `solve.vertical.${vertical}`;
+}
+
+/**
+ * The only capability snapshot this SDK can vouch for without a published
+ * runtime capabilities endpoint (ADR-0019 §D6: "the SDK may use a checked-in
+ * compatibility table keyed by exact tested version"). Verified against
+ * `cognitum-one/harnessaas@908e4a99` (see this module's and `./types.ts`'s
+ * doc comments): `solve` (code-repair vertical only) and `lineage` are the
+ * two confirmed-working synchronous operations; the other three verticals
+ * are explicitly NOT modeled this pass and MUST NOT be treated as supported.
+ */
+const DEFAULT_CAPABILITY_SNAPSHOT: CapabilitySet = {
+  product: PRODUCT,
+  productVersion: DEFAULT_CAPABILITY_VERSION,
+  protocol: "cognitum.harnessaas.http",
+  protocolVersion: "1.0",
+  features: {
+    [SOLVE_FEATURE]: true,
+    [LINEAGE_FEATURE]: true,
+    [solveVerticalFeature("code-repair")]: true,
+    [solveVerticalFeature("security-remediation")]: false,
+    [solveVerticalFeature("dependency-migration")]: false,
+    [solveVerticalFeature("test-generation")]: false,
+  },
+  limitations: [
+    "solve() is verified only for the code-repair vertical; security-remediation, " +
+      "dependency-migration, and test-generation each require a compound request field " +
+      "(finding/scanner_command, migration/build_command, test_generation/coverage_command " +
+      "respectively) this SDK pass does not model, so those verticals are not locally " +
+      "supported even though the server may accept them",
+  ],
+  authMethods: ["X-API-Key", "Authorization: Bearer"],
+  source: "static-compatibility-table",
+};
 
 /** Options accepted by every operation method. */
 export interface HarnessaaSCallOptions {
@@ -105,18 +174,45 @@ export class HarnessaaSClient {
    * proven-safe capabilities, never the union (ADR-0019 §D6).
    */
   capabilities(): CapabilitySet {
-    return (
-      this.config.capabilitiesSnapshot ?? {
-        product: PRODUCT,
-        productVersion: DEFAULT_CAPABILITY_VERSION,
-        protocol: "cognitum.harnessaas.http",
-        protocolVersion: "1.0",
-        features: {},
-        limitations: ["no capabilities_snapshot configured"],
-        authMethods: [],
-        source: "static-compatibility-table",
-      }
-    );
+    return this.config.capabilitiesSnapshot ?? DEFAULT_CAPABILITY_SNAPSHOT;
+  }
+
+  /**
+   * Fail closed BEFORE any HTTP call if the resolved capability set (an
+   * operator-supplied `capabilitiesSnapshot`, or this SDK's own
+   * known-tested default) does not affirmatively mark `solve` and the
+   * requested `vertical` as supported (ADR-0019 §D6). `solve()` is
+   * simultaneously a mutation, a spend trigger, and — given HarnessaaS's
+   * untrusted-repository/command-execution trust boundary — a
+   * code-execution trigger, so an unknown or unsupported capability MUST
+   * be rejected locally rather than reaching the network.
+   */
+  private assertSolveCapability(vertical: HarnessaaSVertical): void {
+    const caps = this.capabilities();
+    if (caps.features[SOLVE_FEATURE] !== true) {
+      throw new UnsupportedCapabilityError(
+        PRODUCT,
+        "solve",
+        SOLVE_FEATURE,
+        `HarnessaaSClient.solve is unsupported or unknown for the resolved capability set ` +
+          `(product_version "${caps.productVersion}"). Refusing to call POST /solve — a ` +
+          `mutating, billable, code-execution-triggering operation — before verifying support ` +
+          `(ADR-0019 §D6).`,
+      );
+    }
+    const verticalFeature = solveVerticalFeature(vertical);
+    if (caps.features[verticalFeature] !== true) {
+      throw new UnsupportedCapabilityError(
+        PRODUCT,
+        "solve",
+        verticalFeature,
+        `HarnessaaSClient.solve vertical "${vertical}" is unsupported or unknown for the ` +
+          `resolved capability set (product_version "${caps.productVersion}"). Only the ` +
+          `"code-repair" vertical is modeled/verified by this SDK pass; refusing to send an ` +
+          `incomplete request for a vertical whose compound fields this client does not ` +
+          `serialize, before any spend or code execution occurs (ADR-0019 §D6).`,
+      );
+    }
   }
 
   /**
@@ -157,6 +253,7 @@ export class HarnessaaSClient {
     request: HarnessaaSSolveRequest,
     options?: HarnessaaSCallOptions,
   ): Promise<HarnessaaSResult<HarnessaaSSolveResponse>> {
+    this.assertSolveCapability(request.vertical ?? DEFAULT_VERTICAL);
     const body = toSolveRequestWire(request);
     let credential = await this.requireCredential("solve");
     let refreshedOnce = false;
@@ -201,6 +298,20 @@ export class HarnessaaSClient {
         operation: "lineage",
         retryable: false,
       });
+    }
+    // Defense in depth only (see `LINEAGE_FEATURE`'s doc comment above):
+    // `lineage()` is a safe read, not one of ADR-0019 §D6's five gated
+    // categories, but gating it too keeps "unknown version" handling
+    // uniform if a future capabilitiesSnapshot narrows what a given
+    // HarnessaaS version's response shape supports.
+    if (this.capabilities().features[LINEAGE_FEATURE] !== true) {
+      throw new UnsupportedCapabilityError(
+        PRODUCT,
+        "lineage",
+        LINEAGE_FEATURE,
+        `HarnessaaSClient.lineage is unsupported or unknown for the resolved capability set ` +
+          `(product_version "${this.capabilities().productVersion}").`,
+      );
     }
     const path = `/lineage/${encodeURIComponent(requestId)}`;
     let credential = await this.requireCredential("lineage");

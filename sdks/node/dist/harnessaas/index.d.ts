@@ -561,6 +561,17 @@ declare class HarnessaaSClient {
      */
     capabilities(): CapabilitySet;
     /**
+     * Fail closed BEFORE any HTTP call if the resolved capability set (an
+     * operator-supplied `capabilitiesSnapshot`, or this SDK's own
+     * known-tested default) does not affirmatively mark `solve` and the
+     * requested `vertical` as supported (ADR-0019 §D6). `solve()` is
+     * simultaneously a mutation, a spend trigger, and — given HarnessaaS's
+     * untrusted-repository/command-execution trust boundary — a
+     * code-execution trigger, so an unknown or unsupported capability MUST
+     * be rejected locally rather than reaching the network.
+     */
+    private assertSolveCapability;
+    /**
      * `GET /health` — process health only, no identity/readiness semantics.
      * Unauthenticated on the real service (`src/server.ts:293-303` never
      * calls `authenticate()` for this route) — never acquires a credential,
