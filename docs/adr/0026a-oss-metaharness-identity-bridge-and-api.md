@@ -1,7 +1,8 @@
 # ADR 0026a: OSS MetaHarness Identity, Structured Bridge, and Public SDK API
 
-- **Status:** Proposed
+- **Status:** Partially Implemented (Blocked on upstream)
 - **Date:** 2026-07-18
+- **Updated:** 2026-07-19 — §D1 zero-I/O `MetaHarnessClient` construction, §D3 domain types (`MetaHarnessConfig`, `RepositorySource`, `ScaffoldRequestV1`/`Plan`/`Result`, `WitnessVerification` reusing ADR-0028's `VerificationResult`), and §D2's full method surface as fail-closed stubs are implemented (PR #98). No further SDK-side work is possible: §D7 documents 7 explicit upstream blockers, most critically that the real `metaharness` npm package does not yet implement any versioned JSONL bridge protocol for this client to talk to.
 - **Deciders:** Cognitum SDK Working Group, MetaHarness owners, Developer Experience, Release Engineering, Security
 - **Scope:** cross-cutting (`sdks/node`, `sdks/python`, `sdks/rust`); local/server runtimes only
 
