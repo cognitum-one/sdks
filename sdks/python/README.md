@@ -8,10 +8,15 @@ or the **Cognitum Cloud** control plane (`api.cognitum.one`).
 ## Install
 
 ```bash
-pip install cognitum
+pip install cognitum-sdk
 # optional: mDNS discovery
-pip install "cognitum[mdns]"
+pip install "cognitum-sdk[mdns]"
 ```
+
+> The PyPI **distribution** name is `cognitum-sdk` (the project name
+> `cognitum` on PyPI belongs to an unrelated third party) but the **import**
+> name is `cognitum` — install with `pip install cognitum-sdk`, then
+> `from cognitum import ...` as shown below.
 
 Requires Python `>=3.10`.
 
@@ -45,6 +50,49 @@ An `AsyncSeedClient` is available with the same surface for async codebases.
 - ADR-0005 retry / rate-limit (500 ms base, 30 s cap, 60 s wall-clock)
 - MCP client with both HTTP and stdio transports
 - Lazy `__getattr__` keeps cold start fast when only `cognitum.seed` is used
+
+## Agentic layer (v0.3)
+
+Bounded clients for Meta-LLM, Meta-Proxy, HarnessaaS, and MetaHarness, plus a
+shared agentic contract layer, all additive to the Seed/Cloud client above.
+
+```python
+from cognitum.agentic import StaticApiKeyCredentialProvider
+from cognitum.meta_llm import ChatCompletionRequest, ChatMessage, MetaLlmClient, MetaLlmClientConfig
+
+llm = MetaLlmClient(
+    MetaLlmClientConfig(
+        base_url="https://api.cognitum.one",
+        credential_provider=StaticApiKeyCredentialProvider(
+            product="meta-llm",
+            normalized_origin="https://api.cognitum.one",
+            audience="https://api.cognitum.one",  # must match base_url (ADR-0022 §D3)
+        ),  # reads COGNITUM_API_KEY by default
+    )
+)
+
+request = ChatCompletionRequest(
+    model="cognitum-meta-llm",
+    messages=[ChatMessage(role="user", content="hello")],
+)
+# Each yielded value is a MetaLlmStreamEnvelope[OpenAiStreamEvent] -- the
+# event itself lives on .event; the envelope only carries metadata
+# (sequence, received_at, request_id, ...).
+async for envelope in llm.chat.completions_stream(request):
+    if envelope.event.type == "content_delta":
+        print(envelope.event.delta, end="")
+```
+
+| Namespace | Maturity | Notes |
+|---|---|---|
+| `cognitum.agentic` | Available | Credentials, typed errors/retry, receipts + lineage, redaction, W3C trace context. Telemetry primitives are public/tested but no product client wires them into a live emission path yet. |
+| `cognitum.meta_llm` | Available | 6 serving protocols, OpenAI/Anthropic SSE streaming, routing, receipts. Platform resources (batches, pods, Brain, …) are REST-only — [issue #59](https://github.com/cognitum-one/sdks/issues/59). |
+| `cognitum.meta_proxy` | Available | Local status/capabilities + chat.completions forwarding (streaming + non-streaming), consent-gated cloud routing. |
+| `cognitum.harnessaas` | Available | Real synchronous `health` / `solve` / `lineage`. No async job/poll/approval contract exists upstream yet. |
+| `cognitum.metaharness` | Contract preview | Full typed surface, every call fail-closed — no published local bridge protocol yet. |
+
+See [`../../capabilities/sdk-release.v1.json`](../../capabilities/sdk-release.v1.json)
+for the full, machine-readable maturity/feature matrix across all 3 SDKs.
 
 ## Documentation
 

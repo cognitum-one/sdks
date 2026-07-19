@@ -1,0 +1,139 @@
+{
+  "schemaVersion": "1",
+  "schema": "capabilities/sdk-release.schema.json",
+  "generatedAt": "2026-07-19T20:00:00Z",
+  "sourceCommit": "6001535",
+  "maturityLevels": {
+    "available": "Published package and implemented network behavior.",
+    "source_available": "Implemented on the SDK main branch but not confirmed in the public registry artifact.",
+    "contract_preview": "Typed API that deliberately fails closed because its required runtime bridge is not available.",
+    "planned": "No supported public client behavior yet."
+  },
+  "languages": {
+    "node": {
+      "packageName": "@cognitum-one/sdk",
+      "registry": "npm",
+      "registryUrl": "https://www.npmjs.com/package/@cognitum-one/sdk",
+      "sourceVersion": "0.3.0",
+      "registryVersion": "0.3.0",
+      "verifiedAt": "2026-07-19T19:40:00Z",
+      "minRuntime": "Node.js >=18",
+      "installCommand": "npm install @cognitum-one/sdk"
+    },
+    "python": {
+      "distributionName": "cognitum-sdk",
+      "importName": "cognitum",
+      "registry": "PyPI",
+      "registryUrl": "https://pypi.org/project/cognitum-sdk/",
+      "sourceVersion": "0.3.0",
+      "registryVersion": "0.3.0",
+      "verifiedAt": "2026-07-19T19:40:00Z",
+      "minRuntime": "Python >=3.10",
+      "installCommand": "pip install cognitum-sdk",
+      "note": "The PyPI project name 'cognitum' is owned by an unrelated third party; this SDK's distribution name is 'cognitum-sdk' while the import name stays 'cognitum' (from cognitum import Cognitum)."
+    },
+    "rust": {
+      "crateName": "cognitum-one",
+      "registry": "crates.io",
+      "registryUrl": "https://crates.io/crates/cognitum-one",
+      "sourceVersion": "0.3.0",
+      "registryVersion": "0.3.0",
+      "verifiedAt": "2026-07-19T19:58:02Z",
+      "minRuntime": "Rust edition 2021 (stable toolchain)",
+      "installCommand": "cargo add cognitum-one"
+    }
+  },
+  "productClients": {
+    "agenticCore": {
+      "maturity": "available",
+      "namespace": {
+        "node": "@cognitum-one/sdk/agentic",
+        "python": "cognitum.agentic",
+        "rust": "cognitum_one::agentic (unconditional base module)"
+      },
+      "description": "Shared contract layer every product client builds on: credential providers (static API key + OAuth token) with origin/audience/product binding and scope preflight, typed error taxonomy with equal-jitter retry and idempotency binding, execution receipt and lineage verification (shape/digest/cryptographic/anchored ladder, HMAC-SHA256), a bounded-depth secret redaction sentinel, and W3C trace-context parse/generate/join primitives.",
+      "governingAdrs": ["0019", "0022", "0023", "0028"],
+      "notes": [
+        "Telemetry primitives (TelemetrySink interface, no-op default sink, event/metric-name catalog, diagnostic capture policy) are public, tested contracts as of v0.3.0, but zero product client currently wires them into a real emission call site -- there is no active telemetry pipeline yet.",
+        "OpenTelemetry adapter integration is not implemented."
+      ]
+    },
+    "metaLlm": {
+      "maturity": "available",
+      "namespace": {
+        "node": "@cognitum-one/sdk/meta-llm",
+        "python": "cognitum.meta_llm",
+        "rust": "cognitum_one::meta_llm (feature = \"meta-llm\")"
+      },
+      "description": "Real HTTP-backed client for all six Meta-LLM serving protocols.",
+      "protocols": ["chat.completions", "messages.create", "messages.countTokens", "completions", "responses", "embeddings"],
+      "streaming": {
+        "chat.completions": "OpenAI-style SSE, protocol-agnostic parser",
+        "messages.create": "native Anthropic event types, same parser"
+      },
+      "features": [
+        "idempotency-key generation and bounded 429/502/503 retry on non-streaming calls",
+        "full ADR-0024a error-mapping table (400/401/402/403/404/409/422/429/502/503)",
+        "single 401-refresh-then-retry",
+        "ADR-0024b routing controls and read-only usage/receipt access"
+      ],
+      "governingAdrs": ["0024a", "0024b"],
+      "notes": [
+        "Meta-LLM platform resources (batches, pods, benchmarks, Brain, vectors, collaboration, flywheel) do not yet have typed SDK resource clients -- accessed via the REST API until issue #59 completes the product-resource layer."
+      ],
+      "trackingIssues": ["https://github.com/cognitum-one/sdks/issues/59", "https://github.com/cognitum-one/sdks/issues/60"]
+    },
+    "metaProxy": {
+      "maturity": "available",
+      "namespace": {
+        "node": "@cognitum-one/sdk/meta-proxy",
+        "python": "cognitum.meta_proxy",
+        "rust": "cognitum_one::meta_proxy (feature = \"meta-proxy\")"
+      },
+      "description": "Local data-plane client: status/capabilities discovery, routing-intent-aware non-streaming and streaming chat.completions forwarding, with consent gating on the cognitum_cloud routing plane and a browser-runtime rejection guard.",
+      "governingAdrs": ["0025a"],
+      "notes": [
+        "Sponsor/budget operations remain fail-closed stubs pending ADR-0025b (MetaProxyManager lifecycle -- discovery, signed install, sponsor ledger), which has not been started."
+      ],
+      "trackingIssues": ["https://github.com/cognitum-one/sdks/issues/62", "https://github.com/cognitum-one/sdks/issues/63"]
+    },
+    "harnessaas": {
+      "maturity": "available",
+      "namespace": {
+        "node": "@cognitum-one/sdk/harnessaas",
+        "python": "cognitum.harnessaas",
+        "rust": "cognitum_one::harnessaas (feature = \"harnessaas\")"
+      },
+      "description": "Scoped strictly to the real, deployed synchronous surface: health, solve, and lineage. Vertical-support capability gate on solve() (only code-repair fully modeled today).",
+      "governingAdrs": ["0027a"],
+      "notes": [
+        "ADR-0027a's proposed async job/poll/SSE/approval/artifact contract is NOT implemented -- it does not exist upstream yet; building against it would produce bindings matching zero live routes.",
+        "ADR-0027b (isolation, evidence, webhook contract) is not started."
+      ],
+      "trackingIssues": ["https://github.com/cognitum-one/sdks/issues/67", "https://github.com/cognitum-one/sdks/issues/68", "https://github.com/cognitum-one/sdks/issues/69"]
+    },
+    "metaharness": {
+      "maturity": "contract_preview",
+      "namespace": {
+        "node": "@cognitum-one/sdk/metaharness",
+        "python": "cognitum.metaharness",
+        "rust": "cognitum_one::metaharness (feature = \"metaharness\")"
+      },
+      "description": "Construction (zero I/O) and the full ADR-0026a §D2 method surface, every operation a typed, fail-closed stub. This is a contract preview, not operational behavior.",
+      "governingAdrs": ["0026a", "0026b"],
+      "notes": [
+        "The upstream OSS metaharness package has no published bridge --stdio protocol (or any versioned machine contract) this client could talk to yet -- ADR-0026a §D7 lists 7 explicit blockers.",
+        "No operation performs real process spawn, network I/O, or filesystem access -- confirmed via import-absence (zero child_process/fs/fetch references in the module).",
+        "Do not represent any MetaHarnessClient method as functioning until the upstream bridge protocol exists and this contract preview is promoted to available."
+      ],
+      "trackingIssues": ["https://github.com/cognitum-one/sdks/issues/64", "https://github.com/cognitum-one/sdks/issues/65", "https://github.com/cognitum-one/sdks/issues/66"]
+    }
+  },
+  "restFirstGaps": [
+    {
+      "area": "Meta-LLM platform resources",
+      "description": "Batches, pods, benchmarks, Brain, vectors, collaboration, and flywheel namespaces are REST-only today -- no typed SDK resource client exists for any of them.",
+      "trackingIssue": "https://github.com/cognitum-one/sdks/issues/59"
+    }
+  ]
+}

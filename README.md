@@ -8,13 +8,24 @@ One surface. Three runtimes.
 
 | Language | Package | Version | Install |
 |----------|---------|---------|---------|
-| Node.js / TypeScript | [`@cognitum-one/sdk`](sdks/node/) | 0.2.0 | `npm install @cognitum-one/sdk` |
-| Python | [`cognitum`](sdks/python/) | 0.2.0 | `pip install cognitum` |
-| Rust | [`cognitum-one`](sdks/rust/) | 0.2.0 | `cognitum-one = "0.2"` |
+| Node.js / TypeScript | [`@cognitum-one/sdk`](sdks/node/) | 0.3.0 | `npm install @cognitum-one/sdk` |
+| Python | [`cognitum-sdk`](sdks/python/) (import as `cognitum`) | 0.3.0 | `pip install cognitum-sdk` |
+| Rust | [`cognitum-one`](sdks/rust/) | 0.3.0 | `cognitum-one = "0.3"` |
+
+> The Python **distribution** name is `cognitum-sdk` (the PyPI project name
+> `cognitum` belongs to an unrelated third party) but the **import** name is
+> still `cognitum` — `pip install cognitum-sdk`, then `from cognitum import ...`.
 
 All three SDKs implement the same domain model, the same HTTP contract, and
 the same failover / security / observability invariants — they differ only
 where the host runtime makes a different idiom natural.
+
+Package identifiers, registry versions, and per-capability maturity are also
+published as a machine-readable manifest:
+[`capabilities/sdk-release.v1.json`](capabilities/sdk-release.v1.json)
+(validated against [`capabilities/sdk-release.schema.json`](capabilities/sdk-release.schema.json)
+and cross-checked against live npm/PyPI/crates.io in CI — see
+[`scripts/verify-release-manifest.mjs`](scripts/verify-release-manifest.mjs)).
 
 ## Quick start — talking to a Seed
 
@@ -91,7 +102,7 @@ Every SDK ships — with parity tests:
 - **Health probing** — opt-in background probe that marks slow peers
   `Degraded` and failed peers `Unhealthy`.
 - **Discovery providers** — explicit list (default), **mDNS** (opt-in:
-  `@cognitum-one/sdk/seed/discovery/mdns` · `pip install cognitum[mdns]` ·
+  `@cognitum-one/sdk/seed/discovery/mdns` · `pip install cognitum-sdk[mdns]` ·
   `cargo --features seed,mdns`), **Tailscale** (any tailnet peer matching
   `cognitum-*`).
 - **TLS pinning** — three modes: explicit CA (`tls.ca` / `SeedTLS(ca_pem=...)` /
@@ -112,6 +123,36 @@ Every SDK ships — with parity tests:
 - **MCP** — the SDKs include an MCP client with **both** HTTP and stdio
   transports. Use stdio to launch a local MCP server subprocess; use HTTP
   to talk to a remote MCP gateway.
+
+## Agentic layer (v0.3)
+
+Additive to the Seed/Cloud surface above: bounded clients for Meta-LLM,
+Meta-Proxy, HarnessaaS, and MetaHarness, plus a shared agentic contract layer
+(credentials, typed errors/retry, receipts, redaction, trace context). Every
+SDK exposes the same namespace shape (`<pkg>/agentic`, `<pkg>/meta-llm`, …) —
+see each per-language README for exact import paths.
+
+Maturity uses one shared vocabulary across all three SDKs and the
+[cognitum.one developer portal](https://cognitum.one/developers):
+
+| State | Meaning |
+|---|---|
+| **Available** | Published package, implemented network behavior. |
+| **Source available** | On the SDK main branch, not yet confirmed in the public registry artifact. |
+| **Contract preview** | Typed API that deliberately fails closed — its runtime bridge isn't available yet. |
+| **Planned** | No supported client behavior yet. |
+
+| Capability | Maturity | What it does |
+|---|---|---|
+| **Agentic core** | Available | Credential providers (API key + OAuth), scope preflight, typed error/retry taxonomy, execution receipts + lineage verification, secret redaction, W3C trace context. Telemetry primitives (sink interface, event/metric catalog) are public and tested but not yet wired into a live emission path. |
+| **Meta-LLM** | Available | Real HTTP client for all 6 serving protocols (chat.completions, messages.create, messages.countTokens, completions, responses, embeddings), OpenAI + Anthropic SSE streaming, routing controls, receipts. Platform resources (batches, pods, Brain, vectors, …) are REST-only for now — [issue #59](https://github.com/cognitum-one/sdks/issues/59). |
+| **Meta-Proxy** | Available | Local data-plane status/capabilities discovery and chat.completions forwarding (streaming + non-streaming), consent-gated cloud routing. Sponsor/budget lifecycle is not yet implemented. |
+| **HarnessaaS** | Available | Real synchronous `health` / `solve` / `lineage` calls against the deployed API. The async job/poll/approval contract some ADRs describe does not exist upstream yet. |
+| **MetaHarness** | Contract preview | Full typed method surface, every operation fail-closed by design — there is no published local bridge protocol for it to call yet. Do not represent any method as functional until that changes. |
+
+The full detail (per-language namespaces, feature flags, governing ADRs,
+known gaps) lives in
+[`capabilities/sdk-release.v1.json`](capabilities/sdk-release.v1.json).
 
 ## Choosing an SDK
 
