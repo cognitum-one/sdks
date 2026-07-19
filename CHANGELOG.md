@@ -11,6 +11,41 @@ For per-SDK detail, see:
 - [`sdks/rust/CHANGELOG.md`](sdks/rust/CHANGELOG.md)
 
 
+## [0.3.0] — 2026-07-19
+
+Cognitum Agentic SDK Integration — Node, Python, and Rust all gain new
+product clients (Meta LLM, Meta Proxy, MetaHarness, HarnessaaS) on top
+of a shared, frozen `agentic` contract module (credential providers,
+error taxonomy, telemetry primitives). See each per-SDK CHANGELOG for
+full detail; governing ADRs live in `docs/adr/`.
+
+### Added
+
+- Meta LLM client: real non-streaming support for all 5 serving
+  protocols plus streaming for `chat.completions` (OpenAI SSE) and
+  `messages.create` (native Anthropic events) on a shared SSE parser.
+- Meta Proxy client: data-plane, non-streaming and streaming
+  `chat.completions` forwarding, consent gating, browser-runtime guard.
+- MetaHarness client: construction and full method surface as
+  fail-closed stubs — the upstream bridge protocol doesn't exist yet.
+- HarnessaaS client: `health`/`solve`/`lineage` against the real
+  deployed synchronous surface.
+- OAuth token credential provider + scope preflight (ADR-0022).
+- Telemetry scaffolding: `TelemetrySink` interface + no-op default, W3C
+  trace-context primitives, event/metric catalog, diagnostic capture
+  policy — all type-only, zero product-client wiring yet.
+
+### Published
+
+- npm: `@cognitum-one/sdk@0.3.0` — https://www.npmjs.com/package/@cognitum-one/sdk
+- crates.io: `cognitum-one@0.3.0` — https://crates.io/crates/cognitum-one
+- PyPI: **not published this release** — the `PYPI_TOKEN` in GCP Secret
+  Manager belongs to a PyPI account without maintainer access on the
+  `cognitum` project (403 Forbidden on upload). Needs the project
+  owner to add that account as a collaborator via pypi.org, or a
+  correctly-scoped token, before `cognitum@0.3.0` can ship. `pyproject.toml`'s
+  version was bumped for repo consistency regardless.
+
 ## [0.2.1] — 2026-04-29
 
 ### Changed
