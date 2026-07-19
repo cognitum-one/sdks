@@ -534,8 +534,11 @@ function assertScopeGranted(product, operation, requiredScope, credential) {
   }
 }
 
-// src/agentic/receipt-verification.ts
+// src/agentic/trace-context.ts
 var import_node_crypto3 = require("crypto");
+
+// src/agentic/receipt-verification.ts
+var import_node_crypto4 = require("crypto");
 function sortKeysDeep(value) {
   if (Array.isArray(value)) return value.map(sortKeysDeep);
   if (value && typeof value === "object") {
@@ -551,7 +554,7 @@ function canonicalJson(value) {
   return JSON.stringify(sortKeysDeep(value));
 }
 function sha256Hex(bytes) {
-  return (0, import_node_crypto3.createHash)("sha256").update(bytes, "utf8").digest("hex");
+  return (0, import_node_crypto4.createHash)("sha256").update(bytes, "utf8").digest("hex");
 }
 
 // src/meta-llm/http-errors.ts

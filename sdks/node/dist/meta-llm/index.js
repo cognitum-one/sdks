@@ -497,6 +497,9 @@ function assertScopeGranted(product, operation, requiredScope, credential) {
   }
 }
 
+// src/agentic/trace-context.ts
+import { randomBytes as randomBytes2 } from "crypto";
+
 // src/agentic/receipt-verification.ts
 import { createHash as createHash3, createHmac, timingSafeEqual } from "crypto";
 function sortKeysDeep(value) {

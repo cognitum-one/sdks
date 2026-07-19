@@ -139,8 +139,11 @@ var import_node_crypto = require("crypto");
 // src/agentic/oauth-token-provider.ts
 var import_node_crypto2 = require("crypto");
 
-// src/agentic/receipt-verification.ts
+// src/agentic/trace-context.ts
 var import_node_crypto3 = require("crypto");
+
+// src/agentic/receipt-verification.ts
+var import_node_crypto4 = require("crypto");
 
 // src/metaharness/browser-guard.ts
 var PRODUCT = "metaharness";
