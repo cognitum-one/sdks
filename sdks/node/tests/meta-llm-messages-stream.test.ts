@@ -225,6 +225,122 @@ describe("MetaLlmClient.messages.createStream() — ping decodes to a real event
   });
 });
 
+describe("MetaLlmClient.messages.createStream() — tool_use content block decodes correctly", () => {
+  it("decodes content_block_start(tool_use) and content_block_delta(input_json_delta), not unknown", async () => {
+    const chunks = [
+      sseFrame("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          content: [],
+          model: "m",
+          stop_reason: null,
+          usage: { input_tokens: 1, output_tokens: 0 },
+        },
+      }),
+      sseFrame("content_block_start", {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "tool_use", id: "toolu_1", name: "get_weather", input: {} },
+      }),
+      sseFrame("content_block_delta", {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: '{"city":' },
+      }),
+      sseFrame("content_block_delta", {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: '"NYC"}' },
+      }),
+      sseFrame("content_block_stop", { type: "content_block_stop", index: 0 }),
+      sseFrame("message_delta", {
+        type: "message_delta",
+        delta: { stop_reason: "tool_use", stop_sequence: null },
+        usage: { output_tokens: 5 },
+      }),
+      sseFrame("message_stop", { type: "message_stop" }),
+    ];
+    const fetchSpy = vi.fn().mockResolvedValue(streamingResponse(chunks));
+    const client = new MetaLlmClient({
+      baseUrl: BASE_URL,
+      transport: fetchSpy,
+      credentialProvider: makeCredentialProvider(),
+    });
+
+    const { values, error } = await collect(client.messages.createStream(messageRequest()));
+
+    expect(error).toBeUndefined();
+    expect(values.filter((v) => v.event.type === "unknown")).toHaveLength(0);
+
+    const start = values.find((v) => v.event.type === "content_block_start");
+    expect(start).toBeDefined();
+    if (start && start.event.type === "content_block_start") {
+      expect(start.event.contentBlock).toEqual({
+        type: "tool_use",
+        id: "toolu_1",
+        name: "get_weather",
+        input: {},
+      });
+    }
+
+    const deltas = values.filter((v) => v.event.type === "content_block_delta");
+    expect(deltas).toHaveLength(2);
+    for (const d of deltas) {
+      if (d.event.type === "content_block_delta") {
+        expect(d.event.delta.type).toBe("input_json_delta");
+      }
+    }
+    const firstDelta = deltas[0].event;
+    if (firstDelta.type === "content_block_delta" && firstDelta.delta.type === "input_json_delta") {
+      expect(firstDelta.delta.partialJson).toBe('{"city":');
+    }
+  });
+});
+
+describe("MetaLlmClient.messages.createStream() — wire-level error event decodes correctly", () => {
+  it("decodes a data: {type:error} frame to AnthropicStreamErrorEvent, not unknown", async () => {
+    const chunks = [
+      sseFrame("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          content: [],
+          model: "m",
+          stop_reason: null,
+          usage: { input_tokens: 1, output_tokens: 0 },
+        },
+      }),
+      sseFrame("error", {
+        type: "error",
+        error: { type: "overloaded_error", message: "Overloaded" },
+      }),
+      sseFrame("message_stop", { type: "message_stop" }),
+    ];
+    const fetchSpy = vi.fn().mockResolvedValue(streamingResponse(chunks));
+    const client = new MetaLlmClient({
+      baseUrl: BASE_URL,
+      transport: fetchSpy,
+      credentialProvider: makeCredentialProvider(),
+    });
+
+    const { values, error } = await collect(client.messages.createStream(messageRequest()));
+
+    expect(error).toBeUndefined();
+    const errorEvents = values.filter((v) => v.event.type === "error");
+    expect(errorEvents).toHaveLength(1);
+    const errEvent = errorEvents[0].event;
+    if (errEvent.type === "error") {
+      expect(errEvent.error).toEqual({ type: "overloaded_error", message: "Overloaded" });
+    }
+    expect(values.filter((v) => v.event.type === "unknown")).toHaveLength(0);
+  });
+});
+
 describe("MetaLlmClient.messages.createStream() — malformed payload never throws", () => {
   it("decodes an unrecognized/malformed JSON payload to unknown without throwing", async () => {
     const chunks = [
