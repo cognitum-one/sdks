@@ -51,6 +51,28 @@ commit; only black-box conformance proves deployed behavior.
 
 ADR-0027b defines isolation/evidence/webhook gates; this ADR defines job API.
 
+**2026-07-19 reconciliation audit (issue #67):** re-cloned `cognitum-one/harnessaas`
+and re-verified this entire Context section against the live upstream `HEAD`.
+`908e4a99332617fd321d6f23a1d5a70e07413ffa` is CONFIRMED to still be `HEAD`
+(87 commits, none newer than 2026-07-09) — the citations above are current, not
+stale. The sync-vs-async framing above is RECONFIRMED exactly as written: `POST
+/solve` (`src/server.ts:367-501` at current HEAD) is genuinely one-shot —
+request in, full `SolveResponse` out, no job/status/cancel/resume/SSE contract
+anywhere in the running service. This is the single most important finding of
+the audit: **this ADR's "Decision" (an async job resource) is a proposal to
+build something that does not exist yet, not a description of current
+behavior** — bindings generated against the D2 `/v1/solves/*` surface below
+would not correspond to any deployed route until this ADR ships. One gap this
+audit surfaces that the Context section above does not: the live service now
+also exposes a MicroLoRA flywheel API (`POST /microlora/run`, `GET
+/microlora/status`, `GET /microlora/lineage/:id` — ADR-0032,
+`src/server.ts:503-508`), which is synchronous like `/solve` and is not
+mentioned anywhere in this ADR's D2 route table or D1 client surface. Before
+implementation starts, decide explicitly whether MicroLoRA folds into the same
+async job model this ADR proposes for `/solve`, or stays a separate synchronous
+flywheel-loop client surface — leaving it undecided risks the same
+contract-vs-reality drift this audit was asked to close for `/solve` itself.
+
 ## Decision
 
 Replace one-shot solve semantics with an asynchronous, tenant-bound HarnessaaS

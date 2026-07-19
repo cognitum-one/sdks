@@ -2,7 +2,7 @@
 
 - **Status:** Partially Implemented
 - **Date:** 2026-07-18
-- **Updated:** 2026-07-19 — the shared `agentic` module (bounded-context boundary, product-private client rule) is built and frozen across all 3 languages (PRs #79, #82, #83, #84); Meta LLM (ADR-0024a) and Meta Proxy (ADR-0025a D1-D10 tractable scope) client boundaries are implemented as separate product-private clients per this ADR's topology. MetaHarness and HarnessaaS contexts are not yet started.
+- **Updated:** 2026-07-19 — the shared `agentic` module (bounded-context boundary, product-private client rule) is built and frozen across all 3 languages (PRs #79, #82, #83, #84); Meta LLM (ADR-0024a) and Meta Proxy (ADR-0025a D1-D10 tractable scope) client boundaries are implemented as separate product-private clients per this ADR's topology. MetaHarness and HarnessaaS contexts are not yet started. **HarnessaaS gateway-contract reconciliation audit (issue #67), re-run against a fresh clone of `cognitum-one/harnessaas`:** the cited baseline `908e4a99332617fd321d6f23a1d5a70e07413ffa` is CONFIRMED to still be the current upstream `HEAD` (`git log -1`, 87 commits total, none newer than 2026-07-09) — the commit hash was not actually stale. The specific claim below (checked-in gateway spec still describes Google ID-token auth; live source implements `cog_`-key tenant auth) is RECONFIRMED accurate line-for-line against that same HEAD. What this ADR's one-line table summary ("Solve, lineage, receipt, conformance, and evolving job APIs") understates: the live route surface is materially broader than `/solve` + `/lineage/{request_id}` — it also serves `GET /health`/`/healthz`/`/status` (`src/server.ts:286-304`), a full webhook admin surface (`POST`/`GET`/`DELETE /webhooks`, `GET /webhooks/:id/deliveries`, `GET /webhooks/public-key` — ADR-0031, `src/server.ts:306-340`), a MicroLoRA flywheel API (`POST /microlora/run`, `GET /microlora/status`, `GET /microlora/lineage/:id` — ADR-0032, `src/server.ts:503-508`), and an authenticated `/api/v1/*` relay for IBO-console/meta-capabilities (`src/server.ts:342-365`) — none of which appear in `config/api-gateway.openapi.yaml`, which remains a stale, single-route (health/solve/lineage), Google-ID-token Swagger 2 scaffold never wired to the real service. `POST /solve` itself is confirmed genuinely synchronous (one HTTP request/response, no job/poll/SSE contract) — see the ADR-0027a context-section note below. Full findings posted to issue #67.
 - **Deciders:** Cognitum SDK Working Group, MetaHarness owner, Meta LLM owner, Meta Proxy owner, HarnessaaS owner, Security
 - **Scope:** cross-cutting (`sdks/node`, `sdks/python`, `sdks/rust`)
 
@@ -47,6 +47,23 @@ describes Google ID-token authentication
 (`config/api-gateway.openapi.yaml:16-37,66-85`), while current source contains
 newer tenant and API-key behavior. The SDK cannot safely generate bindings from
 that document without first reconciling the contract.
+
+**2026-07-19 reconciliation audit (issue #67):** re-cloned `cognitum-one/harnessaas`
+and re-verified this paragraph against the live upstream `HEAD`. The `908e4a99`
+baseline is still `HEAD` (no commits since 2026-07-09) — not actually stale.
+`src/auth.ts:1-24,77` and `src/server.ts:262-274` confirm inbound auth is a
+SHA-256-hashed `cog_` API key (`X-API-Key` / `Authorization: Bearer`) resolved to
+a per-tenant `TenantContext`, exactly as this paragraph already stated — Google
+ID-token auth exists only in the unused `config/api-gateway.openapi.yaml`
+scaffold. The live route surface is wider than "Solve, lineage, receipt,
+conformance" implies: `GET /health`/`/healthz`/`/status` (`src/server.ts:286-304`),
+webhook admin routes (ADR-0031, `src/server.ts:306-340`), a MicroLoRA flywheel API
+(ADR-0032, `src/server.ts:503-508`), and an `/api/v1/*` IBO-console/meta-capabilities
+relay (`src/server.ts:342-365`) all now exist and are authenticated the same way,
+but none appear in the checked-in gateway document. `POST /solve` is confirmed
+GENUINELY SYNCHRONOUS — one HTTP request returns the full `SolveResponse` inline;
+there is no job/poll/SSE/approval contract in the running service (see ADR-0027a's
+context section, which already documents this gap and proposes to close it).
 
 The existing topology decision in ADR-0011 rejects a single god client and
 uses subpaths, submodules, and Rust features to keep trust and dependency
