@@ -56,9 +56,9 @@ picture and `docs/adr/` for governing ADRs.
 
 - Every new submodule is additive; the existing `cognitum.seed`
   surface is unaffected. No breaking changes.
-- This release is published as PyPI project `cognitum` (import name
-  matches), not `cognitum-sdk` — see the root CHANGELOG for the
-  naming history.
+- This release is published as PyPI project `cognitum-sdk` (the Python
+  *import* name stays `cognitum` — `from cognitum import Cognitum`
+  still works unchanged) — see the root CHANGELOG for why.
 
 ## [0.2.0] — 2026-04-23
 

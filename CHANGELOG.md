@@ -39,12 +39,17 @@ full detail; governing ADRs live in `docs/adr/`.
 
 - npm: `@cognitum-one/sdk@0.3.0` — https://www.npmjs.com/package/@cognitum-one/sdk
 - crates.io: `cognitum-one@0.3.0` — https://crates.io/crates/cognitum-one
-- PyPI: **not published this release** — the `PYPI_TOKEN` in GCP Secret
-  Manager belongs to a PyPI account without maintainer access on the
-  `cognitum` project (403 Forbidden on upload). Needs the project
-  owner to add that account as a collaborator via pypi.org, or a
-  correctly-scoped token, before `cognitum@0.3.0` can ship. `pyproject.toml`'s
-  version was bumped for repo consistency regardless.
+- PyPI: `cognitum-sdk@0.3.0` — https://pypi.org/project/cognitum-sdk/0.3.0/.
+  **Correction**: an initial upload attempt under the `pyproject.toml`
+  project name `cognitum` returned `403 Forbidden`. That name is not
+  this org's project at all — it's owned by an unrelated third party
+  (see PR #34, filed 2026-04-29: the PyPI name `cognitum` was taken by
+  another user in 2024, so this SDK's distribution was manually
+  published as `cognitum-sdk` back in v0.2.0, with the Python *import*
+  name staying `cognitum`). `pyproject.toml`'s `name` field was out of
+  sync with that decision; fixed to `cognitum-sdk` to match, and the
+  `PYPI_TOKEN` in GCP Secret Manager (already correctly scoped to
+  `cognitum-sdk`, per PR #34) published cleanly on the first retry.
 
 ## [0.2.1] — 2026-04-29
 
