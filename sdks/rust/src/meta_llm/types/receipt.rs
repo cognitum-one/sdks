@@ -222,3 +222,56 @@ pub fn parse_meta_llm_receipt(raw: &Value) -> Option<MetaLlmReceipt> {
         },
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    /// Round-trip through the (otherwise-inert) `Serialize`/`Deserialize`
+    /// derive itself, using multi-word field names where `camelCase` and
+    /// `snake_case` actually diverge -- unlike `Money`'s single-word
+    /// `amount`/`currency`, these keys genuinely distinguish the two
+    /// conventions, so this test would fail if the rename regressed back
+    /// to `camelCase` (issue #90's actual regression-guard gap: the
+    /// existing `Money` test can't detect this because its fields are
+    /// single words, identical under either convention).
+    #[test]
+    fn safety_summary_derive_round_trips_snake_case() {
+        let summary = SafetySummary {
+            mode: Some("warn".to_owned()),
+            detector_classes: Some(vec!["pii".to_owned(), "self_harm".to_owned()]),
+            blocked: Some(false),
+            raw: None,
+        };
+        let wire = serde_json::to_value(&summary).unwrap();
+        assert_eq!(wire["detector_classes"], json!(["pii", "self_harm"]));
+        assert!(
+            wire.get("detectorClasses").is_none(),
+            "must not emit the camelCase key"
+        );
+        let round_tripped: SafetySummary = serde_json::from_value(wire).unwrap();
+        assert_eq!(round_tripped, summary);
+    }
+
+    #[test]
+    fn meta_llm_receipt_derive_round_trips_snake_case() {
+        let receipt = MetaLlmReceipt {
+            request_id: "req_1".to_owned(),
+            resolved_tier: Some("high".to_owned()),
+            cache_result: Some("hit".to_owned()),
+            ..Default::default()
+        };
+        let wire = serde_json::to_value(&receipt).unwrap();
+        assert_eq!(wire["request_id"], "req_1");
+        assert_eq!(wire["resolved_tier"], "high");
+        assert_eq!(wire["cache_result"], "hit");
+        assert!(
+            wire.get("requestId").is_none() && wire.get("resolvedTier").is_none(),
+            "must not emit camelCase keys"
+        );
+        let round_tripped: MetaLlmReceipt = serde_json::from_value(wire).unwrap();
+        assert_eq!(round_tripped, receipt);
+    }
+}
