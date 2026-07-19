@@ -44,12 +44,23 @@ use std::rc::Rc;
 use std::sync::LazyLock;
 
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value};
 
 use crate::agentic::credentials::{SecretClassification, SecretRedactor};
 
 /// D12/D13 category list consulted by the key-name check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Hash` and `Serialize`/`Deserialize` are derived (in addition to the
+/// original `Debug, Clone, Copy, PartialEq, Eq`) so ADR-0028 §D10's
+/// `DiagnosticPolicy`/`DiagnosticManifest` (`./diagnostics.rs`) can hold
+/// this enum in a `HashSet` and round-trip it through JSON. This is purely
+/// additive -- the variant set itself (the frozen D12/D13 taxonomy) is
+/// unchanged. The `kebab-case` rename matches the existing hand-written
+/// `as_str()` strings below exactly (e.g. `ToolArgumentsResults` ->
+/// `"tool-arguments-results"`), so wire output is unaffected by this derive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum D12Category {
     Prompts,
     Messages,
@@ -501,6 +512,30 @@ mod tests {
             SecretClassification::Sensitive
         );
         assert_eq!(redactor.classify("count", &json!("42")), SecretClassification::Public);
+    }
+
+    #[test]
+    fn d12_category_serde_kebab_case_matches_as_str_exactly() {
+        // Added alongside the D10 `DiagnosticPolicy`/`DiagnosticManifest`
+        // work (`./diagnostics.rs`): guards that the new `Serialize` derive
+        // never drifts from the pre-existing hand-written `as_str()` wire
+        // strings this module already committed to.
+        for category in [
+            D12Category::Prompts,
+            D12Category::Messages,
+            D12Category::ToolArgumentsResults,
+            D12Category::Source,
+            D12Category::RepositoryUrls,
+            D12Category::Patches,
+            D12Category::Credentials,
+            D12Category::EnvironmentValues,
+            D12Category::WebhookBodies,
+            D12Category::SignedUrls,
+            D12Category::RawTenantUserIdentifiers,
+        ] {
+            let json = serde_json::to_value(category).unwrap();
+            assert_eq!(json, Value::String(category.as_str().to_string()));
+        }
     }
 
     #[test]

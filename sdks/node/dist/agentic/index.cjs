@@ -37,6 +37,7 @@ __export(agentic_exports, {
   ATTR_TIER: () => ATTR_TIER,
   AgenticError: () => AgenticError,
   ConsentRequiredError: () => ConsentRequiredError,
+  D10_RELEVANT_CATEGORIES: () => D10_RELEVANT_CATEGORIES,
   DEFAULT_API_KEY_ENV_VAR: () => DEFAULT_API_KEY_ENV_VAR,
   DEFAULT_RETRY_POLICY: () => DEFAULT_RETRY_POLICY,
   DEFAULT_TRACE_FLAGS: () => DEFAULT_TRACE_FLAGS,
@@ -78,6 +79,7 @@ __export(agentic_exports, {
   METRIC_SAFETY_TOKEN_COUNT: () => METRIC_SAFETY_TOKEN_COUNT,
   METRIC_STREAM_DURATION: () => METRIC_STREAM_DURATION,
   METRIC_VERIFICATION_RESULT_COUNT: () => METRIC_VERIFICATION_RESULT_COUNT,
+  NEVER_CAPTURABLE_CATEGORIES: () => NEVER_CAPTURABLE_CATEGORIES,
   NoopTelemetrySink: () => NoopTelemetrySink,
   OAuthTokenCredentialProvider: () => OAuthTokenCredentialProvider,
   PermissionDeniedError: () => PermissionDeniedError,
@@ -94,6 +96,7 @@ __export(agentic_exports, {
   formatTraceState: () => formatTraceState,
   generateTraceParent: () => generateTraceParent,
   harnessaasSpanName: () => harnessaasSpanName,
+  isNeverCapturable: () => isNeverCapturable,
   joinOrGenerateTraceContext: () => joinOrGenerateTraceContext,
   measurementKindOf: () => measurementKindOf,
   metaLlmSpanName: () => metaLlmSpanName,
@@ -101,6 +104,7 @@ __export(agentic_exports, {
   metaharnessSpanName: () => metaharnessSpanName,
   parseTraceParent: () => parseTraceParent,
   parseTraceState: () => parseTraceState,
+  previewDiagnosticManifest: () => previewDiagnosticManifest,
   sha256Hex: () => sha256Hex,
   shapeCheckExecutionReceipt: () => shapeCheckExecutionReceipt,
   shapeCheckLineageReference: () => shapeCheckLineageReference,
@@ -653,6 +657,38 @@ var SentinelSecretRedactor = class {
   }
 };
 
+// src/agentic/diagnostics.ts
+var D10_RELEVANT_CATEGORIES = [
+  "prompts",
+  "messages",
+  "source",
+  "patches",
+  "tool-arguments-results",
+  "environment-values"
+];
+var NEVER_CAPTURABLE_CATEGORIES = [
+  "credentials",
+  "signed-urls"
+];
+function isNeverCapturable(category) {
+  return NEVER_CAPTURABLE_CATEGORIES.includes(category);
+}
+function previewDiagnosticManifest(policy) {
+  const wouldCapture = [];
+  const blockedByPolicy = [];
+  for (const category of D10_RELEVANT_CATEGORIES) {
+    if (isNeverCapturable(category)) {
+      continue;
+    }
+    if (policy.allowedCategories.has(category)) {
+      wouldCapture.push(category);
+    } else {
+      blockedByPolicy.push(category);
+    }
+  }
+  return { wouldCapture, blockedByPolicy };
+}
+
 // src/agentic/telemetry.ts
 var NoopTelemetrySink = class {
   async emit(_event) {
@@ -1177,6 +1213,7 @@ function verifyLineageChain(chain, opts) {
   ATTR_TIER,
   AgenticError,
   ConsentRequiredError,
+  D10_RELEVANT_CATEGORIES,
   DEFAULT_API_KEY_ENV_VAR,
   DEFAULT_RETRY_POLICY,
   DEFAULT_TRACE_FLAGS,
@@ -1218,6 +1255,7 @@ function verifyLineageChain(chain, opts) {
   METRIC_SAFETY_TOKEN_COUNT,
   METRIC_STREAM_DURATION,
   METRIC_VERIFICATION_RESULT_COUNT,
+  NEVER_CAPTURABLE_CATEGORIES,
   NoopTelemetrySink,
   OAuthTokenCredentialProvider,
   PermissionDeniedError,
@@ -1234,6 +1272,7 @@ function verifyLineageChain(chain, opts) {
   formatTraceState,
   generateTraceParent,
   harnessaasSpanName,
+  isNeverCapturable,
   joinOrGenerateTraceContext,
   measurementKindOf,
   metaLlmSpanName,
@@ -1241,6 +1280,7 @@ function verifyLineageChain(chain, opts) {
   metaharnessSpanName,
   parseTraceParent,
   parseTraceState,
+  previewDiagnosticManifest,
   sha256Hex,
   shapeCheckExecutionReceipt,
   shapeCheckLineageReference,

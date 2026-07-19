@@ -73,6 +73,21 @@ export type { D12Category } from "./sentinel.js";
 export { SentinelSecretRedactor } from "./sentinel.js";
 
 export type {
+  DiagnosticSink,
+  RetentionPolicy,
+  DiagnosticPolicy,
+  DiagnosticManifest,
+  RedactionReport,
+  DiagnosticBundle,
+} from "./diagnostics.js";
+export {
+  D10_RELEVANT_CATEGORIES,
+  NEVER_CAPTURABLE_CATEGORIES,
+  isNeverCapturable,
+  previewDiagnosticManifest,
+} from "./diagnostics.js";
+
+export type {
   OnUnknownEstimate,
   BudgetPolicy,
   TenantContext,
