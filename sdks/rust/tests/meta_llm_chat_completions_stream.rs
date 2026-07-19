@@ -10,7 +10,7 @@ use cognitum_one::agentic::{
     AgenticError, AgenticErrorKind, StaticApiKeyCredentialProvider,
     StaticApiKeyCredentialProviderOptions, TimeBudget,
 };
-use cognitum_one::meta_llm::stream::ChatCompletionsStreamAccumulator;
+use cognitum_one::meta_llm::stream::{ChatCompletionsStreamAccumulator, OpenAiStreamEvent};
 use cognitum_one::meta_llm::types::{
     ChatCompletionRequest, ChatMessage, ChatMessageContent, ChatRole,
 };
@@ -146,6 +146,129 @@ async fn full_successful_stream_ends_in_done() {
         1,
         "exactly one HTTP attempt for a clean success"
     );
+}
+
+// ---------------------------------------------------------------------------
+// tool_call_delta decodes correctly
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn tool_call_delta_decodes_correctly_not_unknown() {
+    let server = MockServer::start().await;
+    let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",",
+        "\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,",
+        "\"function\":{\"arguments\":\"{\\\"city\\\":\\\"NYC\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(body.as_bytes().to_vec(), "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+
+    let mut config = insecure_config(server.uri());
+    config.credential_provider = Some(credential_provider(&server.uri()));
+    let client = MetaLlmClient::new(config).unwrap();
+
+    let mut stream = client
+        .chat_completions_stream(&chat_request(), None, None)
+        .await
+        .unwrap();
+
+    let mut tool_call_events = Vec::new();
+    while let Some(envelope) = stream.next_envelope().await.unwrap() {
+        if let OpenAiStreamEvent::ToolCallDelta { .. } = &envelope.event {
+            tool_call_events.push(envelope.event);
+        } else {
+            assert!(
+                !matches!(envelope.event, OpenAiStreamEvent::Unknown { .. }),
+                "no event should decode as Unknown"
+            );
+        }
+    }
+
+    assert_eq!(tool_call_events.len(), 2);
+    match &tool_call_events[0] {
+        OpenAiStreamEvent::ToolCallDelta {
+            tool_call_index,
+            id,
+            function_name,
+            ..
+        } => {
+            assert_eq!(*tool_call_index, 0);
+            assert_eq!(id.as_deref(), Some("call_1"));
+            assert_eq!(function_name.as_deref(), Some("get_weather"));
+        }
+        other => panic!("expected ToolCallDelta, got {other:?}"),
+    }
+    match &tool_call_events[1] {
+        OpenAiStreamEvent::ToolCallDelta { arguments_delta, .. } => {
+            assert_eq!(arguments_delta.as_deref(), Some("{\"city\":\"NYC\"}"));
+        }
+        other => panic!("expected ToolCallDelta, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Wire-level error event decodes correctly
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn wire_level_error_event_decodes_correctly_not_unknown() {
+    let server = MockServer::start().await;
+    let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"error\":{\"message\":\"The server is overloaded\",\"type\":\"server_error\",\"code\":\"overloaded\"}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(body.as_bytes().to_vec(), "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+
+    let mut config = insecure_config(server.uri());
+    config.credential_provider = Some(credential_provider(&server.uri()));
+    let client = MetaLlmClient::new(config).unwrap();
+
+    let mut stream = client
+        .chat_completions_stream(&chat_request(), None, None)
+        .await
+        .unwrap();
+
+    let mut error_events = Vec::new();
+    while let Some(envelope) = stream.next_envelope().await.unwrap() {
+        if let OpenAiStreamEvent::Error { .. } = &envelope.event {
+            error_events.push(envelope.event);
+        } else {
+            assert!(
+                !matches!(envelope.event, OpenAiStreamEvent::Unknown { .. }),
+                "no event should decode as Unknown"
+            );
+        }
+    }
+
+    assert_eq!(error_events.len(), 1);
+    match &error_events[0] {
+        OpenAiStreamEvent::Error { error } => {
+            assert_eq!(error.message, "The server is overloaded");
+            assert_eq!(error.r#type.as_deref(), Some("server_error"));
+            assert_eq!(error.code.as_deref(), Some("overloaded"));
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------

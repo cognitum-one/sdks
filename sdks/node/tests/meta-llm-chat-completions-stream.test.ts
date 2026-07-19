@@ -144,6 +144,76 @@ describe("MetaLlmClient.chat.completionsStream() — full successful stream", ()
   });
 });
 
+describe("MetaLlmClient.chat.completionsStream() — tool_call_delta decodes correctly", () => {
+  it("decodes delta.tool_calls[] into OpenAiToolCallDeltaEvent, not unknown", async () => {
+    const chunks = [
+      'data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n',
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1",' +
+        '"function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}\n\n',
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,' +
+        '"function":{"arguments":"{\\"city\\":\\"NYC\\"}"}}]},"finish_reason":null}]}\n\n',
+      'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+      "data: [DONE]\n\n",
+    ];
+    const fetchSpy = vi.fn().mockResolvedValue(streamingResponse(chunks));
+    const client = new MetaLlmClient({
+      baseUrl: BASE_URL,
+      transport: fetchSpy,
+      credentialProvider: makeCredentialProvider(),
+    });
+
+    const { values, error } = await collect(client.chat.completionsStream(chatRequest()));
+
+    expect(error).toBeUndefined();
+    expect(values.filter((v) => v.event.type === "unknown")).toHaveLength(0);
+
+    const toolCallEvents = values.filter((v) => v.event.type === "tool_call_delta");
+    expect(toolCallEvents).toHaveLength(2);
+    const first = toolCallEvents[0].event;
+    if (first.type === "tool_call_delta") {
+      expect(first.toolCallIndex).toBe(0);
+      expect(first.id).toBe("call_1");
+      expect(first.functionName).toBe("get_weather");
+    }
+    const second = toolCallEvents[1].event;
+    if (second.type === "tool_call_delta") {
+      expect(second.argumentsDelta).toBe('{"city":"NYC"}');
+    }
+  });
+});
+
+describe("MetaLlmClient.chat.completionsStream() — wire-level error event decodes correctly", () => {
+  it("decodes a data: {error:{...}} frame to OpenAiStreamErrorEvent, not unknown", async () => {
+    const chunks = [
+      'data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n',
+      'data: {"error":{"message":"The server is overloaded","type":"server_error","code":"overloaded"}}\n\n',
+      "data: [DONE]\n\n",
+    ];
+    const fetchSpy = vi.fn().mockResolvedValue(streamingResponse(chunks));
+    const client = new MetaLlmClient({
+      baseUrl: BASE_URL,
+      transport: fetchSpy,
+      credentialProvider: makeCredentialProvider(),
+    });
+
+    const { values, error } = await collect(client.chat.completionsStream(chatRequest()));
+
+    expect(error).toBeUndefined();
+    const errorEvents = values.filter((v) => v.event.type === "error");
+    expect(errorEvents).toHaveLength(1);
+    const errEvent = errorEvents[0].event;
+    if (errEvent.type === "error") {
+      expect(errEvent.error).toEqual({
+        message: "The server is overloaded",
+        type: "server_error",
+        code: "overloaded",
+        param: undefined,
+      });
+    }
+    expect(values.filter((v) => v.event.type === "unknown")).toHaveLength(0);
+  });
+});
+
 describe("MetaLlmClient.chat.completionsStream() — early termination", () => {
   it("preserves partial state and throws a typed terminal error when the stream ends without [DONE]", async () => {
     // Connection closes cleanly (no read error) after two content chunks —

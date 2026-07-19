@@ -15,7 +15,9 @@ use cognitum_one::agentic::{
     AgenticError, AgenticErrorKind, StaticApiKeyCredentialProvider,
     StaticApiKeyCredentialProviderOptions, TimeBudget,
 };
-use cognitum_one::meta_llm::stream::AnthropicStreamEvent;
+use cognitum_one::meta_llm::stream::{
+    AnthropicContentBlockDelta, AnthropicStreamContentBlockStart, AnthropicStreamEvent,
+};
 use cognitum_one::meta_llm::types::{AnthropicMessageParam, AnthropicMessageRequest, AnthropicRole};
 use cognitum_one::meta_llm::types::AnthropicMessageContent;
 use cognitum_one::meta_llm::{MetaLlmClient, MetaLlmClientConfig};
@@ -201,6 +203,119 @@ async fn ping_decodes_to_a_real_event() {
     }
     assert!(saw_ping, "ping frame must decode to AnthropicStreamEvent::Ping");
     assert!(!saw_unknown, "no event should fall back to Unknown in this stream");
+}
+
+// ---------------------------------------------------------------------------
+// `tool_use` content block decodes correctly, not `Unknown`
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn tool_use_content_block_decodes_correctly_not_unknown() {
+    let server = MockServer::start().await;
+    let body = concat!(
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"m\",\"stop_reason\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n",
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"get_weather\",\"input\":{}}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"NYC\\\"}\"}}\n\n",
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":5}}\n\n",
+        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(body.as_bytes().to_vec(), "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+
+    let mut config = insecure_config(server.uri());
+    config.credential_provider = Some(credential_provider(&server.uri()));
+    let client = MetaLlmClient::new(config).unwrap();
+
+    let mut stream = client
+        .messages_create_stream(&message_request(), None, None)
+        .await
+        .unwrap();
+
+    let mut start_seen: Option<AnthropicStreamContentBlockStart> = None;
+    let mut deltas = Vec::new();
+    let mut saw_unknown = false;
+    while let Some(envelope) = stream.next_envelope().await.unwrap() {
+        match envelope.event {
+            AnthropicStreamEvent::ContentBlockStart { content_block, .. } => {
+                start_seen = Some(content_block);
+            }
+            AnthropicStreamEvent::ContentBlockDelta { delta, .. } => deltas.push(delta),
+            AnthropicStreamEvent::Unknown { .. } => saw_unknown = true,
+            _ => {}
+        }
+    }
+
+    assert!(!saw_unknown, "no event should fall back to Unknown");
+    match start_seen {
+        Some(AnthropicStreamContentBlockStart::ToolUse { id, name, .. }) => {
+            assert_eq!(id, "toolu_1");
+            assert_eq!(name, "get_weather");
+        }
+        other => panic!("expected ToolUse content_block_start, got {other:?}"),
+    }
+    assert_eq!(deltas.len(), 2);
+    match &deltas[0] {
+        AnthropicContentBlockDelta::InputJsonDelta { partial_json } => {
+            assert_eq!(partial_json, "{\"city\":");
+        }
+        other => panic!("expected InputJsonDelta, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Wire-level `error` event decodes correctly, not `Unknown`
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn wire_level_error_event_decodes_correctly_not_unknown() {
+    let server = MockServer::start().await;
+    let body = concat!(
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"m\",\"stop_reason\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n",
+        "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n",
+        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(body.as_bytes().to_vec(), "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+
+    let mut config = insecure_config(server.uri());
+    config.credential_provider = Some(credential_provider(&server.uri()));
+    let client = MetaLlmClient::new(config).unwrap();
+
+    let mut stream = client
+        .messages_create_stream(&message_request(), None, None)
+        .await
+        .unwrap();
+
+    let mut error_events = Vec::new();
+    let mut saw_unknown = false;
+    while let Some(envelope) = stream.next_envelope().await.unwrap() {
+        match envelope.event {
+            AnthropicStreamEvent::Error { error } => error_events.push(error),
+            AnthropicStreamEvent::Unknown { .. } => saw_unknown = true,
+            _ => {}
+        }
+    }
+
+    assert!(!saw_unknown, "no event should fall back to Unknown");
+    assert_eq!(error_events.len(), 1);
+    assert_eq!(error_events[0].r#type, "overloaded_error");
+    assert_eq!(error_events[0].message, "Overloaded");
 }
 
 // ---------------------------------------------------------------------------

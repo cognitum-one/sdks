@@ -262,6 +262,131 @@ async def test_ping_decodes_to_a_real_event() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tool_use_content_block_decodes_correctly_not_unknown() -> None:
+    chunks = [
+        _sse_frame(
+            "message_start",
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": "m",
+                    "stop_reason": None,
+                    "usage": {"input_tokens": 1, "output_tokens": 0},
+                },
+            },
+        ),
+        _sse_frame(
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "get_weather",
+                    "input": {},
+                },
+            },
+        ),
+        _sse_frame(
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": '{"city":'},
+            },
+        ),
+        _sse_frame(
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": '"NYC"}'},
+            },
+        ),
+        _sse_frame("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        _sse_frame(
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "tool_use"},
+                "usage": {"output_tokens": 5},
+            },
+        ),
+        _sse_frame("message_stop", {"type": "message_stop"}),
+    ]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, stream=_chunks_then_close(chunks)
+        )
+
+    client, _requests = _make_client(handler)
+    values, error = await _collect(client.messages.create_stream(_message_request()))
+
+    assert error is None
+    assert all(v.event.type != "unknown" for v in values)
+
+    start = next(v for v in values if v.event.type == "content_block_start")
+    assert start.event.content_block == {
+        "type": "tool_use",
+        "id": "toolu_1",
+        "name": "get_weather",
+        "input": {},
+    }
+
+    deltas = [v for v in values if v.event.type == "content_block_delta"]
+    assert len(deltas) == 2
+    assert deltas[0].event.delta["partial_json"] == '{"city":'
+    assert deltas[1].event.delta["partial_json"] == '"NYC"}'
+
+
+@pytest.mark.asyncio
+async def test_wire_level_error_event_decodes_correctly_not_unknown() -> None:
+    chunks = [
+        _sse_frame(
+            "message_start",
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": "m",
+                    "stop_reason": None,
+                    "usage": {"input_tokens": 1, "output_tokens": 0},
+                },
+            },
+        ),
+        _sse_frame(
+            "error",
+            {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}},
+        ),
+        _sse_frame("message_stop", {"type": "message_stop"}),
+    ]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, stream=_chunks_then_close(chunks)
+        )
+
+    client, _requests = _make_client(handler)
+    values, error = await _collect(client.messages.create_stream(_message_request()))
+
+    assert error is None
+    error_events = [v for v in values if v.event.type == "error"]
+    assert len(error_events) == 1
+    assert error_events[0].event.error.type == "overloaded_error"
+    assert error_events[0].event.error.message == "Overloaded"
+    assert all(v.event.type != "unknown" for v in values)
+
+
+@pytest.mark.asyncio
 async def test_malformed_payload_decodes_to_unknown_without_raising() -> None:
     chunks = [
         _sse_frame(

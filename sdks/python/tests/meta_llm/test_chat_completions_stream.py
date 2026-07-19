@@ -162,6 +162,66 @@ async def test_full_successful_stream_ends_in_done() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tool_call_delta_decodes_correctly_not_unknown() -> None:
+    chunks = [
+        b'data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n',
+        b'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1",'
+        b'"function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}\n\n',
+        b'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,'
+        b'"function":{"arguments":"{\\"city\\":\\"NYC\\"}"}}]},"finish_reason":null}]}\n\n',
+        b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, stream=_chunks_then_close(chunks)
+        )
+
+    client, _ = _make_client(handler)
+    values, error = await _collect(client.chat.completions_stream(_chat_request()))
+
+    assert error is None
+    assert all(v.event.type != "unknown" for v in values)
+
+    tool_call_events = [v for v in values if v.event.type == "tool_call_delta"]
+    assert len(tool_call_events) == 2
+    first = tool_call_events[0].event
+    assert first.tool_call_index == 0
+    assert first.id == "call_1"
+    assert first.function_name == "get_weather"
+    second = tool_call_events[1].event
+    assert second.arguments_delta == '{"city":"NYC"}'
+
+
+@pytest.mark.asyncio
+async def test_wire_level_error_event_decodes_correctly_not_unknown() -> None:
+    chunks = [
+        b'data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n',
+        b'data: {"error":{"message":"The server is overloaded","type":"server_error",'
+        b'"code":"overloaded"}}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, stream=_chunks_then_close(chunks)
+        )
+
+    client, _ = _make_client(handler)
+    values, error = await _collect(client.chat.completions_stream(_chat_request()))
+
+    assert error is None
+    error_events = [v for v in values if v.event.type == "error"]
+    assert len(error_events) == 1
+    err = error_events[0].event.error
+    assert err.message == "The server is overloaded"
+    assert err.type == "server_error"
+    assert err.code == "overloaded"
+    assert all(v.event.type != "unknown" for v in values)
+
+
+@pytest.mark.asyncio
 async def test_early_termination_preserves_partial_state_and_raises_terminal_error() -> None:
     chunks = [
         b'data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n',
