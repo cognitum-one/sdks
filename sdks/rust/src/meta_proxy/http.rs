@@ -10,6 +10,7 @@
 //! operation surface; nothing here is part of the public API (this module
 //! is private — see `super`'s `mod http;`).
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use serde_json::Value;
@@ -32,6 +33,53 @@ const STATUS_SCOPE: &str = "meta-proxy.status";
 /// (ADR-0025a §D6/§D7). `pub(super)` so `super::stream::chat_completions_stream`
 /// requests the identical scope for its own credential acquisition.
 pub(super) const INFERENCE_SCOPE: &str = "meta-proxy.inference";
+
+/// Response headers already surfaced through a typed [`MetaProxyResponseMeta`]
+/// field, plus standard HTTP framing/entity headers that would otherwise
+/// flood `unknown_headers` with noise on every single response
+/// (issue #92). Compared case-insensitively. Everything else observed on
+/// the response is preserved under `unknown_headers` rather than silently
+/// dropped -- same "preserve what this SDK doesn't yet model" convention as
+/// `MetaLlmReceipt.raw`/`SafetySummary.raw` (ADR-0024b §D2).
+const KNOWN_RESPONSE_HEADERS: &[&str] = &[
+    "x-cognitum-product-version",
+    "x-cognitum-protocol-version",
+    "x-cognitum-request-id",
+    "retry-after",
+    "content-type",
+    "content-length",
+    "content-encoding",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "date",
+    "server",
+    "vary",
+    "location",
+];
+
+/// Collect every response header NOT in [`KNOWN_RESPONSE_HEADERS`] into the
+/// `unknown_headers` map, lowercasing names for a stable, case-insensitive
+/// key. Returns `None` (not an empty map) when nothing unrecognized was
+/// present, matching this codebase's "absent means absent" convention
+/// elsewhere (e.g. `MetaLlmReceipt.raw`).
+fn collect_unknown_headers(headers: &reqwest::header::HeaderMap) -> Option<HashMap<String, String>> {
+    let mut unknown = HashMap::new();
+    for name in headers.keys() {
+        let lower = name.as_str().to_ascii_lowercase();
+        if KNOWN_RESPONSE_HEADERS.contains(&lower.as_str()) {
+            continue;
+        }
+        if let Some(value) = headers.get(name).and_then(|v| v.to_str().ok()) {
+            unknown.insert(lower, value.to_owned());
+        }
+    }
+    if unknown.is_empty() {
+        None
+    } else {
+        Some(unknown)
+    }
+}
 
 fn non_empty<'a>(value: &'a str, fallback: &'a str) -> &'a str {
     if value.is_empty() {
@@ -223,6 +271,7 @@ impl MetaProxyClient {
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<f64>().ok());
+        let unknown_headers = collect_unknown_headers(response.headers());
 
         if !status.is_success() {
             let body_text = response.text().await.unwrap_or_default();
@@ -252,7 +301,7 @@ impl MetaProxyClient {
             routing_receipt: None,
             upstream_receipt: None,
             warnings: None,
-            unknown_headers: None,
+            unknown_headers,
         };
         Ok((data, meta))
     }
@@ -438,6 +487,7 @@ impl MetaProxyClient {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<f64>().ok());
         let retry_after_ms = retry_after.map(|secs| (secs * 1000.0) as u64);
+        let unknown_headers = collect_unknown_headers(response.headers());
 
         if let Some(telemetry) = self.config.telemetry.as_ref() {
             telemetry.on_request_end(&MetaProxyTelemetryEvent {
@@ -488,7 +538,7 @@ impl MetaProxyClient {
             routing_receipt,
             upstream_receipt,
             warnings: None,
-            unknown_headers: None,
+            unknown_headers,
         };
         Ok((data, meta))
     }

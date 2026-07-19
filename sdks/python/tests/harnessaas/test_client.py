@@ -538,6 +538,39 @@ async def test_lineage_fails_closed_without_credential_provider() -> None:
     await client.aclose()
 
 
+# Issue #110: PR #109 added lineage()'s defense-in-depth capability check
+# (mirroring solve()'s test_solve_fails_closed_when_snapshot_does_not_mark_
+# solve_supported above), but only ever exercised the pass-through/allowed
+# case (test_lineage_fetches_and_parses_records above) -- the reject path
+# itself had no test. Proven the same way solve()'s reject tests are: a
+# capability snapshot that does not mark `lineage` supported must raise
+# UnsupportedCapabilityError BEFORE any HTTP call, proven via respx's call
+# count staying at zero rather than trusting the exception alone.
+@pytest.mark.asyncio
+async def test_lineage_fails_closed_when_snapshot_does_not_mark_lineage_supported() -> None:
+    with respx.mock:
+        client = HarnessaaSClient(
+            HarnessaaSClientConfig(
+                base_url=BASE_URL,
+                credential_provider=_credential_provider(),
+                capabilities_snapshot=CapabilitySet(
+                    product="harnessaas",
+                    product_version="9.9.9-unknown",
+                    protocol="cognitum.harnessaas.http",
+                    protocol_version="1.0",
+                    source="static-compatibility-table",
+                    features={},
+                    limitations=["unrecognized server version — minimum-safe set"],
+                    auth_methods=[],
+                ),
+            )
+        )
+        with pytest.raises(UnsupportedCapabilityError):
+            await client.lineage("req_abc123")
+        assert len(respx.calls) == 0
+        await client.aclose()
+
+
 @pytest.mark.asyncio
 @respx.mock
 async def test_lineage_retries_503_bounded_safe_read() -> None:

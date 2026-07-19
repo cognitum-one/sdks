@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from cognitum.agentic import AgenticError
-from cognitum.meta_proxy.envelope import MetaProxyResponseMeta
+from cognitum.meta_proxy.envelope import MetaProxyResponseMeta, collect_unknown_headers
 from cognitum.meta_proxy.http_errors import map_meta_proxy_http_error
 from cognitum.meta_proxy.status import MetaProxyRoutingReceipt
 
@@ -268,6 +268,7 @@ async def _send_once(
         retry_after=float(retry_after_header) if retry_after_header else None,
         routing_receipt=routing_receipt,
         upstream_receipt=upstream_receipt,
+        unknown_headers=collect_unknown_headers(response.headers),
     )
     return data, meta
 

@@ -22,8 +22,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Exact decimal amount + ISO-4217 currency code (e.g. `"USD"`).
+///
+/// `Serialize`/`Deserialize` are derived only because this type is
+/// embedded in [`super::receipt::MetaLlmReceipt`], which is in turn
+/// embedded in `crate::meta_llm::envelope::MetaLlmResponseMeta` (a struct
+/// that itself derives `Serialize`/`Deserialize`) -- every decode path
+/// that actually runs uses the hand-written `parse_money` below, never
+/// this derive. The wire contract is snake_case (see `parse_money`'s
+/// string-literal `"amount"`/`"currency"` keys), so the rename here
+/// matches `MetaLlmRoutingControls`'s convention (`super::routing`)
+/// rather than the inert-but-mismatched `camelCase` this previously
+/// carried (issue #90).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct Money {
     /// Exact decimal string, e.g. `"0.0123"`. Never a binary float.
     pub amount: String,
@@ -52,4 +63,70 @@ pub fn parse_money(raw: &Value) -> Option<Money> {
         _ => return None,
     };
     Some(Money { amount, currency })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The previously-only-tested case (see `meta_llm_routing_usage.rs`):
+    /// a simple decimal string round-trips byte-for-byte.
+    #[test]
+    fn parses_simple_string_amount() {
+        let money = parse_money(&json!({"amount": "0.0042", "currency": "USD"})).unwrap();
+        assert_eq!(money.amount, "0.0042");
+        assert_eq!(money.currency, "USD");
+    }
+
+    /// Issue #90: a JSON-number amount sitting exactly on the classic
+    /// binary-floating-point boundary (`0.1 + 0.2` in IEEE-754 double
+    /// precision is `0.30000000000000004`, not `0.3`). `serde_json` parses
+    /// the literal into that same `f64`, and `Number::to_string()` uses the
+    /// shortest round-tripping decimal representation -- so this must come
+    /// back byte-for-byte as `"0.30000000000000004"`, proving `parse_money`
+    /// performs no additional rounding/rescaling of its own on the number
+    /// path.
+    #[test]
+    fn parses_number_amount_at_float_precision_boundary() {
+        let money =
+            parse_money(&json!({"amount": 0.30000000000000004, "currency": "USD"})).unwrap();
+        assert_eq!(money.amount, "0.30000000000000004");
+        assert_eq!(money.currency, "USD");
+    }
+
+    /// A high-precision decimal string beyond what any `f64` could
+    /// represent exactly must survive untouched -- this is the entire
+    /// reason `Money.amount` is a `String` and not a binary float.
+    #[test]
+    fn preserves_high_precision_string_amount_exactly() {
+        let money = parse_money(
+            &json!({"amount": "123.456789012345678901234567890", "currency": "USD"}),
+        )
+        .unwrap();
+        assert_eq!(money.amount, "123.456789012345678901234567890");
+    }
+
+    /// `currency_code` is accepted as a fallback key for `currency`.
+    #[test]
+    fn accepts_currency_code_fallback_key() {
+        let money = parse_money(&json!({"amount": "1.00", "currency_code": "EUR"})).unwrap();
+        assert_eq!(money.currency, "EUR");
+    }
+
+    /// Round-trip through the (otherwise-inert) `Serialize`/`Deserialize`
+    /// derive itself, snake_case per issue #90 -- guards against a future
+    /// regression back to the mismatched `camelCase` rename.
+    #[test]
+    fn derive_round_trips_snake_case() {
+        let money = Money {
+            amount: "0.30000000000000004".to_owned(),
+            currency: "USD".to_owned(),
+        };
+        let wire = serde_json::to_value(&money).unwrap();
+        assert_eq!(wire["amount"], "0.30000000000000004");
+        assert_eq!(wire["currency"], "USD");
+        let round_tripped: Money = serde_json::from_value(wire).unwrap();
+        assert_eq!(round_tripped, money);
+    }
 }

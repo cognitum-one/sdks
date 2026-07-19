@@ -55,7 +55,11 @@ import httpx
 from cognitum.agentic import AgenticError, UnsupportedCapabilityError
 from cognitum.meta_proxy.config import MetaProxyClientConfig
 from cognitum.meta_proxy.consent import assert_consent_for_routing_intent
-from cognitum.meta_proxy.envelope import MetaProxyResponseMeta, MetaProxyResult
+from cognitum.meta_proxy.envelope import (
+    MetaProxyResponseMeta,
+    MetaProxyResult,
+    collect_unknown_headers,
+)
 from cognitum.meta_proxy.http_errors import map_meta_proxy_http_error
 from cognitum.meta_proxy.nonstream import post_chat_forwarding
 from cognitum.meta_proxy.routing import (
@@ -509,6 +513,7 @@ class MetaProxyClient:
             product_version=response.headers.get("x-cognitum-product-version"),
             protocol_version=response.headers.get("x-cognitum-protocol-version"),
             retry_after=float(retry_after_header) if retry_after_header else None,
+            unknown_headers=collect_unknown_headers(response.headers),
         )
         return payload, meta
 

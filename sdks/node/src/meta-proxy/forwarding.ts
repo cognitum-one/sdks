@@ -52,7 +52,7 @@ import type { ChatCompletion, ChatCompletionRequest } from "../meta-llm/types/op
 import { isBearerAttachmentAllowed } from "./config.js";
 import type { MetaProxyTelemetryHooks, MetaProxyTransport } from "./config.js";
 import { assertConsentForRoutingIntent } from "./consent.js";
-import type { MetaProxyResponseMeta, MetaProxyResult } from "./envelope.js";
+import { collectUnknownHeaders, type MetaProxyResponseMeta, type MetaProxyResult } from "./envelope.js";
 import { mapMetaProxyHttpError } from "./http-errors.js";
 import { assertRoutingReceiptMatchesIntent, type RoutingIntent } from "./routing.js";
 import type { MetaProxyRoutingReceipt } from "./status.js";
@@ -329,6 +329,7 @@ async function sendOnce(
     retryAfter: retryAfterHeader ? Number(retryAfterHeader) : undefined,
     routingReceipt,
     upstreamReceipt,
+    unknownHeaders: collectUnknownHeaders(response.headers),
   };
   return { data: rawJson as unknown as ChatCompletion, meta };
 }

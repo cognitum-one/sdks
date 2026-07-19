@@ -47,3 +47,49 @@ export interface MetaProxyResult<T> {
   data: T;
   meta: MetaProxyResponseMeta;
 }
+
+/**
+ * Response headers already surfaced through a typed {@link MetaProxyResponseMeta}
+ * field, plus standard HTTP framing/entity headers that would otherwise flood
+ * `unknownHeaders` with noise on every single response (issue #92). Compared
+ * case-insensitively (`Headers` keys are already lowercased by the Fetch API).
+ * Everything else observed on the response is preserved under
+ * `unknownHeaders` rather than silently dropped -- same "preserve what this
+ * SDK doesn't yet model" convention used elsewhere in this codebase (e.g.
+ * `MetaLlmReceipt.raw`).
+ */
+const KNOWN_RESPONSE_HEADERS = new Set([
+  "x-cognitum-product-version",
+  "x-cognitum-protocol-version",
+  "x-cognitum-request-id",
+  "retry-after",
+  "content-type",
+  "content-length",
+  "content-encoding",
+  "transfer-encoding",
+  "connection",
+  "keep-alive",
+  "date",
+  "server",
+  "vary",
+  "location",
+]);
+
+/**
+ * Collect every response header NOT in {@link KNOWN_RESPONSE_HEADERS} into
+ * the `unknownHeaders` map. Returns `undefined` (not an empty object) when
+ * nothing unrecognized was present, matching this codebase's "absent means
+ * absent" convention elsewhere.
+ */
+export function collectUnknownHeaders(headers: Headers): Record<string, string> | undefined {
+  const unknown: Record<string, string> = {};
+  // `Headers.forEach` (not `.entries()`/`for...of`) — this project's
+  // `tsconfig.json` lib list is `["ES2022", "DOM"]` without `DOM.Iterable`,
+  // so `Headers` isn't typed as iterable here, but `forEach` is part of the
+  // base (non-iterable) `DOM` lib and works identically.
+  headers.forEach((value, name) => {
+    if (KNOWN_RESPONSE_HEADERS.has(name.toLowerCase())) return;
+    unknown[name.toLowerCase()] = value;
+  });
+  return Object.keys(unknown).length > 0 ? unknown : undefined;
+}

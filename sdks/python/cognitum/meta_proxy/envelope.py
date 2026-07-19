@@ -54,4 +54,53 @@ class MetaProxyResult(Generic[T]):
     meta: MetaProxyResponseMeta
 
 
-__all__ = ["MetaProxyUpstreamReceipt", "MetaProxyResponseMeta", "MetaProxyResult"]
+#: Response headers already surfaced through a typed :class:`MetaProxyResponseMeta`
+#: field, plus standard HTTP framing/entity headers that would otherwise flood
+#: ``unknown_headers`` with noise on every single response (issue #92).
+#: Compared case-insensitively. Everything else observed on the response is
+#: preserved under ``unknown_headers`` rather than silently dropped -- same
+#: "preserve what this SDK doesn't yet model" convention used elsewhere in
+#: this codebase (e.g. ``MetaLlmReceipt.raw``).
+_KNOWN_RESPONSE_HEADERS = frozenset(
+    {
+        "x-cognitum-product-version",
+        "x-cognitum-protocol-version",
+        "x-cognitum-request-id",
+        "retry-after",
+        "content-type",
+        "content-length",
+        "content-encoding",
+        "transfer-encoding",
+        "connection",
+        "keep-alive",
+        "date",
+        "server",
+        "vary",
+        "location",
+    }
+)
+
+
+def collect_unknown_headers(headers: Any) -> dict[str, str] | None:
+    """Collect every response header NOT in the known-header allowlist into
+    the ``unknown_headers`` map. ``headers`` is anything exposing an
+    ``.items()`` iterator of ``(name, value)`` pairs (e.g. ``httpx.Headers``).
+    Returns ``None`` (not an empty dict) when nothing unrecognized was
+    present, matching this codebase's "absent means absent" convention
+    elsewhere.
+    """
+    unknown: dict[str, str] = {}
+    for name, value in headers.items():
+        lower = name.lower()
+        if lower in _KNOWN_RESPONSE_HEADERS:
+            continue
+        unknown[lower] = value
+    return unknown or None
+
+
+__all__ = [
+    "MetaProxyUpstreamReceipt",
+    "MetaProxyResponseMeta",
+    "MetaProxyResult",
+    "collect_unknown_headers",
+]

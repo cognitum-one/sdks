@@ -56,7 +56,7 @@ import {
   type MetaProxyClientConfig,
   type ResolvedMetaProxyClientConfig,
 } from "./config.js";
-import type { MetaProxyResult, MetaProxyResponseMeta } from "./envelope.js";
+import { collectUnknownHeaders, type MetaProxyResult, type MetaProxyResponseMeta } from "./envelope.js";
 import {
   forwardChatCompletion,
   rejectRedirectResponse,
@@ -478,6 +478,7 @@ export class MetaProxyClient {
       protocolVersion: response.headers.get("x-cognitum-protocol-version") ?? undefined,
       httpStatus: response.status,
       retryAfter: retryAfterHeader ? Number(retryAfterHeader) : undefined,
+      unknownHeaders: collectUnknownHeaders(response.headers),
     };
     return { data, meta };
   }

@@ -444,7 +444,7 @@ CI MUST prove:
 ```text
 cd sdks/node   && npm test -- meta-proxy-client-conformance
 cd sdks/python && pytest -m meta_proxy_client_conformance
-cd sdks/rust   && cargo test --features meta-proxy meta_proxy_client_conformance
+cd sdks/rust   && cargo test --features meta-proxy,native-tls meta_proxy_client_conformance
 ```
 
 Each command runs the same hostile loopback Proxy plus local and cloud backends,
@@ -452,6 +452,31 @@ captures all requests, and compares canonical results. Stable promotion also
 runs the real Proxy with mock providers and proves explicit local/cloud routing,
 critical fail-closed behavior, receipt preservation, stream cancellation, and
 zero real provider spend.
+
+**Current status (issue #94):** this is the target acceptance gate for §D11
+stable promotion, not a suite that exists yet — none of §D1-D10's smaller
+feature slices landed so far (see the "Updated" line above) attempt to
+satisfy compliance items 1-12 end-to-end. `sdks/rust/tests/meta_proxy_client_conformance.rs`
+carries one real, passing, intentionally-minimal placeholder test under this
+exact name (construction-is-zero-I/O only, compliance item 1) so the Rust
+command above no longer silently matches zero tests (`cargo test <filter>`
+exits 0 on an empty match, which previously made the documented command a
+false-green no-op). The Node/Python commands remain aspirational — no test
+tagged/named `meta-proxy-client-conformance` / `meta_proxy_client_conformance`
+exists in those SDKs yet; wiring those up is deferred to the same pass that
+builds out the real cross-language conformance suite.
+
+The Rust command additionally pins `native-tls` (not just `meta-proxy`):
+`cargo build --features meta-proxy` (no `native-tls`) is exercised standalone
+by CI's `rust-feature-matrix` job (`.github/workflows/ci.yml`), but that job
+deliberately runs `cargo build` there, never `cargo test` — with only the
+rustls-only default backend enabled, reqwest defers PEM validation to first
+use, which makes the pre-existing, already-tracked `seed` client test
+`builder_trust_root_pem_round_trips` fail (see the matrix job's inline
+comment). That failure is unrelated to Meta Proxy; the fix is to always pair
+`meta-proxy` with `native-tls` when running `cargo test` locally or in CI,
+exactly as the primary `rust` CI job already does
+(`cargo test --features "native-tls,seed,stream,blocking,mdns,meta-llm,meta-proxy,metaharness,harnessaas"`).
 
 ## References
 

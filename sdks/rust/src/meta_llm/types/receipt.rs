@@ -33,8 +33,17 @@ pub type ReceiptCacheResult = String;
 /// "Warn and redact expose only contract-safe detector classes and
 /// counts. Prompts, matches, secrets, and unredacted content are
 /// excluded").
+// `Serialize`/`Deserialize` are derived only because this type is
+// embedded in `MetaLlmReceipt` below, which is in turn embedded in
+// `crate::meta_llm::envelope::MetaLlmResponseMeta` (a struct that itself
+// derives `Serialize`/`Deserialize`) -- `parse_safety_summary` is the
+// only decode path that actually runs. The wire contract is snake_case
+// (string-literal `"detector_classes"`/`"blocked"` keys below), so the
+// rename matches `MetaLlmRoutingControls`'s convention (`super::routing`)
+// rather than the inert-but-mismatched `camelCase` this previously
+// carried (issue #90).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct SafetySummary {
     pub mode: Option<String>,
     pub detector_classes: Option<Vec<String>>,
@@ -44,8 +53,17 @@ pub struct SafetySummary {
 }
 
 /// ADR-0024b §D3's `MetaLlmReceipt`.
+///
+/// Same rationale as [`SafetySummary`] above: `Serialize`/`Deserialize`
+/// are derived only because `crate::meta_llm::envelope::MetaLlmResponseMeta`
+/// embeds this type and itself derives them; every actual decode path
+/// uses `parse_meta_llm_receipt` below, never this derive. The rename
+/// is snake_case to match the hand-written parser's string-literal keys
+/// (`"request_id"`, `"resolved_tier"`, ...) and `MetaLlmRoutingControls`'s
+/// convention, replacing the previously inert-but-mismatched `camelCase`
+/// (issue #90).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct MetaLlmReceipt {
     pub request_id: String,
     pub resolved_tier: Option<ReceiptModelTier>,
