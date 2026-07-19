@@ -1,9 +1,8 @@
 # ADR 0024b: Meta LLM Platform Resources, Routing, and Usage
 
-- **Status:** Proposed
+- **Status:** Partially Implemented (Preview maturity)
 - **Date:** 2026-07-18
-- **Deciders:** Cognitum SDK Working Group, Meta LLM owner, Identity, FinOps, Security, SRE, Developer Experience
-- **Scope:** Meta LLM platform SDK integration (`sdks/node`, `sdks/python`, `sdks/rust`)
+- **Updated:** 2026-07-19 — only §D11 migration step 1 is implemented (PR #89): routing types (§D2), receipt/usage/`Money` types (§D3), read-only `client.usage()`, `MetaLlmRoutingControls`/`MetaLlmReceipt` wired into chat.completions/messages.create/completions/responses, and the retry-invariant guarantee (routing controls never mutate across a retry). Batches (§D5), pods/approval/conformance/bench (§D6), pod callbacks/public webhooks (§D7), and the remaining governance namespaces (§D8 — guidance, collaboration, evolution, MicroLoRA, flywheel, genome, brain, vectors, conditional hosts) are NOT implemented; per this ADR's own estimate (8-12 shared engineering days) these are deliberately deferred to future scoped slices, tracked in issue #59.
 
 ## Context
 

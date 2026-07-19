@@ -1,9 +1,8 @@
 # ADR 0023: Agentic Errors, Retries, Idempotency, Cancellation, and Time Budgets
 
-- **Status:** Proposed
+- **Status:** Implemented
 - **Date:** 2026-07-18
-- **Deciders:** Cognitum SDK Working Group, Meta LLM owner, Meta Proxy owner, HarnessaaS owner, SRE, FinOps
-- **Scope:** cross-cutting (`sdks/node`, `sdks/python`, `sdks/rust`)
+- **Updated:** 2026-07-19 — `AgenticError`/`AgenticErrorKind`, `RetryPolicy`/`equalJitterDelayMs`, `IdempotencyBindingV1`, `CancellationToken`, `TimeBudget`, and `OperationHandle`/`OperationEventStream` are frozen and built (PR #79), and are the load-bearing retry/idempotency/time-budget primitives used throughout Meta LLM (ADR-0024a, PRs #85-#89) and Meta Proxy (ADR-0025a, PRs #91-#96). The "no retry after first byte" and "never mutate routing/payer/tier during retry" rules from this ADR were verified end-to-end for streaming in PR #88/#95 and for non-streaming POST forwarding in PR #93 (which required a post-merge fix, commit `eb553f7`, after independent review found an ADR-0025a-specific auto-retry violation).
 
 ## Context
 

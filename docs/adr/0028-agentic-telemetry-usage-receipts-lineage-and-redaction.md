@@ -1,9 +1,8 @@
 # ADR 0028: Agentic Telemetry, Usage, Cost Receipts, Lineage, and Redaction
 
-- **Status:** Proposed
+- **Status:** Partially Implemented
 - **Date:** 2026-07-18
-- **Deciders:** Cognitum SDK Working Group, Observability, FinOps, Security, Privacy, product owners
-- **Scope:** cross-cutting (`sdks/node`, `sdks/python`, `sdks/rust`)
+- **Updated:** 2026-07-19 — §D13 redaction sentinel (`SentinelSecretRedactor`: fixed-format matchers, charset-scoped Shannon-entropy fallback, bounded-depth-8 DFS, cycle detection) is implemented (PR #82). `ExecutionReceipt`/`LineageReference` construction and §D5-D9 verification (shape/digest/cryptographic/anchored ladder, HMAC-SHA256, lineage-chain structural validation) are implemented (PR #84), including a cross-language canonical-JSON golden fixture (`sdks/fixtures/receipt-canonicalization/`) added after independent review found a real camelCase-vs-snake_case cross-SDK signature-verification break. The broader shared telemetry pipeline (structured operation/protocol/tier/cache/escalation attributes flowing through a real observability backend) is not yet built — this remains cross-cutting infrastructure work for M6.
 
 ## Context
 

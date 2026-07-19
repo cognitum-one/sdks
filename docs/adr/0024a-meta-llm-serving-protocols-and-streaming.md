@@ -1,9 +1,8 @@
 # ADR 0024a: Meta LLM Serving Protocols and Streaming
 
-- **Status:** Proposed
+- **Status:** Implemented (Preview maturity)
 - **Date:** 2026-07-18
-- **Deciders:** Cognitum SDK Working Group, Meta LLM owner, Identity, FinOps, Security, SRE, Developer Experience
-- **Scope:** Meta LLM serving SDK integration (`sdks/node`, `sdks/python`, `sdks/rust`)
+- **Updated:** 2026-07-19 — `MetaLlmClient` construction, wire types, and health/whoami/models are implemented (PR #85); non-streaming chat.completions/messages.create (PR #86) and completions/responses/embeddings/countTokens (PR #87) are implemented with full D6 error mapping, D7 idempotency, and bounded retry; SSE streaming for chat.completions (D5) is implemented (PR #88, required a post-merge fix for a timeout-enforcement gap found by independent review). Anthropic Messages streaming and Responses streaming are deferred, reusing the same generic SSE parser landed in PR #88. GA gates (D9) are not yet exercised — this remains Preview maturity per the ADR's own D2/D9.
 
 ## Context
 

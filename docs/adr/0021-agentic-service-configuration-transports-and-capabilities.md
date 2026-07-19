@@ -1,9 +1,8 @@
 # ADR 0021: Agentic Service Configuration, Transports, and Capabilities
 
-- **Status:** Proposed
+- **Status:** Partially Implemented
 - **Date:** 2026-07-18
-- **Deciders:** Cognitum SDK Working Group, product API owners, Security, SRE
-- **Scope:** cross-cutting (`sdks/node`, `sdks/python`, `sdks/rust`)
+- **Updated:** 2026-07-19 — §D1 configuration model, §D2 product-specific origin behavior (Meta LLM's cloud base URL vs Meta Proxy's literal-loopback-only default with an explicit non-loopback escape hatch + one-time warning), §D3 HTTP transport boundary (ambient proxy env vars ignored, redirects rejected — PR #91/#93), §D4 request context (frozen M1 `RequestContext`, PR #79), §D8 health/readiness/identity (`health()`/`whoami()`/`models()` for Meta LLM PR #85, `status()`/`capabilities()` for Meta Proxy PR #91), and §D9 runtime/browser support (Node browser-environment rejection guard, PR #96) are implemented. §D5/§D6 (a real capability negotiation-and-caching model, beyond simple Preview/Stable maturity gating) and §D10 (explicit concurrency/resource-ownership/shutdown semantics) are not yet implemented.
 
 ## Context
 

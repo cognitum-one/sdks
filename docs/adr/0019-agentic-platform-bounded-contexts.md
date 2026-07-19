@@ -1,7 +1,8 @@
 # ADR 0019: Agentic Platform Bounded Contexts and SDK Topology
 
-- **Status:** Proposed
+- **Status:** Partially Implemented
 - **Date:** 2026-07-18
+- **Updated:** 2026-07-19 — the shared `agentic` module (bounded-context boundary, product-private client rule) is built and frozen across all 3 languages (PRs #79, #82, #83, #84); Meta LLM (ADR-0024a) and Meta Proxy (ADR-0025a D1-D10 tractable scope) client boundaries are implemented as separate product-private clients per this ADR's topology. MetaHarness and HarnessaaS contexts are not yet started.
 - **Deciders:** Cognitum SDK Working Group, MetaHarness owner, Meta LLM owner, Meta Proxy owner, HarnessaaS owner, Security
 - **Scope:** cross-cutting (`sdks/node`, `sdks/python`, `sdks/rust`)
 
