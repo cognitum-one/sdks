@@ -14,7 +14,7 @@ keywords = ["cognitum", "ai", "mcp", "sdk", "seed"]
 
 [project.optional-dependencies]
 # ADR-0016a §D6: mDNS discovery is opt-in. Install with
-#   pip install cognitum[mdns]
+#   pip install cognitum-sdk[mdns]
 # to pull in the `zeroconf` dependency; without it,
 # `cognitum.seed.discovery.MdnsDiscovery` raises a helpful ImportError.
 mdns = ["zeroconf>=0.131"]
