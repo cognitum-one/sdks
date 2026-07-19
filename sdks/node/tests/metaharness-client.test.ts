@@ -1,8 +1,26 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
 import { UnsupportedCapabilityError } from "../src/agentic/index.js";
 import { MetaHarnessClient } from "../src/metaharness/client.js";
 import { DEFAULT_HANDSHAKE_TIMEOUT_MS } from "../src/metaharness/config.js";
+
+// Vitest's ESM module namespace for Node builtins is not configurable, so
+// `node:child_process` must be replaced via `vi.mock` (hoisted above all
+// imports) rather than `vi.spyOn` — see the "stubs never touch the real
+// fetch or child_process APIs" test below for what these prove.
+const { childProcessSpawnSpy, childProcessExecSpy } = vi.hoisted(() => ({
+  childProcessSpawnSpy: vi.fn(() => {
+    throw new Error("child_process.spawn must never be called by a blocked MetaHarness stub");
+  }),
+  childProcessExecSpy: vi.fn(() => {
+    throw new Error("child_process.exec must never be called by a blocked MetaHarness stub");
+  }),
+}));
+
+vi.mock("node:child_process", () => ({
+  spawn: childProcessSpawnSpy,
+  exec: childProcessExecSpy,
+}));
 
 describe("MetaHarnessClient construction (ADR-0026a §D1) — zero I/O", () => {
   it("constructs with no arguments and performs no I/O", () => {
@@ -167,26 +185,47 @@ describe("MetaHarnessClient §D2 method stubs — fail closed, zero I/O (ADR-002
     });
   }
 
-  it("stubs never touch an injected process/filesystem/network spy", async () => {
-    const spawnSpy = { called: false };
-    const fsSpy = { called: false };
-    const fetchSpy = { called: false };
+  it("stubs never touch the real fetch or child_process APIs (issue #102)", async () => {
+    // Unlike the removed placeholder-object version of this test, these spies
+    // are wired to the actual global/module surfaces a real I/O path would
+    // have to go through, mirroring Python's genuine
+    // `asyncio.create_subprocess_exec` monkeypatch (test_client.py's
+    // `test_stubs_never_touch_a_process_or_filesystem_spy`). Each throws if
+    // called, so any accidental I/O would surface as a distinct rejection
+    // reason rather than silently passing.
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(() => {
+        throw new Error("fetch must never be called by a blocked MetaHarness stub");
+      });
+    childProcessSpawnSpy.mockClear();
+    childProcessExecSpy.mockClear();
 
-    // A pass-through "environment" object standing in for child_process/fs/fetch —
-    // no method under test accepts or could reach these, but we assert they are
-    // never invoked as a structural proof that no I/O path exists yet.
-    const client = new MetaHarnessClient();
+    try {
+      const client = new MetaHarnessClient();
 
-    await Promise.allSettled([
-      client.capabilities(),
-      client.listTemplates(),
-      client.listHosts(),
-      client.analyzeRepository({ kind: "local", canonicalPath: "/tmp/repo" }),
-      client.verifyWitness({ kind: "local", canonicalPath: "/tmp/repo" }),
-    ]);
+      const results = await Promise.allSettled([
+        client.capabilities(),
+        client.listTemplates(),
+        client.listHosts(),
+        client.analyzeRepository({ kind: "local", canonicalPath: "/tmp/repo" }),
+        client.verifyWitness({ kind: "local", canonicalPath: "/tmp/repo" }),
+      ]);
 
-    expect(spawnSpy.called).toBe(false);
-    expect(fsSpy.called).toBe(false);
-    expect(fetchSpy.called).toBe(false);
+      // Every call must reject with the real fail-closed error, not with one
+      // of the spies' thrown "must never be called" errors.
+      for (const result of results) {
+        expect(result.status).toBe("rejected");
+        if (result.status === "rejected") {
+          expect(result.reason).toBeInstanceOf(UnsupportedCapabilityError);
+        }
+      }
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(childProcessSpawnSpy).not.toHaveBeenCalled();
+      expect(childProcessExecSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });

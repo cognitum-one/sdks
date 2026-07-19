@@ -220,6 +220,32 @@ pub struct WitnessVerification {
     pub raw_unknown: HashMap<String, Value>,
 }
 
+/// `verifyWitness`'s input parameter (ADR-0026a §D2: `workspaceOrWitness:
+/// RepositorySource | WitnessVerification`) — verify a fresh workspace from
+/// scratch, or re-verify/upgrade an already-computed `WitnessVerification`
+/// (e.g. escalating a prior `Shape`-level result to `Digest` or higher).
+/// Node/Python express this as a union type; Rust's idiomatic equivalent is
+/// this two-variant enum, matching the `RepositorySource` convention above.
+/// Issue #102: this variant was previously missing from `verify_witness`'s
+/// signature, which accepted only `&RepositorySource`.
+#[derive(Debug, Clone)]
+pub enum WorkspaceOrWitness {
+    Workspace(RepositorySource),
+    Witness(WitnessVerification),
+}
+
+impl From<RepositorySource> for WorkspaceOrWitness {
+    fn from(source: RepositorySource) -> Self {
+        Self::Workspace(source)
+    }
+}
+
+impl From<WitnessVerification> for WorkspaceOrWitness {
+    fn from(verification: WitnessVerification) -> Self {
+        Self::Witness(verification)
+    }
+}
+
 /// The result of a completed, committed (or cancelled) `scaffold()` call
 /// (ADR-0026a §D2, §D3).
 #[derive(Debug, Clone)]
