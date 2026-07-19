@@ -20,7 +20,19 @@ fix).
 
 from __future__ import annotations
 
-from cognitum.meta_proxy.client import CapabilitiesResult, MetaProxyClient
+from cognitum.meta_proxy.auth import (
+    DEFAULT_META_PROXY_TOKEN_ENV_VAR,
+    LocalBearerToken,
+    LocalBearerTokenCredentialProvider,
+    ProxyCredential,
+    WorkloadCapability,
+    WorkloadCapabilityClaims,
+)
+from cognitum.meta_proxy.client import (
+    CapabilitiesResult,
+    MetaProxyChatCallOptions,
+    MetaProxyClient,
+)
 from cognitum.meta_proxy.config import (
     DEFAULT_META_PROXY_ORIGIN,
     MetaProxyClientConfig,
@@ -32,6 +44,10 @@ from cognitum.meta_proxy.envelope import (
     MetaProxyResult,
     MetaProxyUpstreamReceipt,
 )
+from cognitum.meta_proxy.routing import (
+    RoutingIntent,
+    assert_routing_receipt_matches_intent,
+)
 from cognitum.meta_proxy.status import (
     MetaProxyRoutingReceipt,
     MetaProxyStatus,
@@ -41,6 +57,7 @@ from cognitum.meta_proxy.status import (
 
 __all__ = [
     "MetaProxyClient",
+    "MetaProxyChatCallOptions",
     "CapabilitiesResult",
     "DEFAULT_META_PROXY_ORIGIN",
     "MetaProxyClientConfig",
@@ -53,4 +70,14 @@ __all__ = [
     "MetaProxyStatus",
     "RoutingPlane",
     "WorkloadPolicy",
+    # §D5 routing intent
+    "RoutingIntent",
+    "assert_routing_receipt_matches_intent",
+    # §D6 authentication
+    "DEFAULT_META_PROXY_TOKEN_ENV_VAR",
+    "LocalBearerToken",
+    "WorkloadCapabilityClaims",
+    "WorkloadCapability",
+    "ProxyCredential",
+    "LocalBearerTokenCredentialProvider",
 ]

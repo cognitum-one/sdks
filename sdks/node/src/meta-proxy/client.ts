@@ -33,12 +33,20 @@
  */
 
 import { AgenticError, type Credential, type CredentialProvider } from "../agentic/index.js";
+import type { ChatCompletion, ChatCompletionRequest } from "../meta-llm/types/openai.js";
 import {
+  isBearerAttachmentAllowed,
   resolveMetaProxyClientConfig,
   type MetaProxyClientConfig,
   type ResolvedMetaProxyClientConfig,
 } from "./config.js";
 import type { MetaProxyResult, MetaProxyResponseMeta } from "./envelope.js";
+import {
+  forwardChatCompletion,
+  rejectRedirectResponse,
+  type ChatForwardDeps,
+  type MetaProxyChatCallOptions,
+} from "./forwarding.js";
 import { mapMetaProxyHttpError } from "./http-errors.js";
 import type { MetaProxyStatus } from "./status.js";
 
@@ -219,6 +227,36 @@ export class MetaProxyClient {
   }
 
   /**
+   * `POST /v1/chat/completions` through the Proxy (ADR-0025a §D7), non-
+   * streaming only this pass (§D8 streaming is deferred, so there is no
+   * `chat.completionsStream` here). Namespace-object shape mirrors
+   * `MetaLlmClient.chat.completions` (`../meta-llm/client.js`), but the call
+   * returns a Proxy result whose `meta` carries the selected-plane routing
+   * receipt and is verified against `options.routingIntent.requiredPlane`
+   * (§D5 rule 7). See `./forwarding.js` for the header allowlist, idempotency,
+   * retry, redirect, and ambient-proxy rules.
+   */
+  readonly chat = {
+    completions: (
+      request: ChatCompletionRequest,
+      options?: MetaProxyChatCallOptions,
+    ): Promise<MetaProxyResult<ChatCompletion>> =>
+      forwardChatCompletion(this.forwardingDeps(), request, options),
+  };
+
+  /** Assemble the `./forwarding.js` dependency bag from resolved config. */
+  private forwardingDeps(): ChatForwardDeps {
+    return {
+      origin: this.config.origin,
+      transport: this.config.transport ?? fetch,
+      credentialProvider: this.config.localCredentialProvider,
+      allowNonLoopback: this.config.allowNonLoopback,
+      defaultRequestContext: this.config.defaultRequestContext,
+      telemetry: this.config.telemetry,
+    };
+  }
+
+  /**
    * Close local connections and wait only. Never stops the sidecar process
    * (ADR-0025a §D3: "Closing it releases connections only and never stops
    * the sidecar.").
@@ -248,6 +286,18 @@ export class MetaProxyClient {
 
   private applyAuth(headers: Record<string, string>, credential?: Credential): void {
     if (!credential) return;
+    // Defense in depth (ADR-0025a §D6/§D10): never attach the bearer to a
+    // non-loopback origin unless allowNonLoopback was explicitly set.
+    // Construction already guarantees this — reaching the throw means config
+    // was mutated after construction.
+    if (!isBearerAttachmentAllowed(this.config.origin, this.config.allowNonLoopback)) {
+      throw new AgenticError(
+        "protocol",
+        `refusing to attach the local bearer to non-loopback origin ` +
+          `"${this.config.origin}" (ADR-0025a §D6/§D10)`,
+        { product: PRODUCT, retryable: false },
+      );
+    }
     // ADR-0025a §D6 (deferred, minimal auth only this pass): exactly one
     // contracted placement per operation, mirroring `MetaLlmClient`'s
     // `applyAuth` (`../meta-llm/client.js`). `credential.scheme` is either
@@ -305,7 +355,10 @@ export class MetaProxyClient {
 
     let response: Response;
     try {
-      response = await transport(url, { method: "GET", headers });
+      // `redirect: "manual"` — redirects are rejected, not followed
+      // (ADR-0025a §D6/§D10). No proxy/dispatcher/agent option is passed, so
+      // ambient HTTP_PROXY/HTTPS_PROXY/NO_PROXY are ignored by the transport.
+      response = await transport(url, { method: "GET", headers, redirect: "manual" });
     } catch (cause) {
       this.config.telemetry?.onRequestEnd?.({
         operation,
@@ -328,6 +381,8 @@ export class MetaProxyClient {
       httpStatus: response.status,
       durationMs,
     });
+
+    rejectRedirectResponse(response, operation, requestId);
 
     if (!response.ok) {
       throw await mapMetaProxyHttpError(response, operation, requestId);

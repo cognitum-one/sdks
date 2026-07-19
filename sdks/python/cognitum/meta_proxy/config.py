@@ -56,6 +56,22 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
+def bearer_target_allowed(origin: str, allow_non_loopback: bool) -> bool:
+    """``True`` when a local bearer may be attached to a request to
+    ``origin`` (ADR-0025a §D6/§D10): literal loopback always, or any origin
+    only when ``allow_non_loopback`` is explicitly set (dangerous preview).
+
+    Defense-in-depth for the bearer-attachment path -- construction already
+    rejects a non-loopback origin unless ``allow_non_loopback`` is set, so
+    this guards against any future path that reaches the transport without
+    re-checking.
+    """
+    if allow_non_loopback:
+        return True
+    host = _extract_host(origin)
+    return bool(host and _is_loopback_host(host))
+
+
 def _warn_non_loopback_once(origin: str) -> None:
     if origin in _WARNED_NON_LOOPBACK:
         return
@@ -155,4 +171,5 @@ __all__ = [
     "MetaProxyTelemetryEvent",
     "MetaProxyTelemetryHooks",
     "MetaProxyClientConfig",
+    "bearer_target_allowed",
 ]

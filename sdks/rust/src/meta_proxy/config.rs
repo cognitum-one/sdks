@@ -25,6 +25,33 @@ use crate::agentic::{
     AgenticError, AgenticErrorKind, BudgetPolicy, CapabilitySet, CredentialProvider, RequestContext,
 };
 
+/// Build the default `reqwest::Client` for a Meta Proxy client when the caller
+/// injects none (ADR-0025a §D6/§D10). Unlike `reqwest::Client::default()`,
+/// this is EXPLICITLY hardened rather than relying on reqwest's current
+/// defaults staying safe in a future version:
+///
+///  - `.no_proxy()` — ambient `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`
+///    environment variables are ignored (§D6: "Ambient HTTP proxy variables
+///    are ignored"; §D10: "The transport bypasses corporate proxies");
+///  - `.redirect(Policy::none())` — no redirect is ever followed (§D6:
+///    "Cross-origin redirects, rebinding hostnames [...] and downgrade
+///    redirects are rejected"; §D10: "rejects redirects"). A 3xx surfaces to
+///    the caller as an error status rather than silently re-issuing the
+///    request — possibly to a non-loopback `Location` with the bearer attached.
+#[allow(clippy::result_large_err)]
+pub(crate) fn build_default_transport() -> Result<reqwest::Client, AgenticError> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|cause| {
+            AgenticError::new(
+                AgenticErrorKind::Configuration,
+                format!("failed to build the default hardened meta-proxy transport: {cause}"),
+            )
+        })
+}
+
 /// Default loopback origin — matches the Rust proxy binary's default bind
 /// (ADR-0025a Context).
 pub const DEFAULT_META_PROXY_ORIGIN: &str = "http://127.0.0.1:11435";

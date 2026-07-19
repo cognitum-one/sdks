@@ -33,10 +33,14 @@ stream = ["seed", "dep:eventsource-stream"]
 # (`cognitum_one::meta_llm`, `meta-llm`).
 meta-llm = ["dep:uuid"]
 # Meta Proxy client (ADR-0019 §D2, ADR-0025a). Gates the `meta_proxy`
-# module's code — reuses the same `uuid` optional dependency `meta-llm`
-# pulls in for correlation IDs (ADR-0025a §D3) — matches the ADR-0019 §D2
-# namespace map (`cognitum_one::meta_proxy`, `meta-proxy`).
-meta-proxy = ["dep:uuid"]
+# module's code. Depends on `meta-llm` because ADR-0025a §D7 / ADR-0019 §D7
+# ("Meta LLM and Meta Proxy share OpenAI and Anthropic wire primitives where
+# their capability sets agree") reuse `meta_llm`'s OpenAI wire types
+# (`ChatCompletionRequest`/`ChatCompletion`) verbatim for the §D7 forwarding
+# contract rather than redefining them — this is wire-primitive sharing, NOT
+# client-class sharing (still forbidden by §D4). `meta-llm` already pulls in
+# the `uuid` optional dependency both modules use for correlation IDs.
+meta-proxy = ["meta-llm"]
 blocking = ["reqwest/blocking"]
 live-seed-tests = ["seed"]
 # Opt-in mDNS discovery (ADR-0016a §D6, Phase 3). One-shot `_cognitum._tcp.local`

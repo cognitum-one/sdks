@@ -46,10 +46,18 @@ from cognitum.agentic import AgenticError
 from cognitum.meta_proxy.config import MetaProxyClientConfig
 from cognitum.meta_proxy.envelope import MetaProxyResponseMeta, MetaProxyResult
 from cognitum.meta_proxy.http_errors import map_meta_proxy_http_error
+from cognitum.meta_proxy.nonstream import post_chat_forwarding
+from cognitum.meta_proxy.routing import (
+    RoutingIntent,
+    assert_routing_receipt_matches_intent,
+)
 from cognitum.meta_proxy.status import MetaProxyStatus
 
 if TYPE_CHECKING:
-    from cognitum.agentic import Credential
+    from collections.abc import Mapping
+
+    from cognitum.agentic import Credential, RequestContext
+    from cognitum.meta_llm.types import ChatCompletion, ChatCompletionRequest
 
 _PRODUCT = "meta-proxy"
 _DEFAULT_CAPABILITY_VERSION = "0.0.0"
@@ -99,6 +107,83 @@ def _parse_status(data: dict[str, Any]) -> MetaProxyStatus:
     )
 
 
+@dataclass(frozen=True)
+class MetaProxyChatCallOptions:
+    """Per-call options for ``chat.completions()`` (ADR-0025a §D5/§D7).
+
+    ``forward_headers`` is a caller-supplied header bag that is
+    ALLOWLIST-FILTERED before anything reaches the wire (§D7): only the
+    approved forwarding headers survive, so a caller cannot smuggle an
+    ``Authorization`` override, ``Host``, sponsor marker, or training-consent
+    header through it -- those are derived from validated local state.
+    """
+
+    routing_intent: RoutingIntent | None = None
+    forward_headers: Mapping[str, str] | None = None
+    request_context: RequestContext | None = None
+
+
+class _ChatNamespace:
+    """``client.chat`` namespace object, mirroring
+    :class:`cognitum.meta_llm.client.MetaLlmClient`'s ``chat`` attribute.
+    """
+
+    def __init__(self, client: MetaProxyClient) -> None:
+        self._client = client
+
+    async def completions(
+        self,
+        request: ChatCompletionRequest,
+        options: MetaProxyChatCallOptions | None = None,
+    ) -> MetaProxyResult[ChatCompletion]:
+        """``POST /v1/chat/completions`` through the Proxy (non-streaming
+        only, ADR-0025a §D7). Reuses the Meta LLM ``ChatCompletionRequest``/
+        ``ChatCompletion`` wire types (§D7: "reuse only the wire types")
+        while remaining a Proxy method that returns a Proxy routing receipt.
+
+        Forwards ONLY the §D7-allowlisted caller headers plus SDK-owned
+        headers and the validated local bearer; generates an idempotency
+        key; performs a single 401 refresh and bounded 429/502/503 retry;
+        rejects redirects (§D10). When ``options.routing_intent`` pins a
+        ``required_plane``, the returned routing receipt is verified against
+        it at decode time -- a mismatch raises a non-retryable
+        ``protocol`` error even on an otherwise-valid 200 (§D5 rule 7).
+        """
+        from dataclasses import asdict
+
+        from cognitum.meta_llm.parsing import parse_chat_completion
+
+        opts = options or MetaProxyChatCallOptions()
+        body = asdict(request)
+        data, meta = await post_chat_forwarding(
+            self._client._config,
+            self._client._transport,
+            "/v1/chat/completions",
+            "chat.completions",
+            body,
+            opts.forward_headers,
+        )
+
+        intent = opts.routing_intent
+        if intent is not None and intent.required_plane is not None:
+            receipt = meta.routing_receipt
+            if receipt is None:
+                raise AgenticError(
+                    "protocol",
+                    "chat.completions required_plane "
+                    f'"{intent.required_plane}" cannot be verified: the Proxy '
+                    "returned no routing receipt (ADR-0025a §D4: every inference "
+                    "must return selected-plane evidence)",
+                    product=_PRODUCT,
+                    operation="chat.completions",
+                    request_id=meta.request_id,
+                    retryable=False,
+                )
+            assert_routing_receipt_matches_intent(intent, receipt)
+
+        return MetaProxyResult(data=parse_chat_completion(data), meta=meta)
+
+
 class MetaProxyClient:
     """Client for an already-running, authenticated, loopback Meta Proxy
     sidecar (ADR-0025a).
@@ -116,7 +201,15 @@ class MetaProxyClient:
     def __init__(self, config: MetaProxyClientConfig | None = None) -> None:
         self._config = config or MetaProxyClientConfig()
         self._owns_transport = self._config.transport is None
-        self._transport: httpx.AsyncClient = self._config.transport or httpx.AsyncClient()
+        # ADR-0025a §D6/§D10: the default transport ignores ambient HTTP
+        # proxy env vars (``trust_env=False`` -- httpx honors HTTP_PROXY/
+        # HTTPS_PROXY by default) and never follows redirects
+        # (``follow_redirects=False``, pinned explicitly rather than relying
+        # on the library default silently staying safe).
+        self._transport: httpx.AsyncClient = self._config.transport or httpx.AsyncClient(
+            trust_env=False, follow_redirects=False
+        )
+        self.chat = _ChatNamespace(self)
 
     @property
     def config(self) -> MetaProxyClientConfig:
@@ -312,4 +405,4 @@ class MetaProxyClient:
         return payload, meta
 
 
-__all__ = ["MetaProxyClient", "CapabilitiesResult"]
+__all__ = ["MetaProxyClient", "CapabilitiesResult", "MetaProxyChatCallOptions"]
