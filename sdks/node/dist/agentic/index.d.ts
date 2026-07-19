@@ -841,6 +841,166 @@ declare const ATTR_OPERATION_STATE = "cognitum.operation.state";
 declare const ATTR_ERROR_KIND = "cognitum.error.kind";
 /** `cognitum.retry.count` -- integer. Cardinality rule: measurement. */
 declare const ATTR_RETRY_COUNT = "cognitum.retry.count";
+/** `request.start` -- emitted when a request begins. */
+declare const EVENT_REQUEST_START = "request.start";
+/** `request.retry_scheduled` -- emitted when a retry has been scheduled. */
+declare const EVENT_REQUEST_RETRY_SCHEDULED = "request.retry_scheduled";
+/** `request.end` -- emitted when a request completes (success or failure). */
+declare const EVENT_REQUEST_END = "request.end";
+/** `stream.first_event` -- emitted on the first event of a stream. */
+declare const EVENT_STREAM_FIRST_EVENT = "stream.first_event";
+/** `stream.end` -- emitted when a stream completes. */
+declare const EVENT_STREAM_END = "stream.end";
+/** `operation.state_changed` -- emitted on an operation state transition. */
+declare const EVENT_OPERATION_STATE_CHANGED = "operation.state_changed";
+/** `operation.wait_ended` -- emitted when a caller's wait on an operation ends. */
+declare const EVENT_OPERATION_WAIT_ENDED = "operation.wait_ended";
+/** `capabilities.loaded` -- emitted when a capability set has been loaded. */
+declare const EVENT_CAPABILITIES_LOADED = "capabilities.loaded";
+/** `budget.reserved` -- emitted when a cost reservation is made. */
+declare const EVENT_BUDGET_RESERVED = "budget.reserved";
+/** `budget.committed` -- emitted when a reservation is committed. */
+declare const EVENT_BUDGET_COMMITTED = "budget.committed";
+/** `budget.released` -- emitted when a reservation is released. */
+declare const EVENT_BUDGET_RELEASED = "budget.released";
+/** `consent.required` -- emitted when caller consent is required to proceed. */
+declare const EVENT_CONSENT_REQUIRED = "consent.required";
+/** `process.started` -- emitted when a local subprocess starts. */
+declare const EVENT_PROCESS_STARTED = "process.started";
+/** `process.ended` -- emitted when a local subprocess ends. */
+declare const EVENT_PROCESS_ENDED = "process.ended";
+/** `artifact.verified` -- emitted when an artifact has been verified. */
+declare const EVENT_ARTIFACT_VERIFIED = "artifact.verified";
+/** `evidence.verified` -- emitted when evidence has been verified. */
+declare const EVENT_EVIDENCE_VERIFIED = "evidence.verified";
+/**
+ * `telemetry.dropped` -- emitted (via the fallback hook, per §D1) when the
+ * SDK drops a telemetry event.
+ */
+declare const EVENT_TELEMETRY_DROPPED = "telemetry.dropped";
+
+/**
+ * §D4 metric instrument catalog (ADR-0028 §D4, lines 148-161). Type-only
+ * scaffolding, mirroring §D3's `ATTR_*` constant-catalog discipline in
+ * `./telemetry.ts`: this module names the metric *instruments* the SDK is
+ * expected to emit once a real metrics adapter exists (tracking issue
+ * #70) -- it does not implement an OpenTelemetry meter, does not record
+ * any measurement, and is not wired into any product client.
+ *
+ * ADR-0028 §D4 describes the metric catalog in PROSE ("request and stream
+ * duration histograms", "request, retry, error, and cancellation
+ * counters", ...), unlike its literal dotted event names (`request.start`,
+ * ...) or its literal `cognitum.*` attribute names (§D3). Two naming
+ * decisions were required here that are NOT direct ADR quotes:
+ *
+ * 1. Each bullet is expanded into one {@link MetricInstrumentKind} value
+ *    per concrete instrument (e.g. "input, output, cache, and safety token
+ *    counters" -> four values; "reserved, committed, released, and
+ *    reconciled cost counters" -> four values), so a future metrics
+ *    adapter has one concrete registration point per instrument rather
+ *    than one opaque bucket per bullet. This yields 19 instruments total:
+ *    2 duration histograms + 4 request-shape counters + 1 latency
+ *    histogram + 4 token counters + 4 cost counters + 1 operation-state
+ *    counter + 2 process counters + 1 verification counter.
+ * 2. Each instrument's wire name follows the bare-dotted-word style of the
+ *    §D4 *event* names (`request.start`, `stream.first_event`, ...) rather
+ *    than the `cognitum.*`-namespaced style of the §D3 *attribute* names.
+ *    An instrument name identifies a meter; an attribute key identifies a
+ *    dimension recorded alongside a data point -- those are different
+ *    roles, and reusing e.g. `cognitum.retry.count` for both the §D3
+ *    `ATTR_RETRY_COUNT` attribute AND a §D4 retry-count instrument would
+ *    conflate them, so instrument names deliberately omit the `cognitum.`
+ *    prefix.
+ * 3. {@link MetricInstrumentKind} follows this module's existing
+ *    string-literal-union convention (see {@link TelemetrySeverity} in
+ *    `./telemetry.ts`) rather than a TypeScript `enum`, so the
+ *    per-instrument "which measurement kind" fact is carried by the
+ *    {@link MEASUREMENT_KIND_BY_INSTRUMENT} lookup rather than a class
+ *    method -- TypeScript string unions have no attached behavior.
+ *
+ * Per ADR-0028 §D4 (lines 159-161): "Request IDs, tenant IDs, operation
+ * IDs, repository names, prompts, URLs, and raw model IDs MUST NOT be
+ * metric dimensions. Money of different currencies is never summed into
+ * one measurement." No validator enforces either rule in this pass -- this
+ * is a discoverability note for whoever wires real metric emission in a
+ * follow-up. The four `METRIC_COST_*` instruments below in particular MUST
+ * be recorded as separate measurements per currency, never summed together.
+ */
+/**
+ * Whether a {@link MetricInstrumentKind} is recorded as a histogram or a
+ * monotonic counter. ADR-0028 §D4 explicitly distinguishes "duration ...
+ * histograms" / "first-event latency histogram" from the various
+ * "... counters" bullets.
+ */
+type MeasurementKind = "histogram" | "counter";
+/** "request ... duration histograms". */
+declare const METRIC_REQUEST_DURATION = "request.duration";
+/** "... stream duration histograms". */
+declare const METRIC_STREAM_DURATION = "stream.duration";
+/** "request ... counters". */
+declare const METRIC_REQUEST_COUNT = "request.count";
+/** "... retry ... counters". */
+declare const METRIC_RETRY_COUNT = "retry.count";
+/** "... error ... counters". */
+declare const METRIC_ERROR_COUNT = "error.count";
+/** "... and cancellation counters". */
+declare const METRIC_CANCELLATION_COUNT = "cancellation.count";
+/** "first-event latency histogram". */
+declare const METRIC_FIRST_EVENT_LATENCY = "stream.first_event.latency";
+/** "input ... token counters when server-reported". */
+declare const METRIC_INPUT_TOKEN_COUNT = "token.input.count";
+/** "... output ... token counters when server-reported". */
+declare const METRIC_OUTPUT_TOKEN_COUNT = "token.output.count";
+/** "... cache ... token counters when server-reported". */
+declare const METRIC_CACHE_TOKEN_COUNT = "token.cache.count";
+/** "... and safety token counters when server-reported". */
+declare const METRIC_SAFETY_TOKEN_COUNT = "token.safety.count";
+/**
+ * "reserved ... cost counters by currency". MUST NOT be summed across
+ * currencies (ADR-0028 §D4 line 161).
+ */
+declare const METRIC_COST_RESERVED = "cost.reserved";
+/**
+ * "... committed ... cost counters by currency". MUST NOT be summed
+ * across currencies (ADR-0028 §D4 line 161).
+ */
+declare const METRIC_COST_COMMITTED = "cost.committed";
+/**
+ * "... released ... cost counters by currency". MUST NOT be summed
+ * across currencies (ADR-0028 §D4 line 161).
+ */
+declare const METRIC_COST_RELEASED = "cost.released";
+/**
+ * "... and reconciled cost counters by currency". MUST NOT be summed
+ * across currencies (ADR-0028 §D4 line 161).
+ */
+declare const METRIC_COST_RECONCILED = "cost.reconciled";
+/** "operation state-transition counters". */
+declare const METRIC_OPERATION_STATE_TRANSITION_COUNT = "operation.state_transition.count";
+/** "process exit ... counters". */
+declare const METRIC_PROCESS_EXIT_COUNT = "process.exit.count";
+/** "... and forced-termination counters". */
+declare const METRIC_PROCESS_FORCED_TERMINATION_COUNT = "process.forced_termination.count";
+/** "verification result counters". */
+declare const METRIC_VERIFICATION_RESULT_COUNT = "verification.result.count";
+/**
+ * The default metric instrument catalog (ADR-0028 §D4, lines 148-157). See
+ * the module doc comment for how ADR prose bullets were expanded into
+ * these 19 instrument names.
+ */
+type MetricInstrumentKind = typeof METRIC_REQUEST_DURATION | typeof METRIC_STREAM_DURATION | typeof METRIC_REQUEST_COUNT | typeof METRIC_RETRY_COUNT | typeof METRIC_ERROR_COUNT | typeof METRIC_CANCELLATION_COUNT | typeof METRIC_FIRST_EVENT_LATENCY | typeof METRIC_INPUT_TOKEN_COUNT | typeof METRIC_OUTPUT_TOKEN_COUNT | typeof METRIC_CACHE_TOKEN_COUNT | typeof METRIC_SAFETY_TOKEN_COUNT | typeof METRIC_COST_RESERVED | typeof METRIC_COST_COMMITTED | typeof METRIC_COST_RELEASED | typeof METRIC_COST_RECONCILED | typeof METRIC_OPERATION_STATE_TRANSITION_COUNT | typeof METRIC_PROCESS_EXIT_COUNT | typeof METRIC_PROCESS_FORCED_TERMINATION_COUNT | typeof METRIC_VERIFICATION_RESULT_COUNT;
+/**
+ * Every catalog value, in ADR-0028 §D4 prose order. Used by tests to
+ * assert the catalog's cardinality and cross-language parity.
+ */
+declare const ALL_METRIC_INSTRUMENT_KINDS: readonly MetricInstrumentKind[];
+/**
+ * Histogram vs counter per instrument, per ADR-0028 §D4's explicit
+ * distinction.
+ */
+declare const MEASUREMENT_KIND_BY_INSTRUMENT: Readonly<Record<MetricInstrumentKind, MeasurementKind>>;
+/** Looks up the measurement kind for one instrument. */
+declare function measurementKindOf(kind: MetricInstrumentKind): MeasurementKind;
 
 /**
  * W3C Trace Context parse / generate / join logic and stable span-name
@@ -1037,4 +1197,4 @@ interface LineageChainVerification {
  */
 declare function verifyLineageChain(chain: LineageReference[], opts: VerifyLineageChainOptions): LineageChainVerification;
 
-export { ATTR_CACHE_RESULT, ATTR_CONTRACT_VERSION, ATTR_ERROR_KIND, ATTR_MODEL_ALIAS, ATTR_OPERATION, ATTR_OPERATION_STATE, ATTR_PRODUCT, ATTR_PROTOCOL, ATTR_REQUEST_ID, ATTR_RETRY_COUNT, ATTR_ROUTING_PLANE, ATTR_ROUTING_REASON, ATTR_TENANT_HASH, ATTR_TIER, AgenticError, type AgenticErrorKind, type BudgetPolicy, type BuildExecutionReceiptInput, type CancellationReason, type CancellationToken, type CapabilitySet, type CapabilitySource, type ConsentGrant, type ConsentGrantKind, ConsentRequiredError, type CostFinality, type CostObservation, type Credential, type CredentialAuthority, type CredentialProvider, type CredentialRequest, type D12Category, DEFAULT_API_KEY_ENV_VAR, DEFAULT_RETRY_POLICY, DEFAULT_TRACE_FLAGS, type EventStreamOptions, type ExecutionReceipt, type IdempotencyBindingV1, type LineageChainVerification, type LineageReference, MAX_TRACESTATE_MEMBERS, NoopTelemetrySink, OAuthTokenCredentialProvider, type OAuthTokenCredentialProviderOptions, type OAuthTokenSource, type OAuthTokenSourceResult, type OnUnknownEstimate, type OperationEvent, type OperationHandle, type OperationRetryClass, type OperationSnapshot, type OperationState, type Page, type PageRequest, PermissionDeniedError, RedactedSecret, type RequestContext, type RetryPolicy, type SecretClassification, type SecretRedactor, SentinelSecretRedactor, StaticApiKeyCredentialProvider, type StaticApiKeyCredentialProviderOptions, TRACE_VERSION, type TelemetryEvent, type TelemetrySeverity, type TelemetrySink, type TenantContext, type TimeBudget, type TraceContext, type TraceStateMember, UnsupportedCapabilityError, UnsupportedRuntimeError, type VerificationLevel, type VerificationResult, type VerifyLineageChainOptions, type VerifyReceiptOptions, type WaitOptions, assertScopeGranted, buildExecutionReceipt, canonicalJson, equalJitterDelayMs, formatTraceState, generateTraceParent, harnessaasSpanName, joinOrGenerateTraceContext, metaLlmSpanName, metaProxySpanName, metaharnessSpanName, parseTraceParent, parseTraceState, sha256Hex, shapeCheckExecutionReceipt, shapeCheckLineageReference, verifyExecutionReceipt, verifyLineageChain };
+export { ALL_METRIC_INSTRUMENT_KINDS, ATTR_CACHE_RESULT, ATTR_CONTRACT_VERSION, ATTR_ERROR_KIND, ATTR_MODEL_ALIAS, ATTR_OPERATION, ATTR_OPERATION_STATE, ATTR_PRODUCT, ATTR_PROTOCOL, ATTR_REQUEST_ID, ATTR_RETRY_COUNT, ATTR_ROUTING_PLANE, ATTR_ROUTING_REASON, ATTR_TENANT_HASH, ATTR_TIER, AgenticError, type AgenticErrorKind, type BudgetPolicy, type BuildExecutionReceiptInput, type CancellationReason, type CancellationToken, type CapabilitySet, type CapabilitySource, type ConsentGrant, type ConsentGrantKind, ConsentRequiredError, type CostFinality, type CostObservation, type Credential, type CredentialAuthority, type CredentialProvider, type CredentialRequest, type D12Category, DEFAULT_API_KEY_ENV_VAR, DEFAULT_RETRY_POLICY, DEFAULT_TRACE_FLAGS, EVENT_ARTIFACT_VERIFIED, EVENT_BUDGET_COMMITTED, EVENT_BUDGET_RELEASED, EVENT_BUDGET_RESERVED, EVENT_CAPABILITIES_LOADED, EVENT_CONSENT_REQUIRED, EVENT_EVIDENCE_VERIFIED, EVENT_OPERATION_STATE_CHANGED, EVENT_OPERATION_WAIT_ENDED, EVENT_PROCESS_ENDED, EVENT_PROCESS_STARTED, EVENT_REQUEST_END, EVENT_REQUEST_RETRY_SCHEDULED, EVENT_REQUEST_START, EVENT_STREAM_END, EVENT_STREAM_FIRST_EVENT, EVENT_TELEMETRY_DROPPED, type EventStreamOptions, type ExecutionReceipt, type IdempotencyBindingV1, type LineageChainVerification, type LineageReference, MAX_TRACESTATE_MEMBERS, MEASUREMENT_KIND_BY_INSTRUMENT, METRIC_CACHE_TOKEN_COUNT, METRIC_CANCELLATION_COUNT, METRIC_COST_COMMITTED, METRIC_COST_RECONCILED, METRIC_COST_RELEASED, METRIC_COST_RESERVED, METRIC_ERROR_COUNT, METRIC_FIRST_EVENT_LATENCY, METRIC_INPUT_TOKEN_COUNT, METRIC_OPERATION_STATE_TRANSITION_COUNT, METRIC_OUTPUT_TOKEN_COUNT, METRIC_PROCESS_EXIT_COUNT, METRIC_PROCESS_FORCED_TERMINATION_COUNT, METRIC_REQUEST_COUNT, METRIC_REQUEST_DURATION, METRIC_RETRY_COUNT, METRIC_SAFETY_TOKEN_COUNT, METRIC_STREAM_DURATION, METRIC_VERIFICATION_RESULT_COUNT, type MeasurementKind, type MetricInstrumentKind, NoopTelemetrySink, OAuthTokenCredentialProvider, type OAuthTokenCredentialProviderOptions, type OAuthTokenSource, type OAuthTokenSourceResult, type OnUnknownEstimate, type OperationEvent, type OperationHandle, type OperationRetryClass, type OperationSnapshot, type OperationState, type Page, type PageRequest, PermissionDeniedError, RedactedSecret, type RequestContext, type RetryPolicy, type SecretClassification, type SecretRedactor, SentinelSecretRedactor, StaticApiKeyCredentialProvider, type StaticApiKeyCredentialProviderOptions, TRACE_VERSION, type TelemetryEvent, type TelemetrySeverity, type TelemetrySink, type TenantContext, type TimeBudget, type TraceContext, type TraceStateMember, UnsupportedCapabilityError, UnsupportedRuntimeError, type VerificationLevel, type VerificationResult, type VerifyLineageChainOptions, type VerifyReceiptOptions, type WaitOptions, assertScopeGranted, buildExecutionReceipt, canonicalJson, equalJitterDelayMs, formatTraceState, generateTraceParent, harnessaasSpanName, joinOrGenerateTraceContext, measurementKindOf, metaLlmSpanName, metaProxySpanName, metaharnessSpanName, parseTraceParent, parseTraceState, sha256Hex, shapeCheckExecutionReceipt, shapeCheckLineageReference, verifyExecutionReceipt, verifyLineageChain };

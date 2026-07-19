@@ -27,6 +27,23 @@ import {
   ATTR_ROUTING_REASON,
   ATTR_TENANT_HASH,
   ATTR_TIER,
+  EVENT_ARTIFACT_VERIFIED,
+  EVENT_BUDGET_COMMITTED,
+  EVENT_BUDGET_RELEASED,
+  EVENT_BUDGET_RESERVED,
+  EVENT_CAPABILITIES_LOADED,
+  EVENT_CONSENT_REQUIRED,
+  EVENT_EVIDENCE_VERIFIED,
+  EVENT_OPERATION_STATE_CHANGED,
+  EVENT_OPERATION_WAIT_ENDED,
+  EVENT_PROCESS_ENDED,
+  EVENT_PROCESS_STARTED,
+  EVENT_REQUEST_END,
+  EVENT_REQUEST_RETRY_SCHEDULED,
+  EVENT_REQUEST_START,
+  EVENT_STREAM_END,
+  EVENT_STREAM_FIRST_EVENT,
+  EVENT_TELEMETRY_DROPPED,
 } from "../../src/agentic/telemetry.js";
 
 function makeEvent(overrides: Partial<TelemetryEvent> = {}): TelemetryEvent {
@@ -74,6 +91,52 @@ describe("ADR-0028 §D3 attribute constants", () => {
     expect(ATTR_OPERATION_STATE).toBe("cognitum.operation.state");
     expect(ATTR_ERROR_KIND).toBe("cognitum.error.kind");
     expect(ATTR_RETRY_COUNT).toBe("cognitum.retry.count");
+  });
+});
+
+describe("ADR-0028 §D4 event name constants", () => {
+  it("match the ADR catalog exactly", () => {
+    expect(EVENT_REQUEST_START).toBe("request.start");
+    expect(EVENT_REQUEST_RETRY_SCHEDULED).toBe("request.retry_scheduled");
+    expect(EVENT_REQUEST_END).toBe("request.end");
+    expect(EVENT_STREAM_FIRST_EVENT).toBe("stream.first_event");
+    expect(EVENT_STREAM_END).toBe("stream.end");
+    expect(EVENT_OPERATION_STATE_CHANGED).toBe("operation.state_changed");
+    expect(EVENT_OPERATION_WAIT_ENDED).toBe("operation.wait_ended");
+    expect(EVENT_CAPABILITIES_LOADED).toBe("capabilities.loaded");
+    expect(EVENT_BUDGET_RESERVED).toBe("budget.reserved");
+    expect(EVENT_BUDGET_COMMITTED).toBe("budget.committed");
+    expect(EVENT_BUDGET_RELEASED).toBe("budget.released");
+    expect(EVENT_CONSENT_REQUIRED).toBe("consent.required");
+    expect(EVENT_PROCESS_STARTED).toBe("process.started");
+    expect(EVENT_PROCESS_ENDED).toBe("process.ended");
+    expect(EVENT_ARTIFACT_VERIFIED).toBe("artifact.verified");
+    expect(EVENT_EVIDENCE_VERIFIED).toBe("evidence.verified");
+    expect(EVENT_TELEMETRY_DROPPED).toBe("telemetry.dropped");
+  });
+
+  it("has exactly seventeen catalog entries", () => {
+    const all = [
+      EVENT_REQUEST_START,
+      EVENT_REQUEST_RETRY_SCHEDULED,
+      EVENT_REQUEST_END,
+      EVENT_STREAM_FIRST_EVENT,
+      EVENT_STREAM_END,
+      EVENT_OPERATION_STATE_CHANGED,
+      EVENT_OPERATION_WAIT_ENDED,
+      EVENT_CAPABILITIES_LOADED,
+      EVENT_BUDGET_RESERVED,
+      EVENT_BUDGET_COMMITTED,
+      EVENT_BUDGET_RELEASED,
+      EVENT_CONSENT_REQUIRED,
+      EVENT_PROCESS_STARTED,
+      EVENT_PROCESS_ENDED,
+      EVENT_ARTIFACT_VERIFIED,
+      EVENT_EVIDENCE_VERIFIED,
+      EVENT_TELEMETRY_DROPPED,
+    ];
+    expect(all).toHaveLength(17);
+    expect(new Set(all).size).toBe(17);
   });
 });
 

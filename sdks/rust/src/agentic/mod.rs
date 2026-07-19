@@ -31,6 +31,7 @@ pub mod scope_preflight;
 pub mod static_api_key_provider;
 pub mod sentinel;
 pub mod telemetry;
+pub mod telemetry_metrics;
 pub mod trace_context;
 
 pub use capability::{CapabilitySet, CapabilitySource};
@@ -73,7 +74,13 @@ pub use telemetry::{
     ATTR_CACHE_RESULT, ATTR_CONTRACT_VERSION, ATTR_ERROR_KIND, ATTR_MODEL_ALIAS,
     ATTR_OPERATION, ATTR_OPERATION_STATE, ATTR_PRODUCT, ATTR_PROTOCOL, ATTR_REQUEST_ID,
     ATTR_RETRY_COUNT, ATTR_ROUTING_PLANE, ATTR_ROUTING_REASON, ATTR_TENANT_HASH, ATTR_TIER,
+    EVENT_ARTIFACT_VERIFIED, EVENT_BUDGET_COMMITTED, EVENT_BUDGET_RELEASED,
+    EVENT_BUDGET_RESERVED, EVENT_CAPABILITIES_LOADED, EVENT_CONSENT_REQUIRED,
+    EVENT_EVIDENCE_VERIFIED, EVENT_OPERATION_STATE_CHANGED, EVENT_OPERATION_WAIT_ENDED,
+    EVENT_PROCESS_ENDED, EVENT_PROCESS_STARTED, EVENT_REQUEST_END, EVENT_REQUEST_RETRY_SCHEDULED,
+    EVENT_REQUEST_START, EVENT_STREAM_END, EVENT_STREAM_FIRST_EVENT, EVENT_TELEMETRY_DROPPED,
 };
+pub use telemetry_metrics::{MeasurementKind, MetricInstrumentKind};
 pub use trace_context::{
     format_trace_state, generate_trace_parent, harnessaas_span_name, join_or_generate_trace_context,
     meta_llm_span_name, meta_proxy_span_name, metaharness_span_name, parse_trace_parent,
