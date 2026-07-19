@@ -13,7 +13,9 @@ use std::time::Instant;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::agentic::{AgenticError, AgenticErrorKind, Credential, CredentialRequest};
+use crate::agentic::{
+    assert_scope_granted, AgenticError, AgenticErrorKind, Credential, CredentialRequest,
+};
 
 use super::client::MetaLlmClient;
 use super::config::MetaLlmTelemetryEvent;
@@ -177,6 +179,16 @@ impl MetaLlmClient {
                     format!("MetaLlmClient::{operation} requires a credential_provider"),
                 )
                 .with_product_operation(PRODUCT, operation));
+            }
+            // ADR-0022 §D5 scope preflight, before any I/O below. Also
+            // serves ADR-0024a §D8's "does not assume OAuth platform
+            // access": an `OAuthTokenCredentialProvider` whose granted
+            // scopes are known and cover only completion-family scopes
+            // (e.g. `meta-llm.inference`) is refused here for
+            // `usage`/`whoami`/`models` rather than silently sent through
+            // — it never reaches "meta-llm.read".
+            if let Some(cred) = credential.as_ref() {
+                assert_scope_granted(PRODUCT, operation, "meta-llm.read", cred)?;
             }
             credential
         } else {

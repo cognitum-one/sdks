@@ -56,10 +56,16 @@ from cognitum.agentic.errors import (
     ConsentRequiredError,
     IdempotencyBindingV1,
     OperationRetryClass,
+    PermissionDeniedError,
     RetryPolicy,
     TimeBudget,
     UnsupportedCapabilityError,
     equal_jitter_delay_ms,
+)
+from cognitum.agentic.oauth_token_provider import (
+    OAuthTokenCredentialProvider,
+    OAuthTokenSource,
+    OAuthTokenSourceResult,
 )
 from cognitum.agentic.operations import (
     EventStreamOptions,
@@ -93,6 +99,7 @@ from cognitum.agentic.receipts import (
     VerificationLevel,
     VerificationResult,
 )
+from cognitum.agentic.scope_preflight import assert_scope_granted
 from cognitum.agentic.sentinel import D12Category, SentinelSecretRedactor
 from cognitum.agentic.static_api_key_provider import (
     DEFAULT_API_KEY_ENV_VAR,
@@ -107,6 +114,7 @@ __all__ = [
     "AgenticError",
     "AgenticErrorKind",
     "UnsupportedCapabilityError",
+    "PermissionDeniedError",
     "ConsentGrantKind",
     "ConsentGrant",
     "ConsentRequiredError",
@@ -154,6 +162,11 @@ __all__ = [
     # Concrete credential provider (issue #53)
     "StaticApiKeyCredentialProvider",
     "DEFAULT_API_KEY_ENV_VAR",
+    # OAuth token credential provider + scope preflight (ADR-0022 D1-D5)
+    "OAuthTokenCredentialProvider",
+    "OAuthTokenSource",
+    "OAuthTokenSourceResult",
+    "assert_scope_granted",
     # Receipt/lineage construction + verification (issue #56)
     "build_execution_receipt",
     "shape_check_execution_receipt",

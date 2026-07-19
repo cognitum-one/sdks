@@ -429,6 +429,21 @@ var AgenticError = class extends Error {
     Object.setPrototypeOf(this, new.target.prototype);
   }
 };
+var PermissionDeniedError = class extends AgenticError {
+  requiredScope;
+  grantedScopes;
+  constructor(product, operation, requiredScope, grantedScopes, message) {
+    super(
+      "permission_denied",
+      message ?? `operation "${operation}" on ${product} requires scope "${requiredScope}", but the credential's known granted scopes (${grantedScopes.length > 0 ? grantedScopes.join(", ") : "none"}) do not include it (ADR-0022 \xA7D5 scope preflight)`,
+      { product, operation, retryable: false }
+    );
+    this.name = "PermissionDeniedError";
+    this.requiredScope = requiredScope;
+    this.grantedScopes = grantedScopes;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
 var DEFAULT_RETRY_POLICY = {
   baseMs: 500,
   capMs: 3e4,
@@ -468,8 +483,22 @@ var RedactedSecret = class {
 // src/agentic/static-api-key-provider.ts
 import { createHash } from "crypto";
 
+// src/agentic/oauth-token-provider.ts
+import { createHash as createHash2, randomBytes } from "crypto";
+
+// src/agentic/scope-preflight.ts
+function assertScopeGranted(product, operation, requiredScope, credential) {
+  const granted = credential.grantedScopes;
+  if (granted === void 0) {
+    return;
+  }
+  if (!granted.includes(requiredScope)) {
+    throw new PermissionDeniedError(product, operation, requiredScope, granted);
+  }
+}
+
 // src/agentic/receipt-verification.ts
-import { createHash as createHash2, createHmac, timingSafeEqual } from "crypto";
+import { createHash as createHash3, createHmac, timingSafeEqual } from "crypto";
 function sortKeysDeep(value) {
   if (Array.isArray(value)) return value.map(sortKeysDeep);
   if (value && typeof value === "object") {
@@ -485,7 +514,7 @@ function canonicalJson(value) {
   return JSON.stringify(sortKeysDeep(value));
 }
 function sha256Hex(bytes) {
-  return createHash2("sha256").update(bytes, "utf8").digest("hex");
+  return createHash3("sha256").update(bytes, "utf8").digest("hex");
 }
 
 // src/meta-llm/http-errors.ts
@@ -592,6 +621,15 @@ function buildIdempotencyBinding(operation, path, credential, tenant, canonicalR
 // src/meta-llm/nonstream.ts
 var PRODUCT2 = "meta-llm";
 var INFERENCE_SCOPE = "meta-llm.inference";
+var OPERATION_REQUIRED_SCOPE = {
+  "chat.completions": INFERENCE_SCOPE,
+  "chat.completionsStream": INFERENCE_SCOPE,
+  "messages.create": INFERENCE_SCOPE,
+  "messages.countTokens": INFERENCE_SCOPE,
+  completions: INFERENCE_SCOPE,
+  responses: INFERENCE_SCOPE,
+  embeddings: INFERENCE_SCOPE
+};
 function newRequestId() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `req_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 }
@@ -611,14 +649,17 @@ async function requireCredential(deps, operation) {
       { product: PRODUCT2, operation, retryable: false }
     );
   }
-  return provider.acquire({
+  const requiredScope = OPERATION_REQUIRED_SCOPE[operation] ?? INFERENCE_SCOPE;
+  const credential = await provider.acquire({
     product: PRODUCT2,
     normalizedOrigin: deps.baseUrl,
     audience: deps.baseUrl,
-    requiredScopes: [INFERENCE_SCOPE],
+    requiredScopes: [requiredScope],
     operation,
     interactiveAllowed: false
   });
+  assertScopeGranted(PRODUCT2, operation, requiredScope, credential);
+  return credential;
 }
 async function sendPostOnce(deps, path, operation, body, credential, idempotencyKey) {
   const requestId = newRequestId();
@@ -1536,6 +1577,7 @@ var MetaLlmClient = class {
           { product: PRODUCT4, operation, requestId, retryable: false }
         );
       }
+      assertScopeGranted(PRODUCT4, operation, "meta-llm.read", credential);
     }
     const headers = {
       Accept: "application/json",

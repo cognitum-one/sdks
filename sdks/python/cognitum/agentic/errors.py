@@ -125,6 +125,43 @@ class UnsupportedCapabilityError(AgenticError):
         self.capability = capability
 
 
+class PermissionDeniedError(AgenticError):
+    """Fail-closed error for an ADR-0022 §D5 scope preflight failure.
+
+    Raised when a credential's KNOWN granted scopes do not include the
+    scope an operation requires. "Before a billable or mutating call, a
+    provider with known granted scopes is checked locally. Missing scope
+    returns ``PermissionDeniedError`` before I/O." Never raised when
+    ``granted_scopes`` is absent/unknown -- an unknown scope set is sent
+    once and left to the server (§D5).
+    """
+
+    def __init__(
+        self,
+        product: str,
+        operation: str,
+        required_scope: str,
+        granted_scopes: list[str],
+        message: str | None = None,
+    ) -> None:
+        joined = ", ".join(granted_scopes) if granted_scopes else "none"
+        super().__init__(
+            "permission_denied",
+            message
+            or (
+                f'operation "{operation}" on {product} requires scope '
+                f'"{required_scope}", but the credential\'s known granted '
+                f"scopes ({joined}) do not include it "
+                "(ADR-0022 §D5 scope preflight)"
+            ),
+            product=product,
+            operation=operation,
+            retryable=False,
+        )
+        self.required_scope = required_scope
+        self.granted_scopes = granted_scopes
+
+
 #: ADR-0022 §D7 consent grant kinds. A locally recorded ``ConsentGrant``
 #: names exactly one of these -- never a generic boolean -- so consent for
 #: one kind never implies another ("Consent for sponsored inference does
@@ -304,6 +341,7 @@ __all__ = [
     "OperationRetryClass",
     "AgenticError",
     "UnsupportedCapabilityError",
+    "PermissionDeniedError",
     "ConsentGrantKind",
     "ConsentGrant",
     "ConsentRequiredError",

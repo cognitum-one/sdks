@@ -33,6 +33,7 @@
 
 import {
   AgenticError,
+  assertScopeGranted,
   type CapabilitySet,
   type Credential,
   type CredentialProvider,
@@ -418,6 +419,14 @@ export class MetaLlmClient {
           { product: PRODUCT, operation, requestId, retryable: false },
         );
       }
+
+      // ADR-0022 §D5 scope preflight, before any I/O below. Also serves
+      // ADR-0024a §D8's "does not assume OAuth platform access": an
+      // `OAuthTokenCredentialProvider` whose granted scopes are known and
+      // cover only completion-family scopes (e.g. `meta-llm.inference`)
+      // is refused here for `usage`/`whoami`/`models` rather than silently
+      // sent through — it never reaches "meta-llm.read".
+      assertScopeGranted(PRODUCT, operation, "meta-llm.read", credential);
     }
 
     const headers: Record<string, string> = {

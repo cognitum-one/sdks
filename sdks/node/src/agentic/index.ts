@@ -39,6 +39,7 @@ export {
   UnsupportedCapabilityError,
   ConsentRequiredError,
   UnsupportedRuntimeError,
+  PermissionDeniedError,
   DEFAULT_RETRY_POLICY,
   equalJitterDelayMs,
 } from "./errors.js";
@@ -58,6 +59,15 @@ export {
   StaticApiKeyCredentialProvider,
   DEFAULT_API_KEY_ENV_VAR,
 } from "./static-api-key-provider.js";
+
+export type {
+  OAuthTokenCredentialProviderOptions,
+  OAuthTokenSource,
+  OAuthTokenSourceResult,
+} from "./oauth-token-provider.js";
+export { OAuthTokenCredentialProvider } from "./oauth-token-provider.js";
+
+export { assertScopeGranted } from "./scope-preflight.js";
 
 export type { D12Category } from "./sentinel.js";
 export { SentinelSecretRedactor } from "./sentinel.js";
