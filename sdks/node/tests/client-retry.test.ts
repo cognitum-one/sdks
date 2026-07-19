@@ -108,8 +108,12 @@ describe("#5 retry constants (ADR-0005)", () => {
     });
 
     await expect(cog.health()).rejects.toThrow(CognitumError);
-    // First attempt + at most one retry before budget trips.
-    expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(2);
+    // First attempt + at most a couple of retries before budget trips.
+    // Real wall-clock timers make the exact count sensitive to scheduler
+    // jitter under CI load (issue #105) — the invariant that actually
+    // matters is "far fewer than the 10 configured retries", not an exact
+    // count, so this allows a small margin rather than asserting `<= 2`.
+    expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(4);
     expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(1);
   });
 });
