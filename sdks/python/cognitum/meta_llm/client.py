@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from cognitum.agentic import AgenticError, CapabilitySet
+from cognitum.agentic.scope_preflight import assert_scope_granted
 from cognitum.meta_llm.config import MetaLlmClientConfig
 from cognitum.meta_llm.discovery import (
     MetaLlmHealth,
@@ -508,6 +509,15 @@ class MetaLlmClient:
                     request_id=request_id,
                     retryable=False,
                 )
+
+            # ADR-0022 §D5 scope preflight, before any I/O below. Also
+            # serves ADR-0024a §D8's "does not assume OAuth platform
+            # access": an ``OAuthTokenCredentialProvider`` whose granted
+            # scopes are known and cover only completion-family scopes
+            # (e.g. ``meta-llm.inference``) is refused here for
+            # ``usage``/``whoami``/``models`` rather than silently sent
+            # through -- it never reaches "meta-llm.read".
+            assert_scope_granted(_PRODUCT, operation, "meta-llm.read", credential)
 
         headers = {"Accept": "application/json", "X-Cognitum-Request-Id": request_id}
         self._apply_auth(headers, credential)

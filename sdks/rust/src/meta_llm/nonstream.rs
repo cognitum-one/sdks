@@ -27,8 +27,8 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::agentic::{
-    equal_jitter_delay_ms, AgenticError, AgenticErrorKind, Credential, CredentialRequest,
-    RetryPolicy,
+    assert_scope_granted, equal_jitter_delay_ms, AgenticError, AgenticErrorKind, Credential,
+    CredentialRequest, RetryPolicy,
 };
 
 use super::client::MetaLlmClient;
@@ -38,10 +38,31 @@ use super::idempotency::{build_idempotency_binding, canonical_request_sha256};
 use super::types::parse_meta_llm_receipt;
 use super::PRODUCT;
 
-/// Required scope for the two inference-serving operations in this pass.
+/// Required scope for the inference-serving operations in this pass.
 /// Distinct from `get_json`'s `"meta-llm.read"` — these are mutating
 /// generation calls, not discovery reads (ADR-0024a §D8).
 const INFERENCE_SCOPE: &str = "meta-llm.inference";
+
+/// Per-operation required-scope map for ADR-0022 §D5's scope preflight,
+/// covering every "completion-family route" per ADR-0024a §D8 that shares
+/// this module's `post_json_idempotent`/credential path.
+///
+/// PROVISIONAL: no ADR-0020 OpenAPI/JSON-Schema contract bundle publishing
+/// a real scope-token vocabulary exists yet (ADR-0024a §D9 gate #1/#8), so
+/// every completion-family operation maps to the same literal
+/// `INFERENCE_SCOPE` already used in the `CredentialRequest` sent to
+/// `acquire()` below — this names the mapping explicitly so a real
+/// per-operation vocabulary can slot in later without changing the
+/// preflight call site.
+fn required_scope_for(operation: &str) -> &'static str {
+    match operation {
+        "chat.completions" | "chat_completions_stream" | "messages.create"
+        | "messages.count_tokens" | "completions" | "responses" | "embeddings" => {
+            INFERENCE_SCOPE
+        }
+        _ => INFERENCE_SCOPE,
+    }
+}
 
 /// Cheap non-cryptographic jitter in `[0, bound]`, matching the existing
 /// cloud `Client`'s `retry_hint::pseudo_jitter_ms` convention (subsecond
@@ -158,20 +179,28 @@ impl MetaLlmClient {
                 )
             });
         };
+        let required_scope = required_scope_for(operation);
         let request = CredentialRequest {
             product: PRODUCT.to_owned(),
             normalized_origin: self.config.base_url.clone(),
             audience: self.config.base_url.clone(),
-            required_scopes: vec![INFERENCE_SCOPE.to_owned()],
+            required_scopes: vec![required_scope.to_owned()],
             operation: operation.to_owned(),
             interactive_allowed: false,
         };
-        provider.acquire(&request).await.map_err(|mut e| {
+        let credential = provider.acquire(&request).await.map_err(|mut e| {
             if e.product.is_none() {
                 e.product = Some(PRODUCT.to_owned());
             }
             e
-        })
+        })?;
+        // ADR-0022 §D5 scope preflight: fail closed BEFORE any I/O when the
+        // credential's granted scopes are known and insufficient. A
+        // credential with unknown (`None`) granted scopes — e.g.
+        // `StaticApiKeyCredentialProvider`'s today — is sent through
+        // unchecked; the server remains authoritative for that case.
+        assert_scope_granted(PRODUCT, operation, required_scope, &credential)?;
+        Ok(credential)
     }
 
     /// One HTTP attempt. Never retries by itself — the caller

@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 import httpx
 
 from cognitum.agentic import DEFAULT_RETRY_POLICY, AgenticError, equal_jitter_delay_ms
+from cognitum.agentic.scope_preflight import assert_scope_granted
 from cognitum.meta_llm.envelope import MetaLlmResponseMeta
 from cognitum.meta_llm.http_errors import map_meta_llm_http_error
 from cognitum.meta_llm.idempotency import build_idempotency_binding, canonical_request_sha256
@@ -47,10 +48,31 @@ if TYPE_CHECKING:
     from cognitum.meta_llm.config import MetaLlmClientConfig
 
 _PRODUCT = "meta-llm"
-#: Required scope for the two inference-serving operations in this pass.
+#: Required scope for the inference-serving operations in this pass.
 #: Distinct from ``client.py``'s ``"meta-llm.read"`` -- these are mutating
 #: generation calls, not discovery reads (ADR-0024a §D8).
 _INFERENCE_SCOPE = "meta-llm.inference"
+
+#: Per-operation required-scope map for ADR-0022 §D5's scope preflight,
+#: covering every "completion-family route" per ADR-0024a §D8 that shares
+#: this module's ``post_json_idempotent``/credential path.
+#:
+#: PROVISIONAL: no ADR-0020 OpenAPI/JSON-Schema contract bundle publishing
+#: a real scope-token vocabulary exists yet (ADR-0024a §D9 gate #1/#8), so
+#: every completion-family operation maps to the same literal
+#: ``_INFERENCE_SCOPE`` already used in the ``CredentialRequest`` sent to
+#: ``acquire()`` below -- this names the mapping explicitly so a real
+#: per-operation vocabulary can slot in later without changing the
+#: preflight call site.
+_OPERATION_REQUIRED_SCOPE: dict[str, str] = {
+    "chat.completions": _INFERENCE_SCOPE,
+    "chat.completions_stream": _INFERENCE_SCOPE,
+    "messages.create": _INFERENCE_SCOPE,
+    "messages.count_tokens": _INFERENCE_SCOPE,
+    "completions": _INFERENCE_SCOPE,
+    "responses": _INFERENCE_SCOPE,
+    "embeddings": _INFERENCE_SCOPE,
+}
 
 T = TypeVar("T")
 
@@ -76,16 +98,24 @@ async def _require_credential(config: MetaLlmClientConfig, operation: str) -> Cr
             operation=operation,
             retryable=False,
         )
-    return await provider.acquire(
+    required_scope = _OPERATION_REQUIRED_SCOPE.get(operation, _INFERENCE_SCOPE)
+    credential = await provider.acquire(
         CredentialRequest(
             product=_PRODUCT,
             normalized_origin=config.base_url,
             audience=config.base_url,
-            required_scopes=[_INFERENCE_SCOPE],
+            required_scopes=[required_scope],
             operation=operation,
             interactive_allowed=False,
         )
     )
+    # ADR-0022 §D5 scope preflight: fail closed BEFORE any I/O when the
+    # credential's granted scopes are known and insufficient. A credential
+    # with unknown (``None``) granted scopes -- e.g.
+    # ``StaticApiKeyCredentialProvider``'s today -- is sent through
+    # unchecked; the server remains authoritative for that case.
+    assert_scope_granted(_PRODUCT, operation, required_scope, credential)
+    return credential
 
 
 async def _send_post_once(

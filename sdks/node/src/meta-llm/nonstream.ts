@@ -21,6 +21,7 @@
 import {
   AgenticError,
   DEFAULT_RETRY_POLICY,
+  assertScopeGranted,
   equalJitterDelayMs,
   type Credential,
   type CredentialProvider,
@@ -35,11 +36,34 @@ import { assertSendableRoutingControls, type MetaLlmRoutingControls } from "./ty
 
 const PRODUCT = "meta-llm";
 /**
- * Required scope for the two inference-serving operations in this pass.
+ * Required scope for the inference-serving operations in this pass.
  * Distinct from `client.ts`'s `"meta-llm.read"` — these are mutating
  * generation calls, not discovery reads (ADR-0024a §D8).
  */
 const INFERENCE_SCOPE = "meta-llm.inference";
+
+/**
+ * Per-operation required-scope map for ADR-0022 §D5's scope preflight,
+ * covering every "completion-family route" per ADR-0024a §D8 that shares
+ * this module's `postJsonIdempotent`/credential path.
+ *
+ * PROVISIONAL: no ADR-0020 OpenAPI/JSON-Schema contract bundle publishing
+ * a real scope-token vocabulary exists yet (ADR-0024a §D9 gate #1/#8), so
+ * every completion-family operation maps to the same literal
+ * `INFERENCE_SCOPE` already used in the `CredentialRequest` sent to
+ * `acquire()` above — this is not a richer taxonomy, just naming the
+ * mapping explicitly so a real per-operation vocabulary can slot in later
+ * without changing the preflight call site.
+ */
+const OPERATION_REQUIRED_SCOPE: Record<string, string> = {
+  "chat.completions": INFERENCE_SCOPE,
+  "chat.completionsStream": INFERENCE_SCOPE,
+  "messages.create": INFERENCE_SCOPE,
+  "messages.countTokens": INFERENCE_SCOPE,
+  completions: INFERENCE_SCOPE,
+  responses: INFERENCE_SCOPE,
+  embeddings: INFERENCE_SCOPE,
+};
 
 /**
  * Exported (rather than kept module-private) so `./stream/chat-completions-stream.js`
@@ -83,14 +107,22 @@ export async function requireCredential(deps: NonstreamDeps, operation: string):
       { product: PRODUCT, operation, retryable: false },
     );
   }
-  return provider.acquire({
+  const requiredScope = OPERATION_REQUIRED_SCOPE[operation] ?? INFERENCE_SCOPE;
+  const credential = await provider.acquire({
     product: PRODUCT,
     normalizedOrigin: deps.baseUrl,
     audience: deps.baseUrl,
-    requiredScopes: [INFERENCE_SCOPE],
+    requiredScopes: [requiredScope],
     operation,
     interactiveAllowed: false,
   });
+  // ADR-0022 §D5 scope preflight: fail closed BEFORE any I/O when the
+  // credential's granted scopes are known and insufficient. A credential
+  // with unknown (`undefined`) granted scopes — e.g.
+  // `StaticApiKeyCredentialProvider`'s today — is sent through unchecked;
+  // the server remains authoritative for that case.
+  assertScopeGranted(PRODUCT, operation, requiredScope, credential);
+  return credential;
 }
 
 /** One HTTP attempt. Never retries by itself — the caller owns that. */

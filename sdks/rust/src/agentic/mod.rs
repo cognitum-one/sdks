@@ -23,9 +23,11 @@ pub mod capability;
 pub mod context;
 pub mod credentials;
 pub mod errors;
+pub mod oauth_token_provider;
 pub mod operations;
 pub mod receipt_verification;
 pub mod receipts;
+pub mod scope_preflight;
 pub mod static_api_key_provider;
 pub mod sentinel;
 
@@ -39,8 +41,14 @@ pub use sentinel::{D12Category, SentinelSecretRedactor};
 pub use errors::{
     equal_jitter_delay_ms, AgenticError, AgenticErrorKind, CancellationReason, CancellationToken,
     ConsentGrant, ConsentGrantKind, ConsentRequiredError, IdempotencyBindingV1,
-    NoopCancellationToken, OperationRetryClass, RetryPolicy, TimeBudget, UnsupportedCapabilityError,
+    NoopCancellationToken, OperationRetryClass, PermissionDeniedError, RetryPolicy, TimeBudget,
+    UnsupportedCapabilityError,
 };
+pub use oauth_token_provider::{
+    OAuthTokenCredentialProvider, OAuthTokenCredentialProviderOptions, OAuthTokenSource,
+    OAuthTokenSourceResult,
+};
+pub use scope_preflight::assert_scope_granted;
 pub use operations::{
     EventStreamOptions, OperationEvent, OperationEventStream, OperationHandle, OperationSnapshot,
     OperationState, Page, PageRequest, WaitOptions,

@@ -71,6 +71,21 @@ declare class UnsupportedCapabilityError extends AgenticError {
     constructor(product: string, operation: string, capability: string, message?: string);
 }
 /**
+ * Fail-closed error raised when a scope preflight (ADR-0022 §D5) finds a
+ * credential with KNOWN granted scopes that do not include the scope an
+ * operation requires. "Before a billable or mutating call, a provider with
+ * known granted scopes is checked locally. Missing scope returns
+ * `PermissionDeniedError` before I/O." Never raised when `grantedScopes` is
+ * absent/unknown — "the SDK never guesses that a broader-looking string
+ * implies permission," and equally it never guesses the opposite: an
+ * unknown scope set is sent once and left to the server (§D5).
+ */
+declare class PermissionDeniedError extends AgenticError {
+    readonly requiredScope: string;
+    readonly grantedScopes: string[];
+    constructor(product: string, operation: string, requiredScope: string, grantedScopes: string[], message?: string);
+}
+/**
  * ADR-0022 §D7 consent grant kinds. A locally recorded `ConsentGrant` names
  * exactly one of these — never a generic boolean — so consent for one kind
  * never implies another ("Consent for sponsored inference does not imply
@@ -334,6 +349,147 @@ declare class StaticApiKeyCredentialProvider implements CredentialProvider {
      */
     private assertMatch;
 }
+
+/**
+ * Concrete `CredentialProvider` for a delegated Cognitum OAuth access token
+ * (ADR-0022 §D1, §D2, §D3; ADR-0024a §D8). Closes the gap left by PR #83's
+ * `StaticApiKeyCredentialProvider`: ADR-0022 §D2's credential/header matrix
+ * names Meta LLM as accepting "Product-declared `cog_` key OR a delegated
+ * OAuth token" ("Never send both; route scope and auth method are
+ * negotiated"), but until this provider, only the `cog_`-key half of that
+ * row had an implementation.
+ *
+ * This provider does NOT implement an OAuth authorization-code/PKCE
+ * browser login flow — that is out of scope here, exactly as
+ * `StaticApiKeyCredentialProvider` accepts an already-resolved API key
+ * rather than minting one. It accepts either:
+ *
+ * - an explicit, already-acquired access token (optionally with its own
+ *   expiry/granted-scopes), or
+ * - an injectable async `tokenProvider` callback the caller wires to their
+ *   own OAuth refresh-token flow, invoked lazily on first `acquire()` and
+ *   again — at most once per `acquire()` call — when the current token is
+ *   expired.
+ *
+ * Wire scheme is `"Bearer"` (not `"X-API-Key"`), per ADR-0022 §D2's
+ * "delegated OAuth token" row and ADR-0024a §D8's OAuth-uses-bearer
+ * convention; `applyAuth` in `../meta-llm/nonstream.js` / `client.js`
+ * already special-cases `scheme.toLowerCase() === "bearer"` to write the
+ * standard `Authorization` header instead of a literal header named after
+ * the scheme string, so this provider only has to supply that scheme name.
+ *
+ * Origin/audience/product binding mirrors
+ * `StaticApiKeyCredentialProvider` exactly (ADR-0022 §D1/§D3): exact
+ * string equality only, no wildcard origin or suffix matching. The
+ * returned secret is wrapped in the same `RedactedSecret` type — Node
+ * inspection, `JSON.stringify`, and error formatting MUST NOT reveal it.
+ *
+ * No HTTP request is made or shaped here — this type produces
+ * credentials, it does not send them.
+ */
+
+/** Result of an {@link OAuthTokenSource} invocation. */
+interface OAuthTokenSourceResult {
+    accessToken: string;
+    /** Absent means the token does not expire (or expiry is unknown to the caller). */
+    expiresAt?: Date;
+    /**
+     * Scopes the identity service actually granted, if the caller's refresh
+     * flow surfaces them. Left `undefined` (rather than guessed) when the
+     * caller's OAuth flow doesn't expose this — ADR-0022 §D5 requires the
+     * SDK never assume a broader-looking string implies permission.
+     */
+    grantedScopes?: string[];
+}
+/**
+ * Caller-supplied async callback wired to an already-implemented OAuth
+ * refresh-token flow. This provider calls it to obtain an initial token
+ * (when no explicit `accessToken` is given) and to refresh an expired one
+ * — it never performs the authorization-code/PKCE exchange itself.
+ */
+type OAuthTokenSource = () => Promise<OAuthTokenSourceResult>;
+/** Construction-time options for {@link OAuthTokenCredentialProvider}. */
+interface OAuthTokenCredentialProviderOptions {
+    /** Product this provider is authoritative for (e.g. "meta-llm"). */
+    product: string;
+    /** Exact normalized origin this provider is bound to (ADR-0022 §D3). */
+    normalizedOrigin: string;
+    /** Exact audience this provider is bound to (ADR-0022 §D1). */
+    audience: string;
+    /**
+     * An already-acquired OAuth access token. When omitted, `tokenProvider`
+     * MUST be given — the provider fetches the initial token lazily, on the
+     * first `acquire()` call, rather than at construction time.
+     */
+    accessToken?: string;
+    /** Expiry of `accessToken`, if known. */
+    expiresAt?: Date;
+    /** Scopes granted to `accessToken`, if known (see {@link OAuthTokenSourceResult.grantedScopes}). */
+    grantedScopes?: string[];
+    /**
+     * Injectable callback wired to the caller's own OAuth refresh-token
+     * flow. Required when `accessToken` is omitted; optional (but
+     * recommended) otherwise — supplying it lets an expired explicit token
+     * be refreshed instead of failing closed.
+     */
+    tokenProvider?: OAuthTokenSource;
+    /**
+     * Wire scheme label surfaced on the acquired {@link Credential}.
+     * Defaults to `"Bearer"` per ADR-0022 §D2 / ADR-0024a §D8 — OAuth
+     * access tokens are never sent as `X-API-Key`.
+     */
+    scheme?: string;
+}
+/**
+ * Concrete `CredentialProvider` wrapping one delegated Cognitum OAuth
+ * access token (ADR-0022 §D1/§D2/§D3, ADR-0024a §D8). Fails closed on any
+ * product, origin, or audience mismatch (mirrors
+ * `StaticApiKeyCredentialProvider#assertMatch`), on an expired token with
+ * no refresh callback, and on any use after `invalidate()`.
+ */
+declare class OAuthTokenCredentialProvider implements CredentialProvider {
+    #private;
+    constructor(options: OAuthTokenCredentialProviderOptions, now?: () => Date);
+    /** Non-secret stable provider identity, safe to log. */
+    identity(): string;
+    describeAuthority(request: CredentialRequest): Promise<CredentialAuthority>;
+    acquire(request: CredentialRequest): Promise<Credential>;
+    invalidate(_reason: string): Promise<void>;
+    private authority;
+    /**
+     * Fail-closed match check (ADR-0022 §D1/§D3). Exact string equality
+     * only — no wildcard origin, suffix matching, or DNS-parent trust.
+     */
+    private assertMatch;
+}
+
+/**
+ * ADR-0022 §D5 scope preflight, shared by every product client's mutating
+ * request path.
+ *
+ * > "The SDK contract manifest maps every operation to its required
+ * > scopes. Before a billable or mutating call, a provider with known
+ * > granted scopes is checked locally. Missing scope returns
+ * > `PermissionDeniedError` before I/O. Unknown scope sets are sent once
+ * > and mapped from the server response; the SDK never guesses that a
+ * > broader-looking string implies permission."
+ *
+ * `credential.grantedScopes === undefined` means "unknown" — the SDK does
+ * not block locally and lets the server be authoritative (matches
+ * `StaticApiKeyCredentialProvider`, which never sets `grantedScopes` at
+ * all today). An explicit array (including an empty one) means "known",
+ * and a missing required scope fails closed here, before any network I/O.
+ *
+ * Scopes are matched as exact contract tokens (§D5: "Wildcard
+ * interpretation belongs to the identity service, not the SDK").
+ */
+
+/**
+ * Throws {@link PermissionDeniedError} when `credential.grantedScopes` is
+ * known (defined) and does not contain `requiredScope`. No-op — including
+ * when `grantedScopes` is `undefined` — otherwise.
+ */
+declare function assertScopeGranted(product: string, operation: string, requiredScope: string, credential: Credential): void;
 
 /**
  * Concrete `SecretRedactor` implementation — the sentinel scan defined by
@@ -650,4 +806,4 @@ interface LineageChainVerification {
  */
 declare function verifyLineageChain(chain: LineageReference[], opts: VerifyLineageChainOptions): LineageChainVerification;
 
-export { AgenticError, type AgenticErrorKind, type BudgetPolicy, type BuildExecutionReceiptInput, type CancellationReason, type CancellationToken, type CapabilitySet, type CapabilitySource, type ConsentGrant, type ConsentGrantKind, ConsentRequiredError, type CostFinality, type CostObservation, type Credential, type CredentialAuthority, type CredentialProvider, type CredentialRequest, type D12Category, DEFAULT_API_KEY_ENV_VAR, DEFAULT_RETRY_POLICY, type EventStreamOptions, type ExecutionReceipt, type IdempotencyBindingV1, type LineageChainVerification, type LineageReference, type OnUnknownEstimate, type OperationEvent, type OperationHandle, type OperationRetryClass, type OperationSnapshot, type OperationState, type Page, type PageRequest, RedactedSecret, type RequestContext, type RetryPolicy, type SecretClassification, type SecretRedactor, SentinelSecretRedactor, StaticApiKeyCredentialProvider, type StaticApiKeyCredentialProviderOptions, type TenantContext, type TimeBudget, UnsupportedCapabilityError, UnsupportedRuntimeError, type VerificationLevel, type VerificationResult, type VerifyLineageChainOptions, type VerifyReceiptOptions, type WaitOptions, buildExecutionReceipt, canonicalJson, equalJitterDelayMs, sha256Hex, shapeCheckExecutionReceipt, shapeCheckLineageReference, verifyExecutionReceipt, verifyLineageChain };
+export { AgenticError, type AgenticErrorKind, type BudgetPolicy, type BuildExecutionReceiptInput, type CancellationReason, type CancellationToken, type CapabilitySet, type CapabilitySource, type ConsentGrant, type ConsentGrantKind, ConsentRequiredError, type CostFinality, type CostObservation, type Credential, type CredentialAuthority, type CredentialProvider, type CredentialRequest, type D12Category, DEFAULT_API_KEY_ENV_VAR, DEFAULT_RETRY_POLICY, type EventStreamOptions, type ExecutionReceipt, type IdempotencyBindingV1, type LineageChainVerification, type LineageReference, OAuthTokenCredentialProvider, type OAuthTokenCredentialProviderOptions, type OAuthTokenSource, type OAuthTokenSourceResult, type OnUnknownEstimate, type OperationEvent, type OperationHandle, type OperationRetryClass, type OperationSnapshot, type OperationState, type Page, type PageRequest, PermissionDeniedError, RedactedSecret, type RequestContext, type RetryPolicy, type SecretClassification, type SecretRedactor, SentinelSecretRedactor, StaticApiKeyCredentialProvider, type StaticApiKeyCredentialProviderOptions, type TenantContext, type TimeBudget, UnsupportedCapabilityError, UnsupportedRuntimeError, type VerificationLevel, type VerificationResult, type VerifyLineageChainOptions, type VerifyReceiptOptions, type WaitOptions, assertScopeGranted, buildExecutionReceipt, canonicalJson, equalJitterDelayMs, sha256Hex, shapeCheckExecutionReceipt, shapeCheckLineageReference, verifyExecutionReceipt, verifyLineageChain };

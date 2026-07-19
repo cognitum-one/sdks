@@ -156,6 +156,72 @@ impl From<UnsupportedCapabilityError> for AgenticError {
     }
 }
 
+/// Fail-closed error raised when a scope preflight (ADR-0022 §D5) finds a
+/// credential with KNOWN granted scopes that do not include the scope an
+/// operation requires. "Before a billable or mutating call, a provider
+/// with known granted scopes is checked locally. Missing scope returns
+/// `PermissionDeniedError` before I/O." Never raised when `granted_scopes`
+/// is absent/unknown — "the SDK never guesses that a broader-looking
+/// string implies permission," and equally it never guesses the
+/// opposite: an unknown scope set is sent once and left to the server
+/// (§D5).
+///
+/// Node and Python model this as a subclass of their base agentic error;
+/// Rust has no class inheritance, so this is a separate struct with a
+/// `From<PermissionDeniedError> for AgenticError` conversion below,
+/// matching [`UnsupportedCapabilityError`]/[`ConsentRequiredError`]'s
+/// precedent.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error(
+    "operation \"{operation}\" on {product} requires scope \"{required_scope}\", but the \
+     credential's known granted scopes ({granted_scopes:?}) do not include it \
+     (ADR-0022 §D5 scope preflight)"
+)]
+pub struct PermissionDeniedError {
+    pub product: String,
+    pub operation: String,
+    pub required_scope: String,
+    pub granted_scopes: Vec<String>,
+}
+
+impl PermissionDeniedError {
+    pub fn new(
+        product: impl Into<String>,
+        operation: impl Into<String>,
+        required_scope: impl Into<String>,
+        granted_scopes: Vec<String>,
+    ) -> Self {
+        Self {
+            product: product.into(),
+            operation: operation.into(),
+            required_scope: required_scope.into(),
+            granted_scopes,
+        }
+    }
+}
+
+impl From<PermissionDeniedError> for AgenticError {
+    fn from(e: PermissionDeniedError) -> Self {
+        let message = e.to_string();
+        AgenticError {
+            kind: AgenticErrorKind::PermissionDenied,
+            message,
+            product: Some(e.product),
+            operation: Some(e.operation),
+            retryable: false,
+            status: None,
+            code: None,
+            request_id: None,
+            correlation_id: None,
+            protocol_version: None,
+            retry_after_ms: None,
+            attempt_count: None,
+            details: None,
+            cause: None,
+        }
+    }
+}
+
 /// ADR-0022 §D7 consent grant kinds. A locally recorded [`ConsentGrant`]
 /// names exactly one of these — never a generic boolean — so consent for
 /// one kind never implies another ("Consent for sponsored inference does

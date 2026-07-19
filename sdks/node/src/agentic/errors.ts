@@ -121,6 +121,42 @@ export class UnsupportedCapabilityError extends AgenticError {
 }
 
 /**
+ * Fail-closed error raised when a scope preflight (ADR-0022 §D5) finds a
+ * credential with KNOWN granted scopes that do not include the scope an
+ * operation requires. "Before a billable or mutating call, a provider with
+ * known granted scopes is checked locally. Missing scope returns
+ * `PermissionDeniedError` before I/O." Never raised when `grantedScopes` is
+ * absent/unknown — "the SDK never guesses that a broader-looking string
+ * implies permission," and equally it never guesses the opposite: an
+ * unknown scope set is sent once and left to the server (§D5).
+ */
+export class PermissionDeniedError extends AgenticError {
+  readonly requiredScope: string;
+  readonly grantedScopes: string[];
+
+  constructor(
+    product: string,
+    operation: string,
+    requiredScope: string,
+    grantedScopes: string[],
+    message?: string,
+  ) {
+    super(
+      "permission_denied",
+      message ??
+        `operation "${operation}" on ${product} requires scope "${requiredScope}", but the ` +
+          `credential's known granted scopes (${grantedScopes.length > 0 ? grantedScopes.join(", ") : "none"}) ` +
+          "do not include it (ADR-0022 §D5 scope preflight)",
+      { product, operation, retryable: false },
+    );
+    this.name = "PermissionDeniedError";
+    this.requiredScope = requiredScope;
+    this.grantedScopes = grantedScopes;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
  * ADR-0022 §D7 consent grant kinds. A locally recorded `ConsentGrant` names
  * exactly one of these — never a generic boolean — so consent for one kind
  * never implies another ("Consent for sponsored inference does not imply

@@ -150,8 +150,11 @@ var RedactedSecret = class {
 // src/agentic/static-api-key-provider.ts
 import { createHash } from "crypto";
 
+// src/agentic/oauth-token-provider.ts
+import { createHash as createHash2, randomBytes } from "crypto";
+
 // src/agentic/receipt-verification.ts
-import { createHash as createHash2, createHmac, timingSafeEqual } from "crypto";
+import { createHash as createHash3, createHmac, timingSafeEqual } from "crypto";
 
 // src/meta-proxy/routing.ts
 var PRODUCT = "meta-proxy";
@@ -242,7 +245,7 @@ function assertNodeRuntime(operation) {
 }
 
 // src/meta-proxy/auth.ts
-import { createHash as createHash3 } from "crypto";
+import { createHash as createHash4 } from "crypto";
 var PRODUCT4 = "meta-proxy";
 var DEFAULT_META_PROXY_TOKEN_ENV_VAR = "COGNITUM_META_PROXY_TOKEN";
 function resolveToken(options) {
@@ -262,7 +265,7 @@ function resolveToken(options) {
   );
 }
 function fingerprintOf(token) {
-  return createHash3("sha256").update(`${PRODUCT4}:${token}`).digest("hex").slice(0, 16);
+  return createHash4("sha256").update(`${PRODUCT4}:${token}`).digest("hex").slice(0, 16);
 }
 var LocalBearerTokenCredentialProvider = class {
   #secret;

@@ -43,6 +43,21 @@ var UnsupportedCapabilityError = class extends AgenticError {
     Object.setPrototypeOf(this, new.target.prototype);
   }
 };
+var PermissionDeniedError = class extends AgenticError {
+  requiredScope;
+  grantedScopes;
+  constructor(product, operation, requiredScope, grantedScopes, message) {
+    super(
+      "permission_denied",
+      message ?? `operation "${operation}" on ${product} requires scope "${requiredScope}", but the credential's known granted scopes (${grantedScopes.length > 0 ? grantedScopes.join(", ") : "none"}) do not include it (ADR-0022 \xA7D5 scope preflight)`,
+      { product, operation, retryable: false }
+    );
+    this.name = "PermissionDeniedError";
+    this.requiredScope = requiredScope;
+    this.grantedScopes = grantedScopes;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
 var ConsentRequiredError = class extends AgenticError {
   requiredKind;
   constructor(product, operation, requiredKind, message) {
@@ -208,6 +223,156 @@ var StaticApiKeyCredentialProvider = class {
     }
   }
 };
+
+// src/agentic/oauth-token-provider.ts
+import { createHash as createHash2, randomBytes } from "crypto";
+function isExpired(token, now) {
+  return token.expiresAt !== void 0 && token.expiresAt.getTime() <= now().getTime();
+}
+function fingerprintOfToken(product, token) {
+  return createHash2("sha256").update(`${product}:${token}`).digest("hex").slice(0, 16);
+}
+function fingerprintOfPending(product) {
+  return createHash2("sha256").update(`${product}:oauth-pending:${randomBytes(16).toString("hex")}`).digest("hex").slice(0, 16);
+}
+var OAuthTokenCredentialProvider = class {
+  #product;
+  #normalizedOrigin;
+  #audience;
+  #scheme;
+  #tokenProvider;
+  #now;
+  #current;
+  #fingerprint;
+  #invalidated = false;
+  constructor(options, now = () => /* @__PURE__ */ new Date()) {
+    if (!options.accessToken && !options.tokenProvider) {
+      throw new AgenticError(
+        "configuration",
+        "OAuthTokenCredentialProvider requires either an explicit accessToken or a tokenProvider callback",
+        { product: options.product }
+      );
+    }
+    this.#product = options.product;
+    this.#normalizedOrigin = options.normalizedOrigin;
+    this.#audience = options.audience;
+    this.#scheme = options.scheme ?? "Bearer";
+    this.#tokenProvider = options.tokenProvider;
+    this.#now = now;
+    if (options.accessToken) {
+      this.#current = {
+        accessToken: options.accessToken,
+        expiresAt: options.expiresAt,
+        grantedScopes: options.grantedScopes
+      };
+      this.#fingerprint = fingerprintOfToken(options.product, options.accessToken);
+    } else {
+      this.#fingerprint = fingerprintOfPending(options.product);
+    }
+  }
+  /** Non-secret stable provider identity, safe to log. */
+  identity() {
+    return `oauth-token:${this.#product}:${this.#fingerprint}`;
+  }
+  async describeAuthority(request) {
+    this.assertMatch(request);
+    return this.authority();
+  }
+  async acquire(request) {
+    this.assertMatch(request);
+    if (this.#invalidated) {
+      throw new AgenticError(
+        "authentication",
+        `credential provider ${this.identity()} has been invalidated`,
+        { product: this.#product, operation: request.operation }
+      );
+    }
+    let token = this.#current;
+    if (token === void 0 || isExpired(token, this.#now)) {
+      if (!this.#tokenProvider) {
+        throw new AgenticError(
+          "authentication",
+          `credential provider ${this.identity()} has no valid access token (expired and no tokenProvider callback was configured to refresh it)`,
+          { product: this.#product, operation: request.operation }
+        );
+      }
+      const refreshed = await this.#tokenProvider();
+      token = {
+        accessToken: refreshed.accessToken,
+        expiresAt: refreshed.expiresAt,
+        grantedScopes: refreshed.grantedScopes
+      };
+      if (isExpired(token, this.#now)) {
+        throw new AgenticError(
+          "authentication",
+          `credential provider ${this.identity()}'s tokenProvider returned an already-expired access token`,
+          { product: this.#product, operation: request.operation }
+        );
+      }
+      this.#current = token;
+      this.#fingerprint = fingerprintOfToken(this.#product, token.accessToken);
+    }
+    return {
+      scheme: this.#scheme,
+      secret: new RedactedSecret(token.accessToken),
+      expiresAt: token.expiresAt?.toISOString(),
+      grantedScopes: token.grantedScopes,
+      audience: this.#audience,
+      source: this.identity(),
+      authority: this.authority()
+    };
+  }
+  async invalidate(_reason) {
+    this.#invalidated = true;
+  }
+  authority() {
+    return {
+      providerFingerprint: this.#fingerprint,
+      product: this.#product,
+      normalizedOrigin: this.#normalizedOrigin,
+      audience: this.#audience,
+      effectiveScopes: this.#current?.grantedScopes
+    };
+  }
+  /**
+   * Fail-closed match check (ADR-0022 §D1/§D3). Exact string equality
+   * only — no wildcard origin, suffix matching, or DNS-parent trust.
+   */
+  assertMatch(request) {
+    if (request.product !== this.#product) {
+      throw new AgenticError(
+        "authentication",
+        `credential provider ${this.identity()} is bound to product "${this.#product}", refusing request for product "${request.product}"`,
+        { product: this.#product, operation: request.operation }
+      );
+    }
+    if (request.normalizedOrigin !== this.#normalizedOrigin) {
+      throw new AgenticError(
+        "authentication",
+        `credential provider ${this.identity()} is bound to origin "${this.#normalizedOrigin}", refusing request for origin "${request.normalizedOrigin}" (ADR-0022 \xA7D3: a redirect to another origin is not followed with credentials)`,
+        { product: this.#product, operation: request.operation }
+      );
+    }
+    if (request.audience !== this.#audience) {
+      throw new AgenticError(
+        "authentication",
+        `credential provider ${this.identity()} is bound to audience "${this.#audience}", refusing request for audience "${request.audience}"`,
+        { product: this.#product, operation: request.operation }
+      );
+    }
+  }
+};
+
+// src/agentic/scope-preflight.ts
+function assertScopeGranted(product, operation, requiredScope, credential) {
+  const granted = credential.grantedScopes;
+  if (granted === void 0) {
+    return;
+  }
+  if (!granted.includes(requiredScope)) {
+    throw new PermissionDeniedError(product, operation, requiredScope, granted);
+  }
+}
 
 // src/agentic/sentinel.ts
 var MAX_DEPTH = 8;
@@ -378,7 +543,7 @@ var SentinelSecretRedactor = class {
 };
 
 // src/agentic/receipt-verification.ts
-import { createHash as createHash2, createHmac, timingSafeEqual } from "crypto";
+import { createHash as createHash3, createHmac, timingSafeEqual } from "crypto";
 var CANONICALIZATION_VERSION = "cognitum-canonical-json-v1";
 var LEVEL_ORDER = [
   "none",
@@ -412,7 +577,7 @@ function canonicalJson(value) {
   return JSON.stringify(sortKeysDeep(value));
 }
 function sha256Hex(bytes) {
-  return createHash2("sha256").update(bytes, "utf8").digest("hex");
+  return createHash3("sha256").update(bytes, "utf8").digest("hex");
 }
 function hmacSha256Hex(key, bytes) {
   return createHmac("sha256", Buffer.from(key)).update(bytes, "utf8").digest("hex");
@@ -650,11 +815,14 @@ export {
   ConsentRequiredError,
   DEFAULT_API_KEY_ENV_VAR,
   DEFAULT_RETRY_POLICY,
+  OAuthTokenCredentialProvider,
+  PermissionDeniedError,
   RedactedSecret,
   SentinelSecretRedactor,
   StaticApiKeyCredentialProvider,
   UnsupportedCapabilityError,
   UnsupportedRuntimeError,
+  assertScopeGranted,
   buildExecutionReceipt,
   canonicalJson,
   equalJitterDelayMs,
