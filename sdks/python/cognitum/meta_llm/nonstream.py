@@ -22,7 +22,12 @@ Retry (ADR-0023 §D3/§D4, ADR-0024a §D6):
 - 429/502/503: bounded retry using the frozen ``RetryPolicy`` /
   ``equal_jitter_delay_ms`` (ADR-0005/ADR-0023 verbatim), gated on the
   idempotency-with-key binding built in ``idempotency.py`` -- this is what
-  makes the replay safe.
+  makes the replay safe. Issue #100: before each bounded-retry attempt (not
+  just the initial acquire), the credential is checked for local expiry
+  (``Credential.expires_at``) and proactively re-acquired if it has already
+  expired locally -- see ``_is_credential_locally_expired`` below -- rather
+  than resending a known-expired bearer token and waiting for the
+  guaranteed 401.
 - 400/403/404/409/402/422 and anything else: never retried.
 """
 
@@ -32,6 +37,7 @@ import asyncio
 import random
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import httpx
@@ -116,6 +122,37 @@ async def _require_credential(config: MetaLlmClientConfig, operation: str) -> Cr
     # unchecked; the server remains authoritative for that case.
     assert_scope_granted(_PRODUCT, operation, required_scope, credential)
     return credential
+
+
+def _is_credential_locally_expired(credential: Credential) -> bool:
+    """True when ``credential.expires_at`` is set, parses, and is already
+    at or before "now" (issue #100).
+
+    Checked before each bounded 429/502/503 retry attempt so an OAuth
+    credential (unlike a static API key, it carries a real ``expires_at``)
+    that expired during the retry-delay window is proactively re-acquired
+    -- triggering a refresh via the provider's callback, if one is
+    configured -- instead of resending an already-locally-known-expired
+    bearer token and waiting for the guaranteed 401 on the next attempt. A
+    missing or unparsable ``expires_at`` is never treated as expired here
+    -- the server remains authoritative, same as the scope-preflight check
+    above.
+    """
+    if credential.expires_at is None:
+        return False
+    text = credential.expires_at
+    if text.endswith("Z") or text.endswith("z"):
+        # `datetime.fromisoformat` only accepts a trailing "Z" from Python
+        # 3.11 -- this module supports 3.10 (pyproject.toml), so normalize
+        # to an explicit UTC offset first.
+        text = f"{text[:-1]}+00:00"
+    try:
+        expires_at = datetime.fromisoformat(text)
+    except ValueError:
+        return False
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return expires_at <= datetime.now(timezone.utc)
 
 
 async def _send_post_once(
@@ -257,6 +294,12 @@ async def post_json_idempotent(
                 sleep_budget_used_ms += delay_ms
                 await asyncio.sleep(delay_ms / 1000)
                 attempt += 1
+                # Issue #100: the delay above may have crossed the
+                # credential's expiry. Proactively re-acquire instead of
+                # resending an already-locally-expired bearer token and
+                # waiting for the wasted 401 round trip.
+                if _is_credential_locally_expired(credential):
+                    credential = await _require_credential(config, operation)
                 continue
 
             raise

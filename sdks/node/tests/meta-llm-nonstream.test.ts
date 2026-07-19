@@ -74,6 +74,59 @@ function makeRefreshingCredentialProvider(): {
   return { provider, acquireCalls: () => acquireCount, invalidateCalls: () => invalidateCount };
 }
 
+/**
+ * Credential provider modeling an `OAuthTokenCredentialProvider`-style
+ * source (PR #99): each `acquire()` call returns a token that carries a
+ * real `expiresAt`, with the *first* token deliberately set to expire
+ * within the bounded-retry delay window (issue #100's race). Unlike
+ * `makeRefreshingCredentialProvider`, `invalidate()` here is never
+ * expected to be called by a correct fix — the whole point of the
+ * proactive-expiry check is to refresh the credential BEFORE a 401 ever
+ * happens, not in response to one.
+ */
+function makeExpiringOAuthCredentialProvider(): {
+  provider: CredentialProvider;
+  acquireCalls: () => number;
+  invalidateCalls: () => number;
+} {
+  let acquireCount = 0;
+  let invalidateCount = 0;
+  const provider: CredentialProvider = {
+    describeAuthority: vi.fn(),
+    identity: () => "expiring-oauth-credential-provider",
+    invalidate: vi.fn(async () => {
+      invalidateCount += 1;
+    }),
+    acquire: vi.fn(async (_request: CredentialRequest): Promise<Credential> => {
+      const isFirst = acquireCount === 0;
+      const secret = isFirst ? "oauth-v1-soon-expired" : "oauth-v2-refreshed";
+      acquireCount += 1;
+      return {
+        scheme: "Bearer",
+        secret: { reveal: () => secret } as Credential["secret"],
+        // The first token is already stale enough that, by the time the
+        // bounded-retry delay (>= 500ms base) elapses, `Date.now()` will
+        // have passed it — reproducing the real race from issue #100
+        // without needing fake timers. The refreshed token is far in the
+        // future so a second race iteration can't accidentally trigger.
+        expiresAt: isFirst
+          ? new Date(Date.now() + 50).toISOString()
+          : new Date(Date.now() + 3_600_000).toISOString(),
+        audience: BASE_URL,
+        source: "expiring-oauth",
+        authority: {
+          providerFingerprint: "expiring-oauth",
+          product: "meta-llm",
+          normalizedOrigin: BASE_URL,
+          audience: BASE_URL,
+          principal: "acct_oauth",
+        },
+      };
+    }),
+  };
+  return { provider, acquireCalls: () => acquireCount, invalidateCalls: () => invalidateCount };
+}
+
 function chatCompletionBody() {
   return {
     id: "chatcmpl-1",
@@ -267,6 +320,47 @@ describe("D7 idempotency and bounded retry", () => {
     const key1 = (fetchSpy.mock.calls[0][1].headers as Record<string, string>)["Idempotency-Key"];
     const key2 = (fetchSpy.mock.calls[1][1].headers as Record<string, string>)["Idempotency-Key"];
     expect(key1).toBe(key2);
+  });
+
+  // Issue #100: an OAuth credential (real `expiresAt`, unlike a static API
+  // key) that expires during the retry-delay window must be proactively
+  // re-acquired before the retry is sent, not resent stale and left to
+  // fail with a 401 on the retry attempt.
+  it("proactively re-acquires a credential that expires during the 429 retry delay", async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(429, { error: "rate limited" }, { "retry-after": "0" }))
+      .mockResolvedValueOnce(jsonResponse(200, chatCompletionBody()));
+    const { provider, acquireCalls, invalidateCalls } = makeExpiringOAuthCredentialProvider();
+    const client = new MetaLlmClient({
+      baseUrl: BASE_URL,
+      transport: fetchSpy,
+      credentialProvider: provider,
+    });
+
+    const result = await client.chat.completions(chatRequest());
+
+    expect(result.data.id).toBe("chatcmpl-1");
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    // The retry-delay wait (>= 500ms base per DEFAULT_RETRY_POLICY) is real
+    // here, not mocked with fake timers — it is what lets the first
+    // token's 50ms expiry lapse, reproducing the actual race. `acquire()`
+    // must be called a second time BEFORE the retry request goes out...
+    expect(acquireCalls()).toBe(2);
+    // ...and that second acquisition must happen via the proactive-expiry
+    // path, never via the 401-challenge refresh path (there is no 401 in
+    // this test at all).
+    expect(invalidateCalls()).toBe(0);
+
+    const [, firstInit] = fetchSpy.mock.calls[0];
+    const [, secondInit] = fetchSpy.mock.calls[1];
+    expect((firstInit.headers as Record<string, string>).Authorization).toBe(
+      "Bearer oauth-v1-soon-expired",
+    );
+    expect((secondInit.headers as Record<string, string>).Authorization).toBe(
+      "Bearer oauth-v2-refreshed",
+    );
   });
 });
 

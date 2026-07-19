@@ -8,6 +8,8 @@ models/placeholders) per ADR-0024a §D6 (error mapping) and §D7
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import httpx
 import pytest
 import respx
@@ -67,6 +69,66 @@ class _RefreshingCredentialProvider:
 
     def identity(self) -> str:
         return "refreshing-credential-provider"
+
+    async def invalidate(self, reason: str) -> None:
+        del reason
+        self.invalidate_calls += 1
+
+
+class _ExpiringOAuthCredentialProvider:
+    """Models an `OAuthTokenCredentialProvider`-style source (PR #99): each
+    `acquire()` call returns a token carrying a real `expires_at`, with the
+    *first* token deliberately set to expire within the bounded-retry delay
+    window (issue #100's race).
+
+    Unlike `_RefreshingCredentialProvider`, `invalidate()` here is never
+    expected to be called by a correct fix -- the whole point of the
+    proactive-expiry check is to refresh the credential BEFORE a 401 ever
+    happens, not in response to one.
+    """
+
+    def __init__(self) -> None:
+        self.acquire_calls = 0
+        self.invalidate_calls = 0
+
+    async def describe_authority(self, request: object) -> CredentialAuthority:
+        return CredentialAuthority(
+            provider_fingerprint="expiring-oauth",
+            product="meta-llm",
+            normalized_origin=BASE_URL,
+            audience=BASE_URL,
+            principal="acct_oauth",
+        )
+
+    async def acquire(self, request: object) -> Credential:
+        is_first = self.acquire_calls == 0
+        secret = "oauth-v1-soon-expired" if is_first else "oauth-v2-refreshed"
+        self.acquire_calls += 1
+        now = datetime.now(timezone.utc)
+        # The first token is already stale enough that, by the time the
+        # bounded-retry delay (>= 500ms base) elapses, "now" at the retry
+        # check will have passed it -- reproducing the real race from
+        # issue #100 without needing a mocked clock. The refreshed token is
+        # far in the future so a second race iteration can't accidentally
+        # trigger.
+        expires_at = now + timedelta(milliseconds=50) if is_first else now + timedelta(hours=1)
+        return Credential(
+            scheme="Bearer",
+            secret=RedactedSecret(secret),
+            expires_at=expires_at.isoformat(),
+            audience=BASE_URL,
+            source="expiring-oauth",
+            authority=CredentialAuthority(
+                provider_fingerprint="expiring-oauth",
+                product="meta-llm",
+                normalized_origin=BASE_URL,
+                audience=BASE_URL,
+                principal="acct_oauth",
+            ),
+        )
+
+    def identity(self) -> str:
+        return "expiring-oauth-credential-provider"
 
     async def invalidate(self, reason: str) -> None:
         del reason
@@ -295,6 +357,45 @@ async def test_messages_create_retries_503_reusing_the_same_idempotency_key() ->
     key_1 = respx.calls[0].request.headers.get("idempotency-key")
     key_2 = respx.calls[1].request.headers.get("idempotency-key")
     assert key_1 == key_2
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_completions_proactively_reacquires_credential_expiring_during_429_delay() -> (
+    None
+):
+    """Issue #100: an OAuth credential (real ``expires_at``, unlike a
+    static API key) that expires during the retry-delay window must be
+    proactively re-acquired before the retry is sent, not resent stale and
+    left to fail with a 401 on the retry attempt.
+    """
+    route = respx.post(f"{BASE_URL}/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(429, json={"error": "rate limited"}, headers={"retry-after": "0"}),
+        httpx.Response(200, json=_chat_completion_body()),
+    ]
+    provider = _ExpiringOAuthCredentialProvider()
+    client = MetaLlmClient(MetaLlmClientConfig(base_url=BASE_URL, credential_provider=provider))
+
+    result = await client.chat.completions(**_chat_request())
+
+    assert result.data.id == "chatcmpl-1"
+    assert route.call_count == 2
+
+    # The retry-delay wait (>= 500ms base per DEFAULT_RETRY_POLICY) is a
+    # real `asyncio.sleep` here, not a mocked one -- it is what lets the
+    # first token's 50ms expiry lapse, reproducing the actual race.
+    # `acquire()` must be called a second time BEFORE the retry request
+    # goes out...
+    assert provider.acquire_calls == 2
+    # ...and that second acquisition must happen via the proactive-expiry
+    # path, never via the 401-challenge refresh path (there is no 401 in
+    # this test at all).
+    assert provider.invalidate_calls == 0
+
+    assert respx.calls[0].request.headers.get("authorization") == "Bearer oauth-v1-soon-expired"
+    assert respx.calls[1].request.headers.get("authorization") == "Bearer oauth-v2-refreshed"
     await client.aclose()
 
 

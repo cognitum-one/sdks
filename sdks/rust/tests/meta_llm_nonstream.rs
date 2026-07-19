@@ -8,6 +8,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use cognitum_one::agentic::static_api_key_provider::{
@@ -150,6 +151,119 @@ impl CredentialProvider for RefreshingCredentialProvider {
 
     fn identity(&self) -> String {
         "refreshing-credential-provider".to_owned()
+    }
+
+    async fn invalidate(&self, _reason: &str) {
+        self.invalidate_calls.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// Minimal RFC3339 UTC formatter for test fixtures, mirroring
+/// `OAuthTokenCredentialProvider`'s internal (unexported)
+/// `system_time_to_rfc3339` closely enough for `Credential::expires_at` --
+/// this integration test only sees the crate's public API, so it cannot
+/// reuse that private helper directly.
+fn system_time_to_rfc3339(t: SystemTime) -> String {
+    let unix_seconds = t
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let days = unix_seconds.div_euclid(86_400);
+    let secs_of_day = unix_seconds.rem_euclid(86_400);
+    let hour = secs_of_day / 3600;
+    let minute = (secs_of_day % 3600) / 60;
+    let second = secs_of_day % 60;
+
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+/// Models an `OAuthTokenCredentialProvider`-style source (PR #99): each
+/// `acquire()` call returns a token carrying a real `expires_at`, with the
+/// *first* token deliberately set to expire within the bounded-retry delay
+/// window (issue #100's race).
+///
+/// Unlike `RefreshingCredentialProvider`, `invalidate()` here is never
+/// expected to be called by a correct fix -- the whole point of the
+/// proactive-expiry check is to refresh the credential BEFORE a 401 ever
+/// happens, not in response to one.
+#[derive(Debug, Default)]
+struct ExpiringOAuthCredentialProvider {
+    acquire_calls: AtomicUsize,
+    invalidate_calls: AtomicUsize,
+}
+
+#[async_trait]
+impl CredentialProvider for ExpiringOAuthCredentialProvider {
+    async fn describe_authority(
+        &self,
+        request: &CredentialRequest,
+    ) -> Result<CredentialAuthority, AgenticError> {
+        Ok(CredentialAuthority {
+            provider_fingerprint: "expiring-oauth".to_owned(),
+            product: request.product.clone(),
+            normalized_origin: request.normalized_origin.clone(),
+            audience: request.audience.clone(),
+            principal: Some("acct_oauth".to_owned()),
+            tenant: None,
+            delegated_subtenant: None,
+            effective_scopes: None,
+            plan: None,
+        })
+    }
+
+    async fn acquire(&self, request: &CredentialRequest) -> Result<Credential, AgenticError> {
+        let n = self.acquire_calls.fetch_add(1, Ordering::SeqCst);
+        let is_first = n == 0;
+        let secret = if is_first {
+            "oauth-v1-soon-expired"
+        } else {
+            "oauth-v2-refreshed"
+        };
+        // The first token is already stale enough that, by the time the
+        // bounded-retry delay (>= 500ms base) elapses, `SystemTime::now()`
+        // at the retry check will have passed it -- reproducing the real
+        // race from issue #100 without needing a mocked clock. The
+        // refreshed token is far in the future so a second race iteration
+        // can't accidentally trigger.
+        let expires_at = if is_first {
+            SystemTime::now() + Duration::from_millis(50)
+        } else {
+            SystemTime::now() + Duration::from_secs(3600)
+        };
+        Ok(Credential {
+            scheme: "Bearer".to_owned(),
+            secret: RedactedSecret::new(secret),
+            expires_at: Some(system_time_to_rfc3339(expires_at)),
+            granted_scopes: None,
+            audience: request.audience.clone(),
+            source: "expiring-oauth".to_owned(),
+            authority: CredentialAuthority {
+                provider_fingerprint: "expiring-oauth".to_owned(),
+                product: request.product.clone(),
+                normalized_origin: request.normalized_origin.clone(),
+                audience: request.audience.clone(),
+                principal: Some("acct_oauth".to_owned()),
+                tenant: None,
+                delegated_subtenant: None,
+                effective_scopes: None,
+                plan: None,
+            },
+        })
+    }
+
+    fn identity(&self) -> String {
+        "expiring-oauth-credential-provider".to_owned()
     }
 
     async fn invalidate(&self, _reason: &str) {
@@ -388,6 +502,55 @@ async fn messages_create_retries_503_reusing_the_same_idempotency_key() {
         requests[0].headers.get("idempotency-key").unwrap(),
         requests[1].headers.get("idempotency-key").unwrap()
     );
+}
+
+/// Issue #100: an OAuth credential (real `expires_at`, unlike a static API
+/// key) that expires during the retry-delay window must be proactively
+/// re-acquired before the retry is sent, not resent stale and left to fail
+/// with a 401 on the retry attempt.
+#[tokio::test]
+async fn chat_completions_proactively_reacquires_credential_expiring_during_429_delay() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("Authorization", "Bearer oauth-v1-soon-expired"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .set_body_json(json!({"error": "rate limited"}))
+                .insert_header("retry-after", "0"),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("Authorization", "Bearer oauth-v2-refreshed"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_completion_body()))
+        .mount(&server)
+        .await;
+
+    let provider = Arc::new(ExpiringOAuthCredentialProvider::default());
+    let mut config = insecure_config(server.uri());
+    config.credential_provider = Some(provider.clone());
+    let client = MetaLlmClient::new(config).unwrap();
+
+    let result = client.chat_completions(&chat_request()).await.unwrap();
+    assert_eq!(result.data.id, "chatcmpl-1");
+
+    // The retry-delay wait (>= 500ms base per `RetryPolicy::default()`) is
+    // a real `tokio::time::sleep` here, not a mocked one -- it is what
+    // lets the first token's 50ms expiry lapse, reproducing the actual
+    // race. `acquire()` must be called a second time BEFORE the retry
+    // request goes out...
+    assert_eq!(provider.acquire_calls.load(Ordering::SeqCst), 2);
+    // ...and that second acquisition must happen via the proactive-expiry
+    // path, never via the 401-challenge refresh path (there is no 401 in
+    // this test at all -- the `Mock`s above would simply not match if a
+    // stale/unexpected bearer token were sent on the retry).
+    assert_eq!(provider.invalidate_calls.load(Ordering::SeqCst), 0);
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2, "expected exactly one retry after the 429");
 }
 
 // ---------------------------------------------------------------------------
