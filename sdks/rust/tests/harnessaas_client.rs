@@ -17,10 +17,12 @@ use cognitum_one::agentic::static_api_key_provider::{
     StaticApiKeyCredentialProvider, StaticApiKeyCredentialProviderOptions,
 };
 use cognitum_one::agentic::{
-    AgenticError, AgenticErrorKind, Credential, CredentialAuthority, CredentialProvider,
-    CredentialRequest, RedactedSecret,
+    AgenticError, AgenticErrorKind, CapabilitySet, CapabilitySource, Credential,
+    CredentialAuthority, CredentialProvider, CredentialRequest, RedactedSecret,
 };
-use cognitum_one::harnessaas::{HarnessaaSClient, HarnessaaSClientConfig, HarnessaaSSolveRequest};
+use cognitum_one::harnessaas::{
+    HarnessaaSClient, HarnessaaSClientConfig, HarnessaaSSolveRequest, HarnessaaSVertical,
+};
 use serde_json::json;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -174,7 +176,105 @@ fn capabilities_returns_intersection_safe_default() {
     let config = HarnessaaSClientConfig::new("https://harnessaas.test.cognitum.one");
     let client = HarnessaaSClient::new(config).unwrap();
     let caps = client.capabilities();
-    assert!(caps.features.is_empty());
+    assert_eq!(caps.features.get("solve"), Some(&true));
+    assert_eq!(caps.features.get("lineage"), Some(&true));
+    assert_eq!(caps.features.get("solve.vertical.code-repair"), Some(&true));
+    assert_eq!(caps.features.get("solve.vertical.security-remediation"), Some(&false));
+    assert_eq!(caps.features.get("solve.vertical.dependency-migration"), Some(&false));
+    assert_eq!(caps.features.get("solve.vertical.test-generation"), Some(&false));
+    assert_eq!(caps.source, CapabilitySource::StaticCompatibilityTable);
+}
+
+fn unrecognized_version_snapshot() -> CapabilitySet {
+    CapabilitySet {
+        product: "harnessaas".to_owned(),
+        product_version: "9.9.9-unknown".to_owned(),
+        protocol: "cognitum.harnessaas.http".to_owned(),
+        protocol_version: "1.0".to_owned(),
+        features: std::collections::HashMap::new(),
+        limitations: vec!["unrecognized server version — minimum-safe set".to_owned()],
+        auth_methods: Vec::new(),
+        source: CapabilitySource::StaticCompatibilityTable,
+    }
+}
+
+#[test]
+fn capabilities_snapshot_override_for_unrecognized_version_is_unsupported() {
+    let mut config = HarnessaaSClientConfig::new("https://harnessaas.test.cognitum.one");
+    config.capabilities_snapshot = Some(unrecognized_version_snapshot());
+    let client = HarnessaaSClient::new(config).unwrap();
+    assert!(client.capabilities().features.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// solve() -- capability fail-closed (ADR-0019 §D6, issue #74)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn solve_fails_closed_for_unsupported_vertical_before_any_http() {
+    let server = MockServer::start().await;
+    // No mock mounted -- any HTTP request would be unmatched by wiremock.
+    let mut config = insecure_config(server.uri());
+    config.credential_provider = Some(credential_provider(&server.uri()));
+    let client = HarnessaaSClient::new(config).unwrap();
+
+    let mut request = solve_request();
+    request.vertical = Some(HarnessaaSVertical::SecurityRemediation);
+    let err = client.solve(&request).await.expect_err("must fail closed");
+    assert_eq!(err.kind, AgenticErrorKind::UnsupportedCapability);
+    assert_eq!(server.received_requests().await.unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn solve_fails_closed_for_every_unmodeled_vertical() {
+    for vertical in [
+        HarnessaaSVertical::SecurityRemediation,
+        HarnessaaSVertical::DependencyMigration,
+        HarnessaaSVertical::TestGeneration,
+    ] {
+        let server = MockServer::start().await;
+        let mut config = insecure_config(server.uri());
+        config.credential_provider = Some(credential_provider(&server.uri()));
+        let client = HarnessaaSClient::new(config).unwrap();
+
+        let mut request = solve_request();
+        request.vertical = Some(vertical);
+        let err = client.solve(&request).await.expect_err("must fail closed");
+        assert_eq!(err.kind, AgenticErrorKind::UnsupportedCapability);
+        assert_eq!(server.received_requests().await.unwrap().len(), 0);
+    }
+}
+
+#[tokio::test]
+async fn solve_fails_closed_when_snapshot_does_not_mark_solve_supported() {
+    let server = MockServer::start().await;
+    let mut config = insecure_config(server.uri());
+    config.credential_provider = Some(credential_provider(&server.uri()));
+    config.capabilities_snapshot = Some(unrecognized_version_snapshot());
+    let client = HarnessaaSClient::new(config).unwrap();
+
+    let err = client.solve(&solve_request()).await.expect_err("must fail closed");
+    assert_eq!(err.kind, AgenticErrorKind::UnsupportedCapability);
+    assert_eq!(server.received_requests().await.unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn solve_allows_default_and_explicit_code_repair_vertical() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/solve"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(solve_response_body()))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let mut config = insecure_config(server.uri());
+    config.credential_provider = Some(credential_provider(&server.uri()));
+    let client = HarnessaaSClient::new(config).unwrap();
+
+    client.solve(&solve_request()).await.expect("code-repair default should succeed");
+    let mut explicit_request = solve_request();
+    explicit_request.vertical = Some(HarnessaaSVertical::CodeRepair);
+    client.solve(&explicit_request).await.expect("explicit code-repair should succeed");
 }
 
 // ---------------------------------------------------------------------------

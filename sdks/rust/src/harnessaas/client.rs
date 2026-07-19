@@ -37,15 +37,90 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::agentic::{AgenticError, AgenticErrorKind, CapabilitySet, RetryPolicy, equal_jitter_delay_ms};
+use crate::agentic::{
+    AgenticError, AgenticErrorKind, CapabilitySet, RetryPolicy, UnsupportedCapabilityError,
+    equal_jitter_delay_ms,
+};
 
 use super::config::{resolve_config, HarnessaaSClientConfig};
 use super::discovery::{parse_harnessaas_health, HarnessaaSHealth};
 use super::envelope::HarnessaaSResult;
-use super::types::{parse_lineage_result, parse_solve_response, HarnessaaSLineageResult, HarnessaaSSolveRequest, HarnessaaSSolveResponse};
+use super::types::{
+    parse_lineage_result, parse_solve_response, HarnessaaSLineageResult, HarnessaaSSolveRequest,
+    HarnessaaSSolveResponse, HarnessaaSVertical,
+};
 
 pub(super) const PRODUCT: &str = "harnessaas";
 const DEFAULT_CAPABILITY_VERSION: &str = "0.0.0";
+const DEFAULT_VERTICAL: HarnessaaSVertical = HarnessaaSVertical::CodeRepair;
+
+/// Feature key for the base `solve` operation (ADR-0019 §D6). A
+/// caller-supplied `capabilities_snapshot` for an unrecognized/future
+/// HarnessaaS version that omits this key is treated as unknown/unsupported,
+/// never as "assume supported" — see [`HarnessaaSClient::solve`].
+const SOLVE_FEATURE: &str = "solve";
+
+/// Feature key for the `lineage` read. Defense in depth only: `lineage()` is
+/// a safe read and is not one of ADR-0019 §D6's five gated categories
+/// (mutation, spend, consent, installation, code execution), so this flag
+/// being false/absent is a soft signal, not itself mandated by the ADR.
+const LINEAGE_FEATURE: &str = "lineage";
+
+/// Per-vertical feature key for `solve()` (ADR-0011's `vertical` field, this
+/// module's own `HarnessaaSVertical` type). Only `code-repair` is modeled by
+/// this SDK pass — `super::types`'s doc comment explains that the other
+/// three verticals each require a compound request field
+/// (`finding`/`scanner_command`, `migration`/`build_command`,
+/// `test_generation`/`coverage_command`) this client does not build or
+/// serialize. Sending one of those verticals without its compound field is
+/// real, currently-reachable misuse (a caller can set
+/// `vertical: Some(HarnessaaSVertical::SecurityRemediation)` today and this
+/// client would happily POST an incomplete request), so this is the genuine
+/// capability dimension `solve()` gates on locally — not a vacuous
+/// always-true check.
+fn solve_vertical_feature(vertical: HarnessaaSVertical) -> String {
+    let name = match vertical {
+        HarnessaaSVertical::CodeRepair => "code-repair",
+        HarnessaaSVertical::SecurityRemediation => "security-remediation",
+        HarnessaaSVertical::DependencyMigration => "dependency-migration",
+        HarnessaaSVertical::TestGeneration => "test-generation",
+    };
+    format!("solve.vertical.{name}")
+}
+
+/// The only capability snapshot this SDK can vouch for without a published
+/// runtime capabilities endpoint (ADR-0019 §D6: "the SDK may use a
+/// checked-in compatibility table keyed by exact tested version"). Verified
+/// against `cognitum-one/harnessaas@908e4a99`: `solve` (code-repair vertical
+/// only) and `lineage` are the two confirmed-working synchronous
+/// operations; the other three verticals are explicitly NOT modeled this
+/// pass and MUST NOT be treated as supported.
+fn default_capability_snapshot() -> CapabilitySet {
+    let mut features = HashMap::new();
+    features.insert(SOLVE_FEATURE.to_owned(), true);
+    features.insert(LINEAGE_FEATURE.to_owned(), true);
+    features.insert(solve_vertical_feature(HarnessaaSVertical::CodeRepair), true);
+    features.insert(solve_vertical_feature(HarnessaaSVertical::SecurityRemediation), false);
+    features.insert(solve_vertical_feature(HarnessaaSVertical::DependencyMigration), false);
+    features.insert(solve_vertical_feature(HarnessaaSVertical::TestGeneration), false);
+    CapabilitySet {
+        product: PRODUCT.to_owned(),
+        product_version: DEFAULT_CAPABILITY_VERSION.to_owned(),
+        protocol: "cognitum.harnessaas.http".to_owned(),
+        protocol_version: "1.0".to_owned(),
+        features,
+        limitations: vec![
+            "solve() is verified only for the code-repair vertical; security-remediation, \
+             dependency-migration, and test-generation each require a compound request field \
+             (finding/scanner_command, migration/build_command, test_generation/coverage_command \
+             respectively) this SDK pass does not model, so those verticals are not locally \
+             supported even though the server may accept them"
+                .to_owned(),
+        ],
+        auth_methods: vec!["X-API-Key".to_owned(), "Authorization: Bearer".to_owned()],
+        source: crate::agentic::CapabilitySource::StaticCompatibilityTable,
+    }
+}
 
 /// Client for the real, deployed, synchronous HarnessaaS surface
 /// (ADR-0027a). Construction performs no I/O (ADR-0019 §D3). Never
@@ -75,16 +150,33 @@ impl HarnessaaSClient {
     /// the intersection of proven-safe capabilities, never the union
     /// (ADR-0019 §D6).
     pub fn capabilities(&self) -> CapabilitySet {
-        self.config.capabilities_snapshot.clone().unwrap_or(CapabilitySet {
-            product: PRODUCT.to_owned(),
-            product_version: DEFAULT_CAPABILITY_VERSION.to_owned(),
-            protocol: "cognitum.harnessaas.http".to_owned(),
-            protocol_version: "1.0".to_owned(),
-            features: HashMap::new(),
-            limitations: vec!["no capabilities_snapshot configured".to_owned()],
-            auth_methods: Vec::new(),
-            source: crate::agentic::CapabilitySource::StaticCompatibilityTable,
-        })
+        self.config
+            .capabilities_snapshot
+            .clone()
+            .unwrap_or_else(default_capability_snapshot)
+    }
+
+    /// Fail closed BEFORE any HTTP call if the resolved capability set (an
+    /// operator-supplied `capabilities_snapshot`, or this SDK's own
+    /// known-tested default) does not affirmatively mark `solve` and the
+    /// requested `vertical` as supported (ADR-0019 §D6). `solve()` is
+    /// simultaneously a mutation, a spend trigger, and — given HarnessaaS's
+    /// untrusted-repository/command-execution trust boundary — a
+    /// code-execution trigger, so an unknown or unsupported capability MUST
+    /// be rejected locally rather than reaching the network.
+    #[allow(clippy::result_large_err)]
+    fn assert_solve_capability(&self, vertical: HarnessaaSVertical) -> Result<(), AgenticError> {
+        let caps = self.capabilities();
+        if caps.features.get(SOLVE_FEATURE) != Some(&true) {
+            return Err(UnsupportedCapabilityError::new(PRODUCT, "solve", SOLVE_FEATURE).into());
+        }
+        let vertical_feature = solve_vertical_feature(vertical);
+        if caps.features.get(&vertical_feature) != Some(&true) {
+            return Err(
+                UnsupportedCapabilityError::new(PRODUCT, "solve", vertical_feature).into()
+            );
+        }
+        Ok(())
     }
 
     /// `GET /health` — process health only, no identity/readiness
@@ -120,6 +212,7 @@ impl HarnessaaSClient {
         &self,
         request: &HarnessaaSSolveRequest,
     ) -> Result<HarnessaaSResult<HarnessaaSSolveResponse>, AgenticError> {
+        self.assert_solve_capability(request.vertical.unwrap_or(DEFAULT_VERTICAL))?;
         let body = serde_json::to_value(request).map_err(|cause| {
             AgenticError::new(AgenticErrorKind::Validation, format!("solve request failed to serialize: {cause}"))
                 .with_product_operation_solve()
@@ -163,6 +256,14 @@ impl HarnessaaSClient {
         if request_id.is_empty() {
             return Err(AgenticError::new(AgenticErrorKind::Validation, "lineage request_id is required")
                 .with_product_operation_lineage());
+        }
+        // Defense in depth only (see `LINEAGE_FEATURE`'s doc comment above):
+        // `lineage()` is a safe read, not one of ADR-0019 §D6's five gated
+        // categories, but gating it too keeps "unknown version" handling
+        // uniform if a future capabilities_snapshot narrows what a given
+        // HarnessaaS version's response shape supports.
+        if self.capabilities().features.get(LINEAGE_FEATURE) != Some(&true) {
+            return Err(UnsupportedCapabilityError::new(PRODUCT, "lineage", LINEAGE_FEATURE).into());
         }
         let path = format!("/lineage/{}", urlencode(request_id));
         let mut credential = self.require_credential("lineage").await?;

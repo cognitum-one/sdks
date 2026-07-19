@@ -13,7 +13,12 @@ import httpx
 import pytest
 import respx
 
-from cognitum.agentic import AgenticError, StaticApiKeyCredentialProvider
+from cognitum.agentic import (
+    AgenticError,
+    CapabilitySet,
+    StaticApiKeyCredentialProvider,
+    UnsupportedCapabilityError,
+)
 from cognitum.agentic.credentials import Credential, CredentialAuthority, RedactedSecret
 from cognitum.harnessaas import HarnessaaSClient, HarnessaaSClientConfig, HarnessaaSSolveRequest
 
@@ -137,8 +142,127 @@ def test_allow_insecure_http_rejects_non_loopback_host() -> None:
 def test_capabilities_returns_intersection_safe_default() -> None:
     client = HarnessaaSClient(HarnessaaSClientConfig(base_url=BASE_URL))
     caps = client.capabilities()
-    assert caps.features == {}
+    assert caps.features == {
+        "solve": True,
+        "lineage": True,
+        "solve.vertical.code-repair": True,
+        "solve.vertical.security-remediation": False,
+        "solve.vertical.dependency-migration": False,
+        "solve.vertical.test-generation": False,
+    }
     assert caps.source == "static-compatibility-table"
+
+
+def test_capabilities_snapshot_override_for_unrecognized_version_is_unsupported() -> None:
+    client = HarnessaaSClient(
+        HarnessaaSClientConfig(
+            base_url=BASE_URL,
+            capabilities_snapshot=CapabilitySet(
+                product="harnessaas",
+                product_version="9.9.9-unknown",
+                protocol="cognitum.harnessaas.http",
+                protocol_version="1.0",
+                source="static-compatibility-table",
+                features={},
+                limitations=["unrecognized server version — minimum-safe set"],
+                auth_methods=[],
+            ),
+        )
+    )
+    assert client.capabilities().features == {}
+
+
+# ---------------------------------------------------------------------------
+# solve() -- capability fail-closed (ADR-0019 §D6, issue #74)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_solve_fails_closed_for_unsupported_vertical_before_any_http() -> None:
+    with respx.mock:
+        # No route mounted -- any HTTP request would raise inside respx.
+        client = HarnessaaSClient(
+            HarnessaaSClientConfig(base_url=BASE_URL, credential_provider=_credential_provider())
+        )
+        request = HarnessaaSSolveRequest(
+            repo="https://github.com/acme/widget.git",
+            test_command="pytest -k test_widget",
+            issue="Widget renders twice",
+            vertical="security-remediation",
+        )
+        with pytest.raises(UnsupportedCapabilityError):
+            await client.solve(request)
+        assert len(respx.calls) == 0
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_solve_fails_closed_for_every_unmodeled_vertical() -> None:
+    for vertical in ("security-remediation", "dependency-migration", "test-generation"):
+        with respx.mock:
+            client = HarnessaaSClient(
+                HarnessaaSClientConfig(
+                    base_url=BASE_URL, credential_provider=_credential_provider()
+                )
+            )
+            request = HarnessaaSSolveRequest(
+                repo="https://github.com/acme/widget.git",
+                test_command="pytest -k test_widget",
+                issue="Widget renders twice",
+                vertical=vertical,
+            )
+            with pytest.raises(UnsupportedCapabilityError):
+                await client.solve(request)
+            assert len(respx.calls) == 0
+            await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_solve_fails_closed_when_snapshot_does_not_mark_solve_supported() -> None:
+    with respx.mock:
+        client = HarnessaaSClient(
+            HarnessaaSClientConfig(
+                base_url=BASE_URL,
+                credential_provider=_credential_provider(),
+                capabilities_snapshot=CapabilitySet(
+                    product="harnessaas",
+                    product_version="9.9.9-unknown",
+                    protocol="cognitum.harnessaas.http",
+                    protocol_version="1.0",
+                    source="static-compatibility-table",
+                    features={},
+                    limitations=["unrecognized server version — minimum-safe set"],
+                    auth_methods=[],
+                ),
+            )
+        )
+        with pytest.raises(UnsupportedCapabilityError):
+            await client.solve(_solve_request())
+        assert len(respx.calls) == 0
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_solve_allows_default_and_explicit_code_repair_vertical() -> None:
+    route = respx.post(f"{BASE_URL}/solve").mock(
+        return_value=httpx.Response(200, json=_solve_response_body())
+    )
+    client = HarnessaaSClient(
+        HarnessaaSClientConfig(base_url=BASE_URL, credential_provider=_credential_provider())
+    )
+
+    await client.solve(_solve_request())
+    request_with_explicit_vertical = HarnessaaSSolveRequest(
+        repo="https://github.com/acme/widget.git",
+        test_command="pytest -k test_widget",
+        issue="Widget renders twice",
+        vertical="code-repair",
+    )
+    await client.solve(request_with_explicit_vertical)
+
+    assert route.call_count == 2
+    await client.aclose()
 
 
 # ---------------------------------------------------------------------------

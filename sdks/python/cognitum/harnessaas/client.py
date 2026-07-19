@@ -50,6 +50,7 @@ from cognitum.agentic import (
     DEFAULT_RETRY_POLICY,
     AgenticError,
     CapabilitySet,
+    UnsupportedCapabilityError,
     equal_jitter_delay_ms,
 )
 from cognitum.harnessaas.config import HarnessaaSClientConfig
@@ -60,6 +61,7 @@ from cognitum.harnessaas.types import (
     HarnessaaSLineageResult,
     HarnessaaSSolveRequest,
     HarnessaaSSolveResponse,
+    HarnessaaSVertical,
     parse_lineage_result,
     parse_solve_response,
 )
@@ -69,6 +71,67 @@ if TYPE_CHECKING:
 
 _PRODUCT = "harnessaas"
 _DEFAULT_CAPABILITY_VERSION = "0.0.0"
+_DEFAULT_VERTICAL: HarnessaaSVertical = "code-repair"
+
+#: Feature key for the base ``solve`` operation (ADR-0019 §D6). A
+#: caller-supplied ``capabilities_snapshot`` for an unrecognized/future
+#: HarnessaaS version that omits this key is treated as unknown/unsupported,
+#: never as "assume supported" -- see ``solve()`` below.
+_SOLVE_FEATURE = "solve"
+
+#: Feature key for the ``lineage`` read. Defense in depth only: ``lineage()``
+#: is a safe read and is not one of ADR-0019 §D6's five gated categories
+#: (mutation, spend, consent, installation, code execution), so this flag
+#: being false/absent is a soft signal, not itself mandated by the ADR.
+_LINEAGE_FEATURE = "lineage"
+
+
+def _solve_vertical_feature(vertical: HarnessaaSVertical) -> str:
+    """Per-vertical feature key for ``solve()`` (ADR-0011's ``vertical``
+    field). Only ``code-repair`` is modeled by this SDK pass --
+    ``cognitum.harnessaas.types``'s module docstring explains that the other
+    three verticals each require a compound request field
+    (``finding``/``scanner_command``, ``migration``/``build_command``,
+    ``test_generation``/``coverage_command``) this client does not build or
+    serialize. Sending one of those verticals without its compound field is
+    real, currently-reachable misuse (a caller can set
+    ``vertical="security-remediation"`` today and this client would happily
+    POST an incomplete request), so this is the genuine capability dimension
+    ``solve()`` gates on locally -- not a vacuous always-true check.
+    """
+    return f"solve.vertical.{vertical}"
+
+
+#: The only capability snapshot this SDK can vouch for without a published
+#: runtime capabilities endpoint (ADR-0019 §D6: "the SDK may use a
+#: checked-in compatibility table keyed by exact tested version"). Verified
+#: against ``cognitum-one/harnessaas@908e4a99``: ``solve`` (code-repair
+#: vertical only) and ``lineage`` are the two confirmed-working synchronous
+#: operations; the other three verticals are explicitly NOT modeled this
+#: pass and MUST NOT be treated as supported.
+_DEFAULT_CAPABILITY_SNAPSHOT = CapabilitySet(
+    product=_PRODUCT,
+    product_version=_DEFAULT_CAPABILITY_VERSION,
+    protocol="cognitum.harnessaas.http",
+    protocol_version="1.0",
+    source="static-compatibility-table",
+    features={
+        _SOLVE_FEATURE: True,
+        _LINEAGE_FEATURE: True,
+        _solve_vertical_feature("code-repair"): True,
+        _solve_vertical_feature("security-remediation"): False,
+        _solve_vertical_feature("dependency-migration"): False,
+        _solve_vertical_feature("test-generation"): False,
+    },
+    limitations=[
+        "solve() is verified only for the code-repair vertical; security-remediation, "
+        "dependency-migration, and test-generation each require a compound request field "
+        "(finding/scanner_command, migration/build_command, test_generation/coverage_command "
+        "respectively) this SDK pass does not model, so those verticals are not locally "
+        "supported even though the server may accept them",
+    ],
+    auth_methods=["X-API-Key", "Authorization: Bearer"],
+)
 
 
 class HarnessaaSClient:
@@ -89,16 +152,43 @@ class HarnessaaSClient:
         """
         if self._config.capabilities_snapshot is not None:
             return self._config.capabilities_snapshot
-        return CapabilitySet(
-            product=_PRODUCT,
-            product_version=_DEFAULT_CAPABILITY_VERSION,
-            protocol="cognitum.harnessaas.http",
-            protocol_version="1.0",
-            source="static-compatibility-table",
-            features={},
-            limitations=["no capabilities_snapshot configured"],
-            auth_methods=[],
-        )
+        return _DEFAULT_CAPABILITY_SNAPSHOT
+
+    def _assert_solve_capability(self, vertical: HarnessaaSVertical) -> None:
+        """Fail closed BEFORE any HTTP call if the resolved capability set
+        (an operator-supplied ``capabilities_snapshot``, or this SDK's own
+        known-tested default) does not affirmatively mark ``solve`` and the
+        requested ``vertical`` as supported (ADR-0019 §D6). ``solve()`` is
+        simultaneously a mutation, a spend trigger, and -- given
+        HarnessaaS's untrusted-repository/command-execution trust boundary
+        -- a code-execution trigger, so an unknown or unsupported
+        capability MUST be rejected locally rather than reaching the
+        network.
+        """
+        caps = self.capabilities()
+        if caps.features.get(_SOLVE_FEATURE) is not True:
+            raise UnsupportedCapabilityError(
+                _PRODUCT,
+                "solve",
+                _SOLVE_FEATURE,
+                "HarnessaaSClient.solve is unsupported or unknown for the resolved "
+                f'capability set (product_version "{caps.product_version}"). Refusing to '
+                "call POST /solve -- a mutating, billable, code-execution-triggering "
+                "operation -- before verifying support (ADR-0019 §D6).",
+            )
+        vertical_feature = _solve_vertical_feature(vertical)
+        if caps.features.get(vertical_feature) is not True:
+            raise UnsupportedCapabilityError(
+                _PRODUCT,
+                "solve",
+                vertical_feature,
+                f'HarnessaaSClient.solve vertical "{vertical}" is unsupported or unknown for '
+                f'the resolved capability set (product_version "{caps.product_version}"). '
+                'Only the "code-repair" vertical is modeled/verified by this SDK pass; '
+                "refusing to send an incomplete request for a vertical whose compound "
+                "fields this client does not serialize, before any spend or code execution "
+                "occurs (ADR-0019 §D6).",
+            )
 
     async def health(self) -> HarnessaaSResult[HarnessaaSHealth]:
         """``GET /health`` -- process health only. Unauthenticated on the
@@ -130,6 +220,7 @@ class HarnessaaSClient:
         client does not replicate client-side. The server remains
         authoritative; a 403 surfaces as ``permission_denied``.
         """
+        self._assert_solve_capability(request.vertical or _DEFAULT_VERTICAL)
         body = request.to_wire()
         credential = await self._require_credential("solve")
         refreshed_once = False
@@ -168,6 +259,21 @@ class HarnessaaSClient:
                 operation="lineage",
                 retryable=False,
             )
+        # Defense in depth only (see `_LINEAGE_FEATURE`'s doc comment above):
+        # `lineage()` is a safe read, not one of ADR-0019 §D6's five gated
+        # categories, but gating it too keeps "unknown version" handling
+        # uniform if a future capabilities_snapshot narrows what a given
+        # HarnessaaS version's response shape supports.
+        caps = self.capabilities()
+        if caps.features.get(_LINEAGE_FEATURE) is not True:
+            raise UnsupportedCapabilityError(
+                _PRODUCT,
+                "lineage",
+                _LINEAGE_FEATURE,
+                "HarnessaaSClient.lineage is unsupported or unknown for the resolved "
+                f'capability set (product_version "{caps.product_version}").',
+            )
+
         from urllib.parse import quote
 
         path = f"/lineage/{quote(request_id, safe='')}"
