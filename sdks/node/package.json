@@ -42,6 +42,11 @@
       "import": "./dist/metaharness/index.js",
       "require": "./dist/metaharness/index.cjs"
     },
+    "./harnessaas": {
+      "types": "./dist/harnessaas/index.d.ts",
+      "import": "./dist/harnessaas/index.js",
+      "require": "./dist/harnessaas/index.cjs"
+    },
     "./sse": {
       "types": "./dist/sse/index.d.ts",
       "import": "./dist/sse/index.js",

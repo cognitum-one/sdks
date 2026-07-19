@@ -661,6 +661,13 @@ async function requireCredential(deps, operation) {
   assertScopeGranted(PRODUCT2, operation, requiredScope, credential);
   return credential;
 }
+function isCredentialLocallyExpired(credential, now = Date.now) {
+  if (credential.expiresAt === void 0) {
+    return false;
+  }
+  const expiresAtMs = Date.parse(credential.expiresAt);
+  return Number.isFinite(expiresAtMs) && expiresAtMs <= now();
+}
 async function sendPostOnce(deps, path, operation, body, credential, idempotencyKey) {
   const requestId = newRequestId();
   deps.telemetry?.onRequestStart?.({ operation, requestId });
@@ -782,6 +789,9 @@ async function postJsonIdempotent(deps, path, operation, body) {
         sleepBudgetUsedMs += delayMs;
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         attempt += 1;
+        if (isCredentialLocallyExpired(credential)) {
+          credential = await requireCredential(deps, operation);
+        }
         continue;
       }
       throw err;

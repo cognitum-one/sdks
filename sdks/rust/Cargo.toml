@@ -48,6 +48,15 @@ meta-proxy = ["meta-llm"]
 # process, no npm acquisition — so this pulls in no new optional
 # dependency (only `serde_json`, already a base dependency).
 metaharness = []
+# HarnessaaS client (ADR-0019 §D2, ADR-0027a). Gates the `harnessaas`
+# module's code. Issue #67/#68 / M5 start: construction + real
+# `health()`/`solve()`/`lineage()` HTTP call logic against the real,
+# deployed, synchronous upstream service — NOT ADR-0027a's proposed async
+# job/poll/SSE/approval contract. Pulls in `uuid` (the same request-ID
+# correlation dependency `meta-llm` already uses) but is otherwise
+# independent — HarnessaaS shares no wire types with Meta LLM/Meta Proxy
+# (ADR-0019 §D4: separate bounded context, no client-class sharing).
+harnessaas = ["dep:uuid"]
 blocking = ["reqwest/blocking"]
 live-seed-tests = ["seed"]
 # Opt-in mDNS discovery (ADR-0016a §D6, Phase 3). One-shot `_cognitum._tcp.local`

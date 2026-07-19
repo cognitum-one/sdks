@@ -101,8 +101,11 @@ var RedactedSecret = class {
 // src/agentic/static-api-key-provider.ts
 import { createHash } from "crypto";
 
+// src/agentic/oauth-token-provider.ts
+import { createHash as createHash2, randomBytes } from "crypto";
+
 // src/agentic/receipt-verification.ts
-import { createHash as createHash2, createHmac, timingSafeEqual } from "crypto";
+import { createHash as createHash3, createHmac, timingSafeEqual } from "crypto";
 
 // src/metaharness/browser-guard.ts
 var PRODUCT = "metaharness";
