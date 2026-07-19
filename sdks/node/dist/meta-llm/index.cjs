@@ -26,6 +26,7 @@ __export(meta_llm_exports, {
   UnsendableRoutingControlsError: () => UnsendableRoutingControlsError,
   assertSendableRoutingControls: () => assertSendableRoutingControls,
   assertValidUsageQuery: () => assertValidUsageQuery,
+  decodeAnthropicSseEvent: () => decodeAnthropicSseEvent,
   decodeOpenAiSseEvent: () => decodeOpenAiSseEvent,
   parseMetaLlmReceipt: () => parseMetaLlmReceipt,
   parseMoney: () => parseMoney,
@@ -661,6 +662,7 @@ var OPERATION_REQUIRED_SCOPE = {
   "chat.completions": INFERENCE_SCOPE,
   "chat.completionsStream": INFERENCE_SCOPE,
   "messages.create": INFERENCE_SCOPE,
+  "messages.createStream": INFERENCE_SCOPE,
   "messages.countTokens": INFERENCE_SCOPE,
   completions: INFERENCE_SCOPE,
   responses: INFERENCE_SCOPE,
@@ -1367,9 +1369,397 @@ async function* readSseBody(body, requestId, timeBudget, cancellation, abortCont
   }
 }
 
+// src/meta-llm/stream/anthropic-events.ts
+function isRecord5(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function decodeContentBlock(raw) {
+  if (!isRecord5(raw)) return void 0;
+  if (raw.type === "text") {
+    return { type: "text", text: typeof raw.text === "string" ? raw.text : "" };
+  }
+  if (raw.type === "tool_use") {
+    return {
+      type: "tool_use",
+      id: typeof raw.id === "string" ? raw.id : "",
+      name: typeof raw.name === "string" ? raw.name : "",
+      input: isRecord5(raw.input) ? raw.input : {}
+    };
+  }
+  return void 0;
+}
+function decodeMessageStart(raw) {
+  if (!isRecord5(raw)) return void 0;
+  const usageRaw = isRecord5(raw.usage) ? raw.usage : {};
+  const stopReasonRaw = raw.stop_reason ?? raw.stopReason;
+  const stopSequenceRaw = raw.stop_sequence ?? raw.stopSequence;
+  return {
+    id: typeof raw.id === "string" ? raw.id : "",
+    type: "message",
+    role: "assistant",
+    content: Array.isArray(raw.content) ? raw.content.map(decodeContentBlockAsMessageBlock).filter((c) => c !== void 0) : [],
+    model: typeof raw.model === "string" ? raw.model : "",
+    stopReason: typeof stopReasonRaw === "string" ? stopReasonRaw : null,
+    stopSequence: typeof stopSequenceRaw === "string" ? stopSequenceRaw : void 0,
+    usage: {
+      inputTokens: Number(usageRaw.input_tokens ?? 0),
+      outputTokens: Number(usageRaw.output_tokens ?? 0)
+    }
+  };
+}
+function decodeContentBlockAsMessageBlock(raw) {
+  const block = decodeContentBlock(raw);
+  if (!block) return void 0;
+  return block;
+}
+function decodeDelta(raw) {
+  if (!isRecord5(raw)) return void 0;
+  if (raw.type === "text_delta") {
+    return { type: "text_delta", text: typeof raw.text === "string" ? raw.text : "" };
+  }
+  if (raw.type === "input_json_delta") {
+    const partialJsonRaw = raw.partial_json ?? raw.partialJson;
+    return { type: "input_json_delta", partialJson: typeof partialJsonRaw === "string" ? partialJsonRaw : "" };
+  }
+  return void 0;
+}
+var KNOWN_TOP_LEVEL_KEYS2 = /* @__PURE__ */ new Set([
+  "type",
+  "message",
+  "index",
+  "content_block",
+  "delta",
+  "usage",
+  "error",
+  "cognitum_receipt"
+]);
+function decodeAnthropicSseEvent(raw) {
+  let parsed;
+  try {
+    parsed = JSON.parse(raw.data);
+  } catch {
+    return { events: [{ type: "unknown", raw: raw.data }] };
+  }
+  if (!isRecord5(parsed)) {
+    return { events: [{ type: "unknown", raw: parsed }] };
+  }
+  const events = [];
+  const type = typeof parsed.type === "string" ? parsed.type : raw.event;
+  switch (type) {
+    case "message_start": {
+      const message = decodeMessageStart(parsed.message);
+      if (message) events.push({ type: "message_start", message });
+      break;
+    }
+    case "content_block_start": {
+      const contentBlock = decodeContentBlock(parsed.content_block);
+      if (contentBlock) {
+        events.push({
+          type: "content_block_start",
+          index: typeof parsed.index === "number" ? parsed.index : 0,
+          contentBlock
+        });
+      }
+      break;
+    }
+    case "content_block_delta": {
+      const delta = decodeDelta(parsed.delta);
+      if (delta) {
+        events.push({
+          type: "content_block_delta",
+          index: typeof parsed.index === "number" ? parsed.index : 0,
+          delta
+        });
+      }
+      break;
+    }
+    case "content_block_stop":
+      events.push({ type: "content_block_stop", index: typeof parsed.index === "number" ? parsed.index : 0 });
+      break;
+    case "message_delta": {
+      const deltaRaw = isRecord5(parsed.delta) ? parsed.delta : {};
+      const stopReasonRaw = deltaRaw.stop_reason ?? deltaRaw.stopReason;
+      const stopSequenceRaw = deltaRaw.stop_sequence ?? deltaRaw.stopSequence;
+      const usageRaw = isRecord5(parsed.usage) ? parsed.usage : void 0;
+      events.push({
+        type: "message_delta",
+        delta: {
+          stopReason: typeof stopReasonRaw === "string" ? stopReasonRaw : null,
+          stopSequence: typeof stopSequenceRaw === "string" ? stopSequenceRaw : void 0
+        },
+        usage: usageRaw ? { outputTokens: Number(usageRaw.output_tokens ?? usageRaw.outputTokens ?? 0) } : void 0
+      });
+      break;
+    }
+    case "message_stop":
+      events.push({ type: "message_stop" });
+      break;
+    case "ping":
+      events.push({ type: "ping" });
+      break;
+    case "error": {
+      const errorRaw = isRecord5(parsed.error) ? parsed.error : {};
+      events.push({
+        type: "error",
+        error: {
+          type: typeof errorRaw.type === "string" ? errorRaw.type : "unknown_error",
+          message: typeof errorRaw.message === "string" ? errorRaw.message : "unknown error"
+        }
+      });
+      break;
+    }
+    default:
+      break;
+  }
+  if (parsed.cognitum_receipt !== void 0) {
+    const receipt = parseMetaLlmReceipt(parsed.cognitum_receipt);
+    if (receipt) events.push({ type: "receipt", receipt });
+  }
+  if (events.length === 0) {
+    events.push({ type: "unknown", raw: parsed });
+  }
+  const unknownFields = {};
+  for (const key of Object.keys(parsed)) {
+    if (!KNOWN_TOP_LEVEL_KEYS2.has(key)) unknownFields[key] = parsed[key];
+  }
+  return { events, unknownFields: Object.keys(unknownFields).length > 0 ? unknownFields : void 0 };
+}
+
+// src/meta-llm/stream/messages-stream.ts
+var PRODUCT4 = "meta-llm";
+var OPERATION2 = "messages.createStream";
+async function* messagesCreateStreamImpl(deps, request, requestContext) {
+  const timeBudget = requestContext?.timeBudget;
+  const cancellation = requestContext?.cancellation;
+  const requestId = requestContext?.requestId ?? newRequestId();
+  const abortController = new AbortController();
+  const response = await openStreamWithPreByteRetry2(deps, request, requestId, abortController.signal);
+  if (!response.body) {
+    throw new AgenticError("protocol", `${OPERATION2} response had no readable body`, {
+      product: PRODUCT4,
+      operation: OPERATION2,
+      requestId,
+      retryable: false,
+      code: "no_response_body"
+    });
+  }
+  yield* readSseBody2(response.body, requestId, timeBudget, cancellation, abortController);
+}
+async function openStreamWithPreByteRetry2(deps, request, requestId, signal) {
+  let credential = await requireCredential(deps, OPERATION2);
+  const body = JSON.stringify({ ...request, stream: true });
+  const retryPolicy = DEFAULT_RETRY_POLICY;
+  let attempt = 0;
+  let sleepBudgetUsedMs = 0;
+  let refreshedOnce = false;
+  for (; ; ) {
+    const headers = {
+      Accept: "text/event-stream",
+      "Content-Type": "application/json",
+      "X-Cognitum-Request-Id": requestId
+    };
+    applyAuth(headers, credential);
+    const url = `${deps.baseUrl}/v1/messages`;
+    let response;
+    try {
+      response = await deps.transport(url, { method: "POST", headers, body, signal });
+    } catch (cause) {
+      throw new AgenticError("transport", `${OPERATION2} request failed: ${cause}`, {
+        product: PRODUCT4,
+        operation: OPERATION2,
+        requestId,
+        retryable: true,
+        cause
+      });
+    }
+    if (response.ok) return response;
+    const err = await mapMetaLlmHttpError(response, OPERATION2, requestId);
+    if (err.status === 401 && !refreshedOnce) {
+      refreshedOnce = true;
+      await deps.credentialProvider?.invalidate("401 challenge from meta-llm");
+      credential = await requireCredential(deps, OPERATION2);
+      continue;
+    }
+    const isBoundedRetryable = err.status === 429 || err.status === 502 || err.status === 503;
+    if (isBoundedRetryable && attempt + 1 < retryPolicy.maxAttempts) {
+      const serverHintMs = err.retryAfterMs ?? 0;
+      const jitterMs = Math.random() * retryPolicy.baseMs;
+      const delayMs = equalJitterDelayMs(attempt, retryPolicy, serverHintMs, jitterMs);
+      if (sleepBudgetUsedMs + delayMs > retryPolicy.retrySleepBudgetMs) throw err;
+      sleepBudgetUsedMs += delayMs;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      attempt += 1;
+      continue;
+    }
+    throw err;
+  }
+}
+function deadlineError2(operation, requestId, code, message, sequence) {
+  return new AgenticError("deadline_exceeded", message, {
+    product: PRODUCT4,
+    operation,
+    requestId,
+    retryable: false,
+    code,
+    details: { partial: true, eventsReceived: sequence }
+  });
+}
+function buildEnvelopes2(rawEvent, requestId, nextSequence) {
+  const { events, unknownFields } = decodeAnthropicSseEvent(rawEvent);
+  return events.map((event) => ({
+    event,
+    sequence: nextSequence(),
+    receivedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    requestId,
+    rawEventName: rawEvent.event,
+    unknownFields
+  }));
+}
+function remainingBudgetMs2(now, streamStartedAt, lastByteAt, receivedFirstByte, timeBudget) {
+  if (!timeBudget) return void 0;
+  const candidates = [];
+  if (timeBudget.requestDeadlineMs !== void 0) {
+    candidates.push(Math.max(0, timeBudget.requestDeadlineMs - (now - streamStartedAt)));
+  }
+  const idleLimit = receivedFirstByte ? timeBudget.idleTimeoutMs : timeBudget.firstByteTimeoutMs;
+  if (idleLimit !== void 0) {
+    candidates.push(Math.max(0, idleLimit - (now - lastByteAt)));
+  }
+  return candidates.length > 0 ? Math.min(...candidates) : void 0;
+}
+function raceReadAgainstBudget2(reader, remainingMs) {
+  const readPromise = reader.read();
+  if (remainingMs === void 0) return readPromise;
+  readPromise.catch(() => {
+  });
+  let timer;
+  const timeoutPromise = new Promise((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), remainingMs);
+  });
+  return Promise.race([readPromise, timeoutPromise]).finally(() => clearTimeout(timer));
+}
+async function* readSseBody2(body, requestId, timeBudget, cancellation, abortController) {
+  const reader = body.getReader();
+  const parser = new SseParser();
+  let sequence = 0;
+  let sawTerminal = false;
+  const streamStartedAt = Date.now();
+  let lastByteAt = streamStartedAt;
+  let receivedFirstByte = false;
+  try {
+    for (; ; ) {
+      if (cancellation?.isCancelled) {
+        throw new AgenticError("cancelled", `${OPERATION2} was cancelled locally`, {
+          product: PRODUCT4,
+          operation: OPERATION2,
+          requestId,
+          retryable: false,
+          code: "local_cancellation",
+          details: { partial: true, eventsReceived: sequence }
+        });
+      }
+      const now = Date.now();
+      if (timeBudget?.requestDeadlineMs !== void 0 && now - streamStartedAt > timeBudget.requestDeadlineMs) {
+        throw deadlineError2(
+          OPERATION2,
+          requestId,
+          "request_deadline_exceeded",
+          `${OPERATION2} exceeded requestDeadlineMs (${timeBudget.requestDeadlineMs}ms)`,
+          sequence
+        );
+      }
+      const idleLimit = receivedFirstByte ? timeBudget?.idleTimeoutMs : timeBudget?.firstByteTimeoutMs;
+      if (idleLimit !== void 0 && now - lastByteAt > idleLimit) {
+        throw deadlineError2(
+          OPERATION2,
+          requestId,
+          receivedFirstByte ? "idle_timeout" : "first_byte_timeout",
+          `${OPERATION2} exceeded ${receivedFirstByte ? "idleTimeoutMs" : "firstByteTimeoutMs"} (${idleLimit}ms)`,
+          sequence
+        );
+      }
+      const remainingMs = remainingBudgetMs2(now, streamStartedAt, lastByteAt, receivedFirstByte, timeBudget);
+      let readResult;
+      try {
+        const raced = await raceReadAgainstBudget2(reader, remainingMs);
+        if (raced === "timeout") {
+          abortController.abort();
+          continue;
+        }
+        readResult = raced;
+      } catch (cause) {
+        throw new AgenticError("transport", `${OPERATION2} stream read failed: ${cause}`, {
+          product: PRODUCT4,
+          operation: OPERATION2,
+          requestId,
+          retryable: false,
+          code: "stream_disconnected",
+          details: { partial: true, eventsReceived: sequence },
+          cause
+        });
+      }
+      if (readResult.done) break;
+      receivedFirstByte = true;
+      lastByteAt = Date.now();
+      let rawEvents;
+      try {
+        rawEvents = parser.feed(readResult.value);
+      } catch (cause) {
+        throw new AgenticError("protocol", `${OPERATION2} SSE parse failure: ${cause}`, {
+          product: PRODUCT4,
+          operation: OPERATION2,
+          requestId,
+          retryable: false,
+          code: "sse_parse_error",
+          details: { partial: true, eventsReceived: sequence },
+          cause
+        });
+      }
+      for (const rawEvent of rawEvents) {
+        for (const envelope of buildEnvelopes2(rawEvent, requestId, () => sequence += 1)) {
+          if (envelope.event.type === "message_stop") sawTerminal = true;
+          yield envelope;
+        }
+      }
+    }
+    let finishResult;
+    try {
+      finishResult = parser.finish();
+    } catch (cause) {
+      throw new AgenticError("protocol", `${OPERATION2} SSE parse failure at end of stream: ${cause}`, {
+        product: PRODUCT4,
+        operation: OPERATION2,
+        requestId,
+        retryable: false,
+        code: "sse_parse_error",
+        details: { partial: true, eventsReceived: sequence },
+        cause
+      });
+    }
+    for (const rawEvent of finishResult.events) {
+      for (const envelope of buildEnvelopes2(rawEvent, requestId, () => sequence += 1)) {
+        if (envelope.event.type === "message_stop") sawTerminal = true;
+        yield envelope;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (!sawTerminal) {
+    throw new AgenticError("protocol", `${OPERATION2} stream ended without ever observing a terminal event`, {
+      product: PRODUCT4,
+      operation: OPERATION2,
+      requestId,
+      retryable: false,
+      code: "stream_ended_without_terminal_event",
+      details: { partial: true, eventsReceived: sequence }
+    });
+  }
+}
+
 // src/meta-llm/client.ts
 var DEFAULT_CAPABILITY_VERSION = "0.0.0";
-var PRODUCT4 = "meta-llm";
+var PRODUCT5 = "meta-llm";
 function newRequestId2() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `req_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 }
@@ -1414,7 +1804,7 @@ var MetaLlmClient = class {
       assertValidUsageQuery(query);
     } catch (cause) {
       throw new AgenticError("validation", `usage query rejected: ${cause.message}`, {
-        product: PRODUCT4,
+        product: PRODUCT5,
         operation: "usage",
         retryable: false,
         cause
@@ -1437,7 +1827,7 @@ var MetaLlmClient = class {
    */
   capabilities() {
     return this.config.capabilitiesSnapshot ?? {
-      product: PRODUCT4,
+      product: PRODUCT5,
       productVersion: DEFAULT_CAPABILITY_VERSION,
       protocol: "cognitum.meta-llm.http",
       protocolVersion: "1.0",
@@ -1455,7 +1845,7 @@ var MetaLlmClient = class {
     throw new AgenticError(
       "unsupported_capability",
       `ready("${feature}") is unsupported: no readiness endpoint is published for meta-llm yet`,
-      { product: PRODUCT4, operation: "ready", retryable: false }
+      { product: PRODUCT5, operation: "ready", retryable: false }
     );
   }
   // ---------------------------------------------------------------------
@@ -1526,7 +1916,17 @@ var MetaLlmClient = class {
       "/v1/messages/count_tokens",
       "messages.countTokens",
       request
-    )
+    ),
+    /**
+     * `POST /v1/messages` with `stream: true` (ADR-0024a §D5). Issue #58 /
+     * M2 continuation, item 2 of the tracked "what's left" list — reuses
+     * the same generic SSE parser (`../sse/parser.js`) `chat.completionsStream`
+     * wired up in PR #88. Returns an async generator — iterate with `for
+     * await`; it completes normally only after the Anthropic wire terminal
+     * condition (`message_stop`) is observed, otherwise it throws a typed
+     * `AgenticError` describing why (see `./stream/messages-stream.js`).
+     */
+    createStream: (request, options) => messagesCreateStreamImpl(this.nonstreamDeps(options), request, options?.requestContext)
   };
   /**
    * `POST /v1/responses`. Current server is stateless: callers resend
@@ -1585,7 +1985,7 @@ var MetaLlmClient = class {
     const provider = this.config.credentialProvider;
     if (!provider) return void 0;
     return provider.acquire({
-      product: PRODUCT4,
+      product: PRODUCT5,
       normalizedOrigin: this.config.baseUrl,
       audience: this.config.baseUrl,
       requiredScopes,
@@ -1609,7 +2009,7 @@ var MetaLlmClient = class {
     if (opts.requireCredential) {
       credential = await this.resolveCredential(operation, ["meta-llm.read"]).catch((cause) => {
         throw new AgenticError("authentication", `failed to acquire credential: ${cause}`, {
-          product: PRODUCT4,
+          product: PRODUCT5,
           operation,
           requestId,
           retryable: false,
@@ -1620,10 +2020,10 @@ var MetaLlmClient = class {
         throw new AgenticError(
           "authentication",
           `MetaLlmClient.${operation} requires a credential_provider`,
-          { product: PRODUCT4, operation, requestId, retryable: false }
+          { product: PRODUCT5, operation, requestId, retryable: false }
         );
       }
-      assertScopeGranted(PRODUCT4, operation, "meta-llm.read", credential);
+      assertScopeGranted(PRODUCT5, operation, "meta-llm.read", credential);
     }
     const headers = {
       Accept: "application/json",
@@ -1642,7 +2042,7 @@ var MetaLlmClient = class {
         durationMs: Date.now() - startedAt
       });
       throw new AgenticError("transport", `${operation} request failed: ${cause}`, {
-        product: PRODUCT4,
+        product: PRODUCT5,
         operation,
         requestId,
         retryable: true,
@@ -1744,6 +2144,7 @@ var ChatCompletionsStreamAccumulator = class {
   UnsendableRoutingControlsError,
   assertSendableRoutingControls,
   assertValidUsageQuery,
+  decodeAnthropicSseEvent,
   decodeOpenAiSseEvent,
   parseMetaLlmReceipt,
   parseMoney,

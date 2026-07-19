@@ -64,6 +64,7 @@ const OPERATION_REQUIRED_SCOPE: Record<string, string> = {
   "chat.completions": INFERENCE_SCOPE,
   "chat.completionsStream": INFERENCE_SCOPE,
   "messages.create": INFERENCE_SCOPE,
+  "messages.createStream": INFERENCE_SCOPE,
   "messages.countTokens": INFERENCE_SCOPE,
   completions: INFERENCE_SCOPE,
   responses: INFERENCE_SCOPE,

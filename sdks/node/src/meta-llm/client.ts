@@ -50,8 +50,10 @@ import type { MetaLlmHealth, MetaLlmModelList, MetaLlmWhoAmI } from "./discovery
 import type { MetaLlmResult, MetaLlmResponseMeta } from "./envelope.js";
 import { mapMetaLlmHttpError } from "./http-errors.js";
 import { postJsonIdempotent, type NonstreamDeps } from "./nonstream.js";
+import type { AnthropicStreamEvent } from "./stream/anthropic-events.js";
 import { chatCompletionsStreamImpl } from "./stream/chat-completions-stream.js";
 import type { MetaLlmStreamEnvelope } from "./stream/envelope.js";
+import { messagesCreateStreamImpl } from "./stream/messages-stream.js";
 import type { OpenAiStreamEvent } from "./stream/openai-events.js";
 import type {
   AnthropicMessage,
@@ -283,6 +285,21 @@ export class MetaLlmClient {
         "messages.countTokens",
         request,
       ),
+
+    /**
+     * `POST /v1/messages` with `stream: true` (ADR-0024a §D5). Issue #58 /
+     * M2 continuation, item 2 of the tracked "what's left" list — reuses
+     * the same generic SSE parser (`../sse/parser.js`) `chat.completionsStream`
+     * wired up in PR #88. Returns an async generator — iterate with `for
+     * await`; it completes normally only after the Anthropic wire terminal
+     * condition (`message_stop`) is observed, otherwise it throws a typed
+     * `AgenticError` describing why (see `./stream/messages-stream.js`).
+     */
+    createStream: (
+      request: AnthropicMessageRequest,
+      options?: MetaLlmCallOptions,
+    ): AsyncGenerator<MetaLlmStreamEnvelope<AnthropicStreamEvent>, void, void> =>
+      messagesCreateStreamImpl(this.nonstreamDeps(options), request, options?.requestContext),
   };
 
   /**

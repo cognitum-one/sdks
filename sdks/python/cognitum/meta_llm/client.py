@@ -66,7 +66,9 @@ from cognitum.meta_llm.parsing import (
     parse_legacy_completion,
     parse_responses_response,
 )
+from cognitum.meta_llm.stream.anthropic_events import AnthropicStreamEvent
 from cognitum.meta_llm.stream.chat_completions_stream import chat_completions_stream
+from cognitum.meta_llm.stream.messages_stream import messages_stream
 from cognitum.meta_llm.types.routing import (
     MetaLlmRoutingControls,
     UnsendableRoutingControlsError,
@@ -208,6 +210,25 @@ class _MessagesNamespace:
             body,
         )
         return MetaLlmResult(data=parse_count_tokens_result(data), meta=meta)
+
+    def create_stream(
+        self,
+        request: AnthropicMessageRequest,
+        request_context: RequestContext | None = None,
+        **_kwargs: Any,
+    ) -> AsyncIterator[MetaLlmStreamEnvelope[AnthropicStreamEvent]]:
+        """``POST /v1/messages`` with ``stream=True`` (ADR-0024a §D5).
+        Issue #58 / M2 continuation, item 2 of the tracked "what's left"
+        list -- reuses the same generic SSE parser (:mod:`cognitum.sse`)
+        ``chat.completions_stream`` wired up in PR #88. Returns an async
+        iterator -- iterate with ``async for``; it completes normally only
+        after the Anthropic wire terminal condition (``message_stop``) is
+        observed, otherwise it raises a typed ``AgenticError`` describing
+        why (see ``stream/messages_stream.py``).
+        """
+        return messages_stream(
+            self._client._config, self._client._transport, request, request_context
+        )
 
 
 class MetaLlmClient:
