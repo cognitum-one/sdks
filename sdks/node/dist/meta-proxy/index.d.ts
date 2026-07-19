@@ -147,6 +147,16 @@ interface RequestContext {
     tracingCarrier?: Record<string, string>;
 }
 
+/** Finality of a single cost observation within a receipt. */
+type CostFinality = "estimate" | "reserved" | "committed" | "provider_reported" | "invoiced";
+/** A single labeled cost observation (ADR-0022 §D6 distinct-fields rule). */
+interface CostObservation {
+    source: string;
+    amount: number;
+    currency: string;
+    finality: CostFinality;
+}
+
 /**
  * MetaProxyClient construction and deployment ownership (ADR-0025a §D3).
  *
@@ -834,6 +844,346 @@ declare function rejectRedirectResponse(response: {
 declare function forwardChatCompletion(deps: ChatForwardDeps, request: ChatCompletionRequest, options?: MetaProxyChatCallOptions): Promise<MetaProxyResult<ChatCompletion>>;
 
 /**
+ * `ProxyTimeBudget` (ADR-0025a §D8):
+ *
+ * ```text
+ * ProxyTimeBudget {
+ *   connect_timeout,
+ *   first_byte_timeout,
+ *   idle_stream_timeout,
+ *   overall_deadline
+ * }
+ * ```
+ *
+ * §D8: "The process currently uses a 10-second connect timeout and no
+ * overall timeout. The SDK supplies cancellation and an optional overall
+ * deadline. Timing out one request never kills the Proxy." — so
+ * `connectTimeoutMs` has a documented 10s default (matching the deployed
+ * Proxy's own connect-timeout behavior) while `overallDeadlineMs` has NO
+ * default: it is caller-supplied only, and its absence means "no overall
+ * timeout" exactly as today.
+ *
+ * This is a Proxy-specific type distinct from ADR-0023's generic
+ * `TimeBudget` (`../agentic/index.js`) — ADR-0025a names exactly these four
+ * fields, no more — even though the streaming implementation in
+ * `./stream/chat-completions-stream.js` internally applies the identical
+ * "race the blocking read against the smallest remaining budget" pattern
+ * PR #88 proved correct for direct `MetaLlmClient` streaming.
+ */
+/** Caller-supplied time budget for one Proxy chat/Messages call (ADR-0025a §D8). */
+interface ProxyTimeBudget {
+    /**
+     * Bounds each HTTP attempt (initial POST, and the at-most-one 401-refresh
+     * retry) from send until a response begins arriving. Defaults to
+     * {@link DEFAULT_PROXY_CONNECT_TIMEOUT_MS} when omitted, matching the
+     * Proxy's own documented 10-second connect timeout (§D8).
+     */
+    connectTimeoutMs?: number;
+    /** Bounds the wait for the first SSE body byte after a response begins. No default. */
+    firstByteTimeoutMs?: number;
+    /** Bounds the wait between subsequent SSE body bytes once streaming has started. No default. */
+    idleStreamTimeoutMs?: number;
+    /**
+     * Bounds the ENTIRE call (pre-byte connect/retry phase plus the full
+     * streaming read) from the moment the caller invokes the method. No
+     * default — §D8: "The SDK supplies cancellation and an optional overall
+     * deadline," i.e. omission means no overall timeout, exactly matching
+     * today's undocumented-but-real Proxy behavior.
+     */
+    overallDeadlineMs?: number;
+}
+/** Matches the Proxy's own documented connect-timeout behavior (ADR-0025a §D8, Context). */
+declare const DEFAULT_PROXY_CONNECT_TIMEOUT_MS = 10000;
+/** {@link ProxyTimeBudget} after defaulting — `connectTimeoutMs` is always present. */
+interface ResolvedProxyTimeBudget {
+    connectTimeoutMs: number;
+    firstByteTimeoutMs?: number;
+    idleStreamTimeoutMs?: number;
+    overallDeadlineMs?: number;
+}
+/** Apply {@link DEFAULT_PROXY_CONNECT_TIMEOUT_MS}; every other field passes through unchanged. */
+declare function resolveProxyTimeBudget(budget?: ProxyTimeBudget): ResolvedProxyTimeBudget;
+
+/**
+ * ADR-0028's `Money`: an exact decimal amount + ISO-4217 currency, decoded
+ * from wire USD decimal values so cost/price/savings fields never enter the
+ * public domain model as binary floating point (ADR-0024b §D3: "Wire
+ * fields such as current USD price values decode into ADR-0028 decimal
+ * `Money`; they never enter the public domain model as binary floating
+ * point").
+ *
+ * No `Money`/decimal type exists yet elsewhere in this SDK (checked
+ * `../../agentic/receipts.ts`'s `CostObservation.amount`, which is still a
+ * plain `number` from the earlier ADR-0028 receipt/lineage stub — that is
+ * an existing gap, out of scope to fix here, not something this type
+ * inherits). This is a minimal string-backed decimal wrapper rather than a
+ * new bignum/decimal dependency — the SDK does not otherwise depend on one,
+ * and a decimal string is the only representation that cannot silently
+ * lose precision at the JS/TS layer.
+ *
+ * Deliberately no arithmetic is provided here — this type exists to
+ * prevent accidental floating-point ingestion of money values, not to be a
+ * money-math library. Callers needing arithmetic should parse `amount`
+ * with a decimal library of their own choosing.
+ */
+interface Money {
+    /** Exact decimal string, e.g. `"0.0123"`. Never a `number`. */
+    readonly amount: string;
+    /** ISO-4217 currency code, e.g. `"USD"`. */
+    readonly currency: string;
+}
+
+/**
+ * ADR-0024b §D3's `MetaLlmReceipt`. Replaces the `unknown` placeholder that
+ * shipped with ADR-0024a's envelope (`../envelope.ts`) — this is the
+ * concrete shape issue #59 reserved that placeholder for.
+ *
+ * Every field here is server-authoritative evidence, not something this
+ * SDK computes or backfills — a missing cost/price/savings field stays
+ * missing rather than being reconstructed from token counts (§D3:
+ * "Missing cost is not reconstructed from tokens"). Parsing never throws:
+ * an unrecognized shape yields `undefined` (for the whole receipt) or a
+ * preserved-but-untyped `raw` entry (for individual unknown fields), never
+ * a thrown error — response parsing must not reject evidence just because
+ * this SDK's enum set has not caught up yet (§D2).
+ */
+
+/**
+ * `resolved_tier` can widen beyond this SDK's known `ModelTier` set as the
+ * server evolves — the value is preserved as a plain string rather than
+ * dropped or coerced (§D2: "Unknown received values are preserved").
+ */
+type ReceiptModelTier = ModelTier | (string & {});
+/** Same unknown-preserving treatment as {@link ReceiptModelTier}, for `cache_result`. */
+type ReceiptCacheResult = "hit" | "miss" | "bypass" | (string & {});
+/**
+ * Only contract-safe detector classes and counts are exposed here (§D4:
+ * "Warn and redact expose only contract-safe detector classes and counts.
+ * Prompts, matches, secrets, and unredacted content are excluded").
+ */
+interface SafetySummary {
+    mode?: string;
+    detectorClasses?: string[];
+    blocked?: boolean;
+    /** Unrecognized fields from the server response, preserved verbatim. */
+    raw?: Record<string, unknown>;
+}
+/** ADR-0024b §D3's `MetaLlmReceipt`. */
+interface MetaLlmReceipt {
+    requestId: string;
+    resolvedTier?: ReceiptModelTier;
+    resolvedModel?: string;
+    escalated?: boolean;
+    capDegraded?: boolean;
+    routingReason?: string;
+    price?: Money;
+    cacheResult?: ReceiptCacheResult;
+    cacheSavings?: Money;
+    promptCacheSavings?: Money;
+    fallbackUsed?: boolean;
+    breakerCounts?: Record<string, number>;
+    subTenantId?: string;
+    safetySummary?: SafetySummary;
+    usage?: Record<string, unknown>;
+    costs: CostObservation[];
+    /** Fields present on the wire this decoder does not recognize, preserved verbatim (never dropped). */
+    raw?: Record<string, unknown>;
+}
+
+/**
+ * OpenAI `chat.completions` streaming event types (ADR-0024a §D5): role,
+ * content delta, tool-call fragments, finish reason, trailing usage, the
+ * Cognitum receipt, a terminal wire-level error event, and the `[DONE]`
+ * sentinel. Any recognized-but-not-decoded shape falls back to
+ * {@link UnknownStreamEvent} rather than throwing.
+ *
+ * The receipt facet (`OpenAiReceiptEvent`) now carries the concrete
+ * ADR-0024b §D3 `MetaLlmReceipt` shape (issue #59, D11 migration step 1)
+ * rather than the earlier generic ADR-0028 `ExecutionReceipt` stub — this
+ * is the "receipt field ... already anticipated" slot the streaming pass
+ * (PR #88) reserved for it.
+ *
+ * One raw SSE `data:` payload can decode into *multiple* facets (e.g. one
+ * chunk carrying both a content delta and, on the last chunk, a finish
+ * reason) — {@link decodeOpenAiSseEvent} returns all of them, each
+ * becoming its own {@link import("./envelope.js").MetaLlmStreamEnvelope}
+ * with its own sequence number, preserving per-facet granularity rather
+ * than flattening a chunk into one opaque event.
+ */
+
+interface OpenAiRoleEvent {
+    type: "role";
+    index: number;
+    role: string;
+}
+interface OpenAiContentDeltaEvent {
+    type: "content_delta";
+    index: number;
+    delta: string;
+}
+interface OpenAiToolCallDeltaEvent {
+    type: "tool_call_delta";
+    index: number;
+    toolCallIndex: number;
+    id?: string;
+    functionName?: string;
+    argumentsDelta?: string;
+}
+interface OpenAiFinishReasonEvent {
+    type: "finish_reason";
+    index: number;
+    finishReason: string;
+}
+interface OpenAiUsageEvent {
+    type: "usage";
+    usage: ChatCompletionUsage;
+}
+interface OpenAiReceiptEvent {
+    type: "receipt";
+    receipt: MetaLlmReceipt;
+}
+interface OpenAiStreamErrorPayload {
+    message: string;
+    type?: string;
+    code?: string;
+    param?: string;
+}
+/** A wire-level terminal error event embedded in the SSE stream itself (`data: {"error": {...}}`). */
+interface OpenAiStreamErrorEvent {
+    type: "error";
+    error: OpenAiStreamErrorPayload;
+}
+/** The literal `data: [DONE]` sentinel that closes a successful OpenAI chat-completions stream. */
+interface OpenAiDoneEvent {
+    type: "done";
+}
+/** A syntactically valid SSE event whose payload this decoder does not recognize. Never a crash. */
+interface UnknownStreamEvent {
+    type: "unknown";
+    raw: unknown;
+}
+type OpenAiStreamEvent = OpenAiRoleEvent | OpenAiContentDeltaEvent | OpenAiToolCallDeltaEvent | OpenAiFinishReasonEvent | OpenAiUsageEvent | OpenAiReceiptEvent | OpenAiStreamErrorEvent | OpenAiDoneEvent | UnknownStreamEvent;
+
+/**
+ * `MetaLlmStreamEnvelope<E>` (ADR-0024a §D5's frozen streaming envelope
+ * shape) plus a small optional text/tool accumulator over a
+ * `chat.completions` event stream (D5 point 2: "an optional text/tool
+ * accumulator over that stream").
+ */
+
+/**
+ * Wraps every parsed stream event with sequencing/provenance metadata.
+ * Frozen shape per ADR-0024a §D5 — do not add fields without an ADR update.
+ */
+interface MetaLlmStreamEnvelope<E> {
+    event: E;
+    /** 1-based order of this event within one logical stream call. */
+    sequence: number;
+    /** ISO-8601 timestamp of when this envelope was produced locally. */
+    receivedAt: string;
+    requestId: string;
+    /** The underlying SSE `event:` field name, if any (OpenAI chat completions does not set one). */
+    rawEventName?: string;
+    /** Fields present on the wire payload that this decoder does not recognize — preserved losslessly. */
+    unknownFields?: Record<string, unknown>;
+}
+
+/**
+ * `MetaProxyStreamEnvelope<E>` (ADR-0025a §D8): "Chat and Messages use
+ * ADR-0024a's lossless protocol streams and add plane and Proxy version
+ * metadata." Rather than adding fields to the frozen `MetaLlmStreamEnvelope`
+ * shape (`../../meta-llm/stream/envelope.js` — "do not add fields without an
+ * ADR update"), this wraps it with a `proxyMeta` facet carrying exactly the
+ * Proxy-specific evidence: product/protocol version (from the response
+ * headers, same as non-streaming `MetaProxyResponseMeta`) and the routing/
+ * upstream receipts once observed on the wire (ADR-0025a §D4/§D7).
+ */
+
+/** Proxy-specific metadata layered onto every streamed envelope (ADR-0025a §D8). */
+interface MetaProxyStreamMeta {
+    productVersion?: string;
+    protocolVersion?: string;
+    /**
+     * Plane-routing evidence observed so far on this stream (ADR-0025a §D4).
+     * `undefined` until the wire payload carrying `cognitum_routing_receipt`
+     * arrives (typically, but not necessarily, the terminal chunk) — once
+     * observed, every subsequently-yielded envelope carries it.
+     */
+    routingReceipt?: MetaProxyRoutingReceipt;
+    /** Upstream (Cognitum-cloud) usage/receipt evidence, once observed (ADR-0025a §D7/§D8). */
+    upstreamReceipt?: MetaProxyUpstreamReceipt;
+}
+/** Every streamed envelope from `MetaProxyClient.chat.completionsStream` (ADR-0025a §D8). */
+interface MetaProxyStreamEnvelope<E> extends MetaLlmStreamEnvelope<E> {
+    proxyMeta: MetaProxyStreamMeta;
+}
+/** The concrete envelope type `chat.completionsStream` yields. */
+type MetaProxyChatStreamEnvelope = MetaProxyStreamEnvelope<OpenAiStreamEvent>;
+
+/**
+ * `chat.completionsStream` HTTP + SSE orchestration for `MetaProxyClient`
+ * (ADR-0025a §D8, M3 continuation of issue #61).
+ *
+ * §D8: "Chat and Messages use ADR-0024a's lossless protocol streams and add
+ * plane and Proxy version metadata." This module REUSES, rather than
+ * reimplements:
+ *  - PR #88's generic byte-level SSE parser (`../../sse/parser.js`);
+ *  - PR #88/#93's OpenAI event decoder (`../../meta-llm/stream/openai-events.js`)
+ *    — the byte-forwarded stream is decoded exactly like direct Meta LLM
+ *    streaming (the Proxy forwards the same OpenAI wire shape verbatim,
+ *    §D7: "reuse only the wire types and stream events");
+ *  - `../forwarding.js`'s §D7 header allowlist, credential acquisition,
+ *    bearer placement, idempotency-key minting, and routing-receipt decode
+ *    helpers, so a caller sees byte-for-byte identical forwarding behavior
+ *    whether they call the streaming or non-streaming method.
+ *
+ * On top of the reused pieces, this module adds exactly what §D8 asks for
+ * beyond ADR-0024a's stream contract:
+ *  - `MetaProxyStreamEnvelope.proxyMeta` (plane/version metadata, `./envelope.js`);
+ *  - `ProxyTimeBudget`'s `connectTimeoutMs`/`overallDeadlineMs` (`../time-budget.js`),
+ *    raced around the pre-byte HTTP attempt(s) in addition to the
+ *    firstByte/idle races PR #88 already proved correct for the post-byte
+ *    read loop;
+ *  - the §D5 rule 7 required-plane check (`../routing.js`'s
+ *    `assertRoutingReceiptMatchesIntent`, the SAME function the
+ *    non-streaming path uses), applied to the LAST routing receipt observed
+ *    on the wire before the stream's native terminal event.
+ *
+ * Retry contract (ADR-0025a §D8, and the just-fixed eb553f7 bug this MUST
+ * NOT reintroduce): the pre-byte phase performs at most one 401-triggered
+ * credential refresh and NEVER bounded-retries a 429/502/503 — "No Proxy
+ * POST is automatically retried while it drops `Idempotency-Key`" describes
+ * the currently-deployed Proxy dropping the header server-side, not whether
+ * the SDK attaches one; attaching one client-side does not make a retry
+ * safe. A non-2xx pre-byte response is therefore always a single terminal,
+ * non-retryable error (`err.retryAfterMs` lets the CALLER retry manually).
+ * Once any response byte has been read, there is NO retry at all, period —
+ * "A pre-response disconnect may already have incurred work" only applies
+ * pre-byte; post-byte a disconnect is unconditionally terminal, mirroring
+ * PR #88's `../../meta-llm/stream/chat-completions-stream.js` exactly.
+ *
+ * Sponsored streaming (`stream: true` on a sponsored-plane call) is
+ * explicitly OUT of scope this pass — see `../client.js`'s
+ * `previewSponsoredChatCompletions` for the fail-fast guard (§D8: "Sponsored
+ * `stream = true` fails locally until an end-to-end stream capability
+ * exists").
+ */
+
+/** Options accepted by `MetaProxyClient.chat.completionsStream`. */
+interface MetaProxyChatStreamCallOptions extends MetaProxyChatCallOptions {
+    timeBudget?: ProxyTimeBudget;
+    cancellation?: CancellationToken;
+    /** Falls back to `requestContext.requestId` when provided, then a fresh UUID. */
+    requestContext?: Partial<RequestContext>;
+}
+/**
+ * `POST /v1/chat/completions` through the Proxy with `stream: true`
+ * (ADR-0025a §D8). Returns an async generator of
+ * `MetaProxyStreamEnvelope<OpenAiStreamEvent>` — iterate with `for await`.
+ */
+declare function forwardChatCompletionStream(deps: ChatForwardDeps, request: ChatCompletionRequest, options?: MetaProxyChatStreamCallOptions): AsyncGenerator<MetaProxyStreamEnvelope<OpenAiStreamEvent>, void, void>;
+
+/**
  * MetaProxyClient (ADR-0025a). Issue #61 / M3 start.
  *
  * This pass implements exactly §D1 (public topology — only `status` and
@@ -919,6 +1269,33 @@ declare class MetaProxyClient {
      */
     readonly chat: {
         completions: (request: ChatCompletionRequest, options?: MetaProxyChatCallOptions) => Promise<MetaProxyResult<ChatCompletion>>;
+        /**
+         * `POST /v1/chat/completions` through the Proxy with `stream: true`
+         * (ADR-0025a §D8). Returns an async generator of
+         * `MetaProxyStreamEnvelope<OpenAiStreamEvent>` — iterate with `for await`.
+         * See `./stream/chat-completions-stream.js` for the full streaming
+         * contract (reused SSE parser/decoder, `ProxyTimeBudget`, no auto-retry,
+         * required-plane verification on the terminal receipt).
+         */
+        completionsStream: (request: ChatCompletionRequest, options?: MetaProxyChatStreamCallOptions) => AsyncGenerator<MetaProxyStreamEnvelope<OpenAiStreamEvent>, void, void>;
+    };
+    /**
+     * `client.preview.sponsored.chatCompletions` (ADR-0025a §D1 topology,
+     * §D9 preview maturity). Sponsored forwarding itself (budget, receipts,
+     * atomic spend) is explicitly OUT of scope this pass (§D9 defers to
+     * ADR-0025b's lifecycle/state fixes) — this method exists ONLY to
+     * fail fast, with zero HTTP I/O, per §D1 ("Such a call returns
+     * `UnsupportedCapabilityError` before HTTP I/O") and §D8 ("Sponsored
+     * `stream = true` fails locally until an end-to-end stream capability
+     * exists"). Streaming and non-streaming sponsored calls both fail this
+     * pass; the error message distinguishes the two so a caller who only
+     * hit the streaming restriction isn't told sponsor support is entirely
+     * absent when non-stream sponsor lands in a later pass.
+     */
+    readonly preview: {
+        sponsored: {
+            chatCompletions: (request: ChatCompletionRequest, _options?: MetaProxyChatCallOptions) => Promise<never>;
+        };
     };
     /** Assemble the `./forwarding.js` dependency bag from resolved config. */
     private forwardingDeps;
@@ -951,4 +1328,4 @@ interface CapabilitiesResult {
     selectedPlane?: string;
 }
 
-export { type CapabilitiesResult, type ChatForwardDeps, type ConsentGrantId, DEFAULT_META_PROXY_ORIGIN, DEFAULT_META_PROXY_TOKEN_ENV_VAR, type LocalBearerToken, LocalBearerTokenCredentialProvider, type LocalBearerTokenCredentialProviderOptions, type MetaProxyCallOptions, type MetaProxyChatCallOptions, MetaProxyClient, type MetaProxyClientConfig, type MetaProxyResponseMeta, type MetaProxyResult, type MetaProxyRoutingReceipt, type MetaProxyStatus, type MetaProxyTelemetryEvent, type MetaProxyTelemetryHooks, type MetaProxyTransport, type MetaProxyUpstreamReceipt, PROXY_CHAT_FORWARD_HEADER_ALLOWLIST, type ProxyCredential, type ResolvedMetaProxyClientConfig, type RoutingIntent, type RoutingPlane, type WorkloadCapability, type WorkloadCapabilityClaims, type WorkloadPolicy, __resetMetaProxyNonLoopbackWarnLatch, assertRoutingReceiptMatchesIntent, forwardChatCompletion, isBearerAttachmentAllowed, rejectRedirectResponse, resolveMetaProxyClientConfig };
+export { type CapabilitiesResult, type ChatForwardDeps, type ConsentGrantId, DEFAULT_META_PROXY_ORIGIN, DEFAULT_META_PROXY_TOKEN_ENV_VAR, DEFAULT_PROXY_CONNECT_TIMEOUT_MS, type LocalBearerToken, LocalBearerTokenCredentialProvider, type LocalBearerTokenCredentialProviderOptions, type MetaProxyCallOptions, type MetaProxyChatCallOptions, type MetaProxyChatStreamCallOptions, type MetaProxyChatStreamEnvelope, MetaProxyClient, type MetaProxyClientConfig, type MetaProxyResponseMeta, type MetaProxyResult, type MetaProxyRoutingReceipt, type MetaProxyStatus, type MetaProxyStreamEnvelope, type MetaProxyStreamMeta, type MetaProxyTelemetryEvent, type MetaProxyTelemetryHooks, type MetaProxyTransport, type MetaProxyUpstreamReceipt, PROXY_CHAT_FORWARD_HEADER_ALLOWLIST, type ProxyCredential, type ProxyTimeBudget, type ResolvedMetaProxyClientConfig, type ResolvedProxyTimeBudget, type RoutingIntent, type RoutingPlane, type WorkloadCapability, type WorkloadCapabilityClaims, type WorkloadPolicy, __resetMetaProxyNonLoopbackWarnLatch, assertRoutingReceiptMatchesIntent, forwardChatCompletion, forwardChatCompletionStream, isBearerAttachmentAllowed, rejectRedirectResponse, resolveMetaProxyClientConfig, resolveProxyTimeBudget };

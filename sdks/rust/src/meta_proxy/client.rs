@@ -31,10 +31,14 @@
 //!    validation already enforced by `super::config::resolve_config`.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::agentic::{AgenticError, AgenticErrorKind, CapabilitySet, CapabilitySource};
+use crate::agentic::{
+    AgenticError, AgenticErrorKind, CancellationToken, CapabilitySet, CapabilitySource,
+    UnsupportedCapabilityError,
+};
 use crate::meta_llm::types::openai::{ChatCompletion, ChatCompletionRequest};
 
 use super::config::{build_default_transport, resolve_config, MetaProxyClientConfig};
@@ -42,6 +46,8 @@ use super::envelope::MetaProxyResult;
 use super::forwarding::MetaProxyChatCallOptions;
 use super::routing::assert_routing_receipt_matches_intent;
 use super::status::MetaProxyStatus;
+use super::stream::{chat_completions_stream, MetaProxyChatCompletionsStream};
+use super::time_budget::ProxyTimeBudget;
 use super::{DEFAULT_CAPABILITY_VERSION, PRODUCT};
 
 /// `capabilities()` result shape — the shared `CapabilitySet` (ADR-0019
@@ -317,6 +323,56 @@ impl MetaProxyClient {
             data: parsed,
             meta,
         })
+    }
+
+    /// `POST /v1/chat/completions` through the Proxy with `stream: true`
+    /// (ADR-0025a §D8, M3 continuation of issue #61). Returns a
+    /// [`MetaProxyChatCompletionsStream`] to pull events from with
+    /// [`MetaProxyChatCompletionsStream::next_envelope`]. See
+    /// `super::stream::chat_completions_stream` for the full streaming
+    /// contract (reused SSE parser/decoder, `ProxyTimeBudget`, no
+    /// auto-retry, required-plane verification on the terminal receipt).
+    #[allow(clippy::result_large_err)]
+    pub async fn chat_completions_stream(
+        &self,
+        request: &ChatCompletionRequest,
+        options: Option<MetaProxyChatCallOptions>,
+        time_budget: Option<ProxyTimeBudget>,
+        cancellation: Option<Arc<dyn CancellationToken>>,
+    ) -> Result<MetaProxyChatCompletionsStream, AgenticError> {
+        chat_completions_stream(self, request, options, time_budget, cancellation).await
+    }
+
+    /// `preview.sponsored.chat_completions` (ADR-0025a §D1 topology, §D9
+    /// preview maturity). Sponsored forwarding itself (budget, receipts,
+    /// atomic spend) is explicitly OUT of scope this pass (§D9 defers to
+    /// ADR-0025b's lifecycle/state fixes) — this method exists ONLY to
+    /// fail fast, with zero HTTP I/O, per §D1 ("Such a call returns
+    /// `UnsupportedCapabilityError` before HTTP I/O") and §D8 ("Sponsored
+    /// `stream = true` fails locally until an end-to-end stream capability
+    /// exists"). Streaming and non-streaming sponsored calls both fail
+    /// this pass; the error message distinguishes the two so a caller who
+    /// only hit the streaming restriction isn't told sponsor support is
+    /// entirely absent when non-stream sponsor lands in a later pass.
+    #[allow(clippy::result_large_err, clippy::unused_async)]
+    pub async fn sponsored_chat_completions(
+        &self,
+        request: &ChatCompletionRequest,
+    ) -> Result<ChatCompletion, AgenticError> {
+        if request.stream == Some(true) {
+            return Err(UnsupportedCapabilityError::new(
+                PRODUCT,
+                "preview.sponsored.chat_completions",
+                "sponsored-inference-streaming",
+            )
+            .into());
+        }
+        Err(UnsupportedCapabilityError::new(
+            PRODUCT,
+            "preview.sponsored.chat_completions",
+            "sponsored-inference",
+        )
+        .into())
     }
 
     /// Close local connections and wait only. Never stops the sidecar

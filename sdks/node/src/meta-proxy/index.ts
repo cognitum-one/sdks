@@ -57,5 +57,19 @@ export {
 } from "./forwarding.js";
 export type { ChatForwardDeps, MetaProxyChatCallOptions } from "./forwarding.js";
 
+export {
+  DEFAULT_PROXY_CONNECT_TIMEOUT_MS,
+  resolveProxyTimeBudget,
+} from "./time-budget.js";
+export type { ProxyTimeBudget, ResolvedProxyTimeBudget } from "./time-budget.js";
+
+export { forwardChatCompletionStream } from "./stream/chat-completions-stream.js";
+export type { MetaProxyChatStreamCallOptions } from "./stream/chat-completions-stream.js";
+export type {
+  MetaProxyChatStreamEnvelope,
+  MetaProxyStreamEnvelope,
+  MetaProxyStreamMeta,
+} from "./stream/envelope.js";
+
 export type { CapabilitiesResult, MetaProxyCallOptions } from "./client.js";
 export { MetaProxyClient } from "./client.js";

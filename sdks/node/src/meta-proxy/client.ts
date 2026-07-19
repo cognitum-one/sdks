@@ -32,8 +32,14 @@
  *    validation already enforced by `./config.js`'s `resolveMetaProxyClientConfig`.
  */
 
-import { AgenticError, type Credential, type CredentialProvider } from "../agentic/index.js";
+import {
+  AgenticError,
+  UnsupportedCapabilityError,
+  type Credential,
+  type CredentialProvider,
+} from "../agentic/index.js";
 import type { ChatCompletion, ChatCompletionRequest } from "../meta-llm/types/openai.js";
+import type { OpenAiStreamEvent } from "../meta-llm/stream/openai-events.js";
 import {
   isBearerAttachmentAllowed,
   resolveMetaProxyClientConfig,
@@ -49,6 +55,11 @@ import {
 } from "./forwarding.js";
 import { mapMetaProxyHttpError } from "./http-errors.js";
 import type { MetaProxyStatus } from "./status.js";
+import {
+  forwardChatCompletionStream,
+  type MetaProxyChatStreamCallOptions,
+} from "./stream/chat-completions-stream.js";
+import type { MetaProxyStreamEnvelope } from "./stream/envelope.js";
 
 const PRODUCT = "meta-proxy";
 const DEFAULT_CAPABILITY_VERSION = "0.0.0";
@@ -242,6 +253,62 @@ export class MetaProxyClient {
       options?: MetaProxyChatCallOptions,
     ): Promise<MetaProxyResult<ChatCompletion>> =>
       forwardChatCompletion(this.forwardingDeps(), request, options),
+
+    /**
+     * `POST /v1/chat/completions` through the Proxy with `stream: true`
+     * (ADR-0025a §D8). Returns an async generator of
+     * `MetaProxyStreamEnvelope<OpenAiStreamEvent>` — iterate with `for await`.
+     * See `./stream/chat-completions-stream.js` for the full streaming
+     * contract (reused SSE parser/decoder, `ProxyTimeBudget`, no auto-retry,
+     * required-plane verification on the terminal receipt).
+     */
+    completionsStream: (
+      request: ChatCompletionRequest,
+      options?: MetaProxyChatStreamCallOptions,
+    ): AsyncGenerator<MetaProxyStreamEnvelope<OpenAiStreamEvent>, void, void> =>
+      forwardChatCompletionStream(this.forwardingDeps(), request, options),
+  };
+
+  /**
+   * `client.preview.sponsored.chatCompletions` (ADR-0025a §D1 topology,
+   * §D9 preview maturity). Sponsored forwarding itself (budget, receipts,
+   * atomic spend) is explicitly OUT of scope this pass (§D9 defers to
+   * ADR-0025b's lifecycle/state fixes) — this method exists ONLY to
+   * fail fast, with zero HTTP I/O, per §D1 ("Such a call returns
+   * `UnsupportedCapabilityError` before HTTP I/O") and §D8 ("Sponsored
+   * `stream = true` fails locally until an end-to-end stream capability
+   * exists"). Streaming and non-streaming sponsored calls both fail this
+   * pass; the error message distinguishes the two so a caller who only
+   * hit the streaming restriction isn't told sponsor support is entirely
+   * absent when non-stream sponsor lands in a later pass.
+   */
+  readonly preview = {
+    sponsored: {
+      chatCompletions: async (
+        request: ChatCompletionRequest,
+        _options?: MetaProxyChatCallOptions,
+      ): Promise<never> => {
+        if (request.stream) {
+          throw new UnsupportedCapabilityError(
+            PRODUCT,
+            "preview.sponsored.chatCompletions",
+            "sponsored-inference-streaming",
+            "Sponsored stream=true fails locally until an end-to-end stream capability " +
+              "exists (ADR-0025a §D8) — this SDK pass does not implement sponsored " +
+              "streaming at all.",
+          );
+        }
+        throw new UnsupportedCapabilityError(
+          PRODUCT,
+          "preview.sponsored.chatCompletions",
+          "sponsored-inference",
+          "Sponsored chat.completions forwarding is not implemented this pass " +
+            "(ADR-0025a §D9 consent/sponsor-budget/usage is explicitly out of scope; " +
+            "ADR-0025b's lifecycle/state fixes are a prerequisite for stable sponsor " +
+            "support).",
+        );
+      },
+    },
   };
 
   /** Assemble the `./forwarding.js` dependency bag from resolved config. */

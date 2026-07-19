@@ -54,6 +54,17 @@ from cognitum.meta_proxy.status import (
     RoutingPlane,
     WorkloadPolicy,
 )
+from cognitum.meta_proxy.stream import (
+    MetaProxyStreamEnvelope,
+    MetaProxyStreamMeta,
+    chat_completions_stream,
+)
+from cognitum.meta_proxy.time_budget import (
+    DEFAULT_PROXY_CONNECT_TIMEOUT_MS,
+    ProxyTimeBudget,
+    ResolvedProxyTimeBudget,
+    resolve_proxy_time_budget,
+)
 
 __all__ = [
     "MetaProxyClient",
@@ -80,4 +91,12 @@ __all__ = [
     "WorkloadCapability",
     "ProxyCredential",
     "LocalBearerTokenCredentialProvider",
+    # §D8 streaming
+    "chat_completions_stream",
+    "MetaProxyStreamEnvelope",
+    "MetaProxyStreamMeta",
+    "DEFAULT_PROXY_CONNECT_TIMEOUT_MS",
+    "ProxyTimeBudget",
+    "ResolvedProxyTimeBudget",
+    "resolve_proxy_time_budget",
 ]

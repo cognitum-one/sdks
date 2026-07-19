@@ -29,8 +29,9 @@ use super::PRODUCT;
 const STATUS_SCOPE: &str = "meta-proxy.status";
 /// Credential scope for the mutating forwarding routes (`/v1/chat/completions`).
 /// Distinct from [`STATUS_SCOPE`] — these are inference calls, not reads
-/// (ADR-0025a §D6/§D7).
-const INFERENCE_SCOPE: &str = "meta-proxy.inference";
+/// (ADR-0025a §D6/§D7). `pub(super)` so `super::stream::chat_completions_stream`
+/// requests the identical scope for its own credential acquisition.
+pub(super) const INFERENCE_SCOPE: &str = "meta-proxy.inference";
 
 fn non_empty<'a>(value: &'a str, fallback: &'a str) -> &'a str {
     if value.is_empty() {
