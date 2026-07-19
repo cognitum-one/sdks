@@ -32,6 +32,11 @@
       "import": "./dist/meta-llm/index.js",
       "require": "./dist/meta-llm/index.cjs"
     },
+    "./meta-proxy": {
+      "types": "./dist/meta-proxy/index.d.ts",
+      "import": "./dist/meta-proxy/index.js",
+      "require": "./dist/meta-proxy/index.cjs"
+    },
     "./sse": {
       "types": "./dist/sse/index.d.ts",
       "import": "./dist/sse/index.js",

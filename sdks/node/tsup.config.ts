@@ -59,6 +59,21 @@ export default defineConfig([
     outDir: "dist",
   },
   {
+    // Meta Proxy client subpath — @cognitum-one/sdk/meta-proxy
+    // (ADR-0019 §D2, ADR-0025a). Depends only on the agentic subpath and
+    // `fetch`, so this stays safe for browser-facing bundles too — though
+    // ADR-0025a §D10 means an actual browser build should reject
+    // constructing this client before opening a loopback socket (deferred
+    // to a follow-up pass; not implemented in this subpath yet).
+    entry: { "meta-proxy/index": "src/meta-proxy/index.ts" },
+    format: ["esm", "cjs"],
+    dts: true,
+    clean: false,
+    sourcemap: true,
+    target: "es2022",
+    outDir: "dist",
+  },
+  {
     // Protocol-agnostic SSE parser subpath — @cognitum-one/sdk/sse
     // (ADR-0024a §D5). Zero product knowledge, zero dependencies beyond
     // `TextDecoder`/`TextEncoder` — safe for browser-facing bundles.

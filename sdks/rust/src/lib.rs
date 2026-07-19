@@ -50,3 +50,9 @@ pub mod meta_llm;
 /// Anthropic Messages / Responses streaming lands.
 #[cfg(feature = "meta-llm")]
 pub mod sse;
+
+/// Meta Proxy client (ADR-0019 §D2, ADR-0025a). Issue #61 / M3 start —
+/// `MetaProxyClient` construction and `status()`/`capabilities()`. See
+/// `meta_proxy`'s module doc comment for the full deferred-scope list.
+#[cfg(feature = "meta-proxy")]
+pub mod meta_proxy;

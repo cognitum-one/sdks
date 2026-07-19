@@ -32,6 +32,11 @@ stream = ["seed", "dep:eventsource-stream"]
 # ADR-0024a §D1 correlation IDs) — matches the ADR-0019 §D2 namespace map
 # (`cognitum_one::meta_llm`, `meta-llm`).
 meta-llm = ["dep:uuid"]
+# Meta Proxy client (ADR-0019 §D2, ADR-0025a). Gates the `meta_proxy`
+# module's code — reuses the same `uuid` optional dependency `meta-llm`
+# pulls in for correlation IDs (ADR-0025a §D3) — matches the ADR-0019 §D2
+# namespace map (`cognitum_one::meta_proxy`, `meta-proxy`).
+meta-proxy = ["dep:uuid"]
 blocking = ["reqwest/blocking"]
 live-seed-tests = ["seed"]
 # Opt-in mDNS discovery (ADR-0016a §D6, Phase 3). One-shot `_cognitum._tcp.local`
