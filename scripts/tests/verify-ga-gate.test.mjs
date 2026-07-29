@@ -39,3 +39,27 @@ test("rejects a stable operation whose evidence path disappeared", async () => {
   });
   await assert.rejects(verifyGaGate(path), /evidence path does not exist/);
 });
+
+test("rejects a source file presented as conformance evidence", async () => {
+  const path = await mutatedManifest((manifest) => {
+    manifest.productClients.agenticCore.operations[0].evidence.conformance.node = [
+      "sdks/node/src/agentic/scope-preflight.ts",
+    ];
+  });
+  await assert.rejects(verifyGaGate(path), /conformance evidence is not an executable test/);
+});
+
+test("rejects generic package metadata presented as artifact evidence", async () => {
+  const path = await mutatedManifest((manifest) => {
+    manifest.productClients.agenticCore.operations[0].evidence.artifacts = ["sdks/node/package.json"];
+  });
+  await assert.rejects(verifyGaGate(path), /artifact evidence must identify an SDK implementation file/);
+});
+
+test("rejects security evidence that is not explicit and distinct", async () => {
+  const path = await mutatedManifest((manifest) => {
+    const operation = manifest.productClients.agenticCore.operations[3];
+    operation.evidence.security = [...operation.evidence.conformance.node];
+  });
+  await assert.rejects(verifyGaGate(path), /security evidence must be distinct from conformance evidence/);
+});

@@ -6,6 +6,26 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
+const TEST_PATHS = {
+  node: /^sdks\/node\/tests\/.*\.test\.[cm]?[jt]s$/,
+  python: /^sdks\/python\/tests\/(?:.*\/)?test_.*\.py$/,
+  rust: /^sdks\/rust\/(?:tests\/.*\.rs|src\/.*\.rs)$/,
+};
+
+const IMPLEMENTATION_PATHS = {
+  node: /^sdks\/node\/src\/.*\.[cm]?tsx?$/,
+  python: /^sdks\/python\/cognitum\/.*\.py$/,
+  rust: /^sdks\/rust\/src\/.*\.rs$/,
+};
+
+async function isExecutableTestEvidence(language, evidencePath) {
+  if (!TEST_PATHS[language].test(evidencePath)) return false;
+  const source = await readFile(resolve(repoRoot, evidencePath), "utf8");
+  if (language === "node") return /\b(?:it|test)\s*\(/.test(source);
+  if (language === "python") return /\b(?:async\s+)?def\s+test_/.test(source);
+  return /#\[(?:tokio::)?test(?:\([^\]]*\))?\]/.test(source);
+}
+
 export async function verifyGaGate(manifestPath) {
   const absoluteManifest = resolve(repoRoot, manifestPath);
   const manifest = JSON.parse(await readFile(absoluteManifest, "utf8"));
@@ -44,11 +64,47 @@ export async function verifyGaGate(manifestPath) {
         errors.push(`${key}: stable operation lacks artifact evidence`);
       }
 
-      const paths = [
-        ...Object.values(evidence?.conformance ?? {}).flat(),
-        ...(evidence?.security ?? []),
-        ...(evidence?.artifacts ?? []),
-      ];
+      for (const language of ["node", "python", "rust"]) {
+        for (const evidencePath of evidence?.conformance?.[language] ?? []) {
+          try {
+            if (!(await isExecutableTestEvidence(language, evidencePath))) {
+              errors.push(`${key}: ${language} conformance evidence is not an executable test: ${evidencePath}`);
+            }
+          } catch {
+            // The common existence check below reports the missing path.
+          }
+        }
+      }
+
+      const conformancePaths = new Set(Object.values(evidence?.conformance ?? {}).flat());
+      for (const evidencePath of evidence?.security ?? []) {
+        const language = Object.keys(TEST_PATHS).find((candidate) => TEST_PATHS[candidate].test(evidencePath));
+        if (!language) {
+          errors.push(`${key}: security evidence must be an executable SDK test: ${evidencePath}`);
+        } else {
+          try {
+            if (!(await isExecutableTestEvidence(language, evidencePath))) {
+              errors.push(`${key}: security evidence is not an executable test: ${evidencePath}`);
+            }
+          } catch {
+            // The common existence check below reports the missing path.
+          }
+        }
+        if (conformancePaths.has(evidencePath)) {
+          errors.push(`${key}: security evidence must be distinct from conformance evidence: ${evidencePath}`);
+        }
+      }
+
+      for (const evidencePath of evidence?.artifacts ?? []) {
+        const language = Object.keys(IMPLEMENTATION_PATHS).find((candidate) =>
+          IMPLEMENTATION_PATHS[candidate].test(evidencePath),
+        );
+        if (!language) {
+          errors.push(`${key}: artifact evidence must identify an SDK implementation file: ${evidencePath}`);
+        }
+      }
+
+      const paths = [...conformancePaths, ...(evidence?.security ?? []), ...(evidence?.artifacts ?? [])];
       for (const evidencePath of paths) {
         try {
           await access(resolve(repoRoot, evidencePath));

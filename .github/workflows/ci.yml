@@ -101,8 +101,8 @@ jobs:
         run: cargo clippy --all-targets --features "native-tls,seed,stream,blocking,mdns,meta-llm,meta-proxy,metaharness,harnessaas" -- -D warnings
 
   rust-feature-matrix:
-    name: rust feature matrix (build)
-    runs-on: ubuntu-latest
+    name: rust feature matrix / ${{ matrix.os }} (build, ${{ matrix.feature }})
+    runs-on: ${{ matrix.runner }}
     defaults:
       run:
         working-directory: sdks/rust
@@ -115,7 +115,21 @@ jobs:
         # `default = ["rustls"]`) is the closest meaningful baseline.
         # Each remaining feature is then built individually on top of it.
         # `live-seed-tests` is excluded — see the comment on the `rust` job.
-        feature: [default, native-tls, seed, stream, blocking, mdns, meta-llm, meta-proxy, metaharness, harnessaas]
+        include:
+          - { os: Linux, runner: ubuntu-latest, feature: default, args: "" }
+          - { os: Linux, runner: ubuntu-latest, feature: native-tls, args: "--features native-tls" }
+          - { os: Linux, runner: ubuntu-latest, feature: seed, args: "--features seed" }
+          - { os: Linux, runner: ubuntu-latest, feature: stream, args: "--features stream" }
+          - { os: Linux, runner: ubuntu-latest, feature: blocking, args: "--features blocking" }
+          - { os: Linux, runner: ubuntu-latest, feature: mdns, args: "--features mdns" }
+          - { os: Linux, runner: ubuntu-latest, feature: meta-llm, args: "--features meta-llm" }
+          - { os: Linux, runner: ubuntu-latest, feature: meta-proxy, args: "--features meta-proxy" }
+          - { os: Linux, runner: ubuntu-latest, feature: metaharness, args: "--features metaharness" }
+          - { os: Linux, runner: ubuntu-latest, feature: harnessaas, args: "--features harnessaas" }
+          - { os: macOS, runner: macos-latest, feature: native-tls, args: "--features native-tls" }
+          - { os: macOS, runner: macos-latest, feature: mdns, args: "--features mdns" }
+          - { os: Windows, runner: windows-latest, feature: native-tls, args: "--features native-tls" }
+          - { os: Windows, runner: windows-latest, feature: mdns, args: "--features mdns" }
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -133,12 +147,7 @@ jobs:
       # the `rust` job above where `native-tls` is always enabled alongside
       # every other feature.
       - name: build (feature = ${{ matrix.feature }})
-        run: |
-          if [ "${{ matrix.feature }}" = "default" ]; then
-            cargo build
-          else
-            cargo build --features "${{ matrix.feature }}"
-          fi
+        run: cargo build ${{ matrix.args }}
 
   capability-manifest:
     name: capability manifest (schema + registry drift check)

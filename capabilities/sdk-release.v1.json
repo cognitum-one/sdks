@@ -68,7 +68,7 @@
               "rust": ["sdks/rust/src/agentic/static_api_key_provider.rs", "sdks/rust/src/agentic/oauth_token_provider.rs"]
             },
             "security": ["sdks/node/tests/adr-0019-proxy-governance-rejection.test.ts", "sdks/python/tests/test_adr0019_proxy_governance_rejection.py", "sdks/rust/tests/adr_0019_proxy_governance_rejection.rs"],
-            "artifacts": ["sdks/node/package.json", "sdks/python/pyproject.toml", "sdks/rust/Cargo.toml"]
+            "artifacts": ["sdks/node/src/agentic/scope-preflight.ts", "sdks/python/cognitum/agentic/scope_preflight.py", "sdks/rust/src/agentic/scope_preflight.rs"]
           }
         },
         {
@@ -81,7 +81,7 @@
               "rust": ["sdks/rust/src/agentic/receipt_verification/conformance_tests.rs"]
             },
             "security": ["sdks/node/tests/agentic/sentinel.test.ts", "sdks/python/tests/agentic/test_sentinel.py", "sdks/rust/src/agentic/sentinel.rs"],
-            "artifacts": ["sdks/fixtures/receipt-canonicalization/execution-receipt-v1.json", "capabilities/sdk-release.v1.json"]
+            "artifacts": ["sdks/node/src/agentic/receipt-verification.ts", "sdks/python/cognitum/agentic/receipt_verification.py", "sdks/rust/src/agentic/receipt_verification.rs"]
           }
         },
         {
@@ -89,12 +89,12 @@
           "maturity": "stable",
           "evidence": {
             "conformance": {
-              "node": ["sdks/node/tests/agentic/diagnostics.test.ts", "sdks/node/tests/agentic/sentinel.test.ts"],
-              "python": ["sdks/python/tests/agentic/test_diagnostics.py", "sdks/python/tests/agentic/test_sentinel.py"],
-              "rust": ["sdks/rust/src/agentic/diagnostics.rs", "sdks/rust/src/agentic/sentinel.rs"]
+              "node": ["sdks/node/tests/agentic/diagnostics.test.ts"],
+              "python": ["sdks/python/tests/agentic/test_diagnostics.py"],
+              "rust": ["sdks/rust/src/agentic/diagnostics.rs"]
             },
             "security": ["sdks/node/tests/agentic/sentinel.test.ts", "sdks/python/tests/agentic/test_sentinel.py", "sdks/rust/src/agentic/sentinel.rs"],
-            "artifacts": ["sdks/node/package.json", "sdks/python/pyproject.toml", "sdks/rust/Cargo.toml"]
+            "artifacts": ["sdks/node/src/agentic/sentinel.ts", "sdks/python/cognitum/agentic/sentinel.py", "sdks/rust/src/agentic/sentinel.rs"]
           }
         },
         {
@@ -106,8 +106,8 @@
               "python": ["sdks/python/tests/test_agentic_wait_for_operation.py"],
               "rust": ["sdks/rust/tests/agentic_wait_for_operation.rs"]
             },
-            "security": ["sdks/node/tests/agentic-wait-for-operation.test.ts", "sdks/python/tests/test_agentic_wait_for_operation.py", "sdks/rust/tests/agentic_wait_for_operation.rs"],
-            "artifacts": ["sdks/node/package.json", "sdks/python/pyproject.toml", "sdks/rust/Cargo.toml"]
+            "security": ["sdks/node/tests/agentic-wait-for-operation-security.test.ts", "sdks/python/tests/test_agentic_wait_for_operation_security.py", "sdks/rust/tests/agentic_wait_for_operation_security.rs"],
+            "artifacts": ["sdks/node/src/agentic/operations.ts", "sdks/python/cognitum/agentic/operations.py", "sdks/rust/src/agentic/operations.rs"]
           }
         }
       ]
