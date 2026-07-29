@@ -118,7 +118,7 @@
     },
     "productClient": {
       "type": "object",
-      "required": ["maturity", "namespace", "description"],
+      "required": ["maturity", "namespace", "description", "operations"],
       "additionalProperties": false,
       "properties": {
         "maturity": { "$ref": "#/$defs/maturity" },
@@ -138,8 +138,63 @@
         "features": { "type": "array", "items": { "type": "string" } },
         "governingAdrs": { "type": "array", "items": { "type": "string" } },
         "notes": { "type": "array", "items": { "type": "string" } },
-        "trackingIssues": { "type": "array", "items": { "type": "string", "format": "uri" } }
+        "trackingIssues": { "type": "array", "items": { "type": "string", "format": "uri" } },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/operationMaturity" }
+        }
       }
+    },
+    "operationMaturity": {
+      "type": "object",
+      "required": ["id", "maturity"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "maturity": { "const": "stable" } },
+            "required": ["maturity"]
+          },
+          "then": {
+            "required": ["evidence"],
+            "properties": {
+              "evidence": {
+                "required": ["conformance", "security", "artifacts"]
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-zA-Z0-9.]*$" },
+        "maturity": { "type": "string", "enum": ["stable", "preview", "internal"] },
+        "trackingIssue": { "type": "string", "format": "uri" },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "conformance": {
+              "type": "object",
+              "required": ["node", "python", "rust"],
+              "additionalProperties": false,
+              "properties": {
+                "node": { "$ref": "#/$defs/evidencePaths" },
+                "python": { "$ref": "#/$defs/evidencePaths" },
+                "rust": { "$ref": "#/$defs/evidencePaths" }
+              }
+            },
+            "security": { "$ref": "#/$defs/evidencePaths" },
+            "artifacts": { "$ref": "#/$defs/evidencePaths" }
+          }
+        }
+      }
+    },
+    "evidencePaths": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
     }
   }
 }
