@@ -56,6 +56,60 @@
       "notes": [
         "Telemetry primitives (TelemetrySink interface, no-op default sink, event/metric-name catalog, diagnostic capture policy) are public, tested contracts as of v0.3.0, but zero product client currently wires them into a real emission call site -- there is no active telemetry pipeline yet.",
         "OpenTelemetry adapter integration is not implemented."
+      ],
+      "operations": [
+        {
+          "id": "credentials.scopePreflight",
+          "maturity": "stable",
+          "evidence": {
+            "conformance": {
+              "node": ["sdks/node/tests/agentic-static-api-key-provider.test.ts", "sdks/node/tests/agentic-oauth-token-provider.test.ts"],
+              "python": ["sdks/python/tests/test_agentic_static_api_key_provider.py", "sdks/python/tests/test_agentic_oauth_token_provider.py"],
+              "rust": ["sdks/rust/src/agentic/static_api_key_provider.rs", "sdks/rust/src/agentic/oauth_token_provider.rs"]
+            },
+            "security": ["sdks/node/tests/adr-0019-proxy-governance-rejection.test.ts", "sdks/python/tests/test_adr0019_proxy_governance_rejection.py", "sdks/rust/tests/adr_0019_proxy_governance_rejection.rs"],
+            "artifacts": ["sdks/node/package.json", "sdks/python/pyproject.toml", "sdks/rust/Cargo.toml"]
+          }
+        },
+        {
+          "id": "receipts.verify",
+          "maturity": "stable",
+          "evidence": {
+            "conformance": {
+              "node": ["sdks/node/tests/agentic-receipt-verification.test.ts"],
+              "python": ["sdks/python/tests/test_agentic_receipt_verification.py"],
+              "rust": ["sdks/rust/src/agentic/receipt_verification/conformance_tests.rs"]
+            },
+            "security": ["sdks/node/tests/agentic/sentinel.test.ts", "sdks/python/tests/agentic/test_sentinel.py", "sdks/rust/src/agentic/sentinel.rs"],
+            "artifacts": ["sdks/fixtures/receipt-canonicalization/execution-receipt-v1.json", "capabilities/sdk-release.v1.json"]
+          }
+        },
+        {
+          "id": "diagnostics.redact",
+          "maturity": "stable",
+          "evidence": {
+            "conformance": {
+              "node": ["sdks/node/tests/agentic/diagnostics.test.ts", "sdks/node/tests/agentic/sentinel.test.ts"],
+              "python": ["sdks/python/tests/agentic/test_diagnostics.py", "sdks/python/tests/agentic/test_sentinel.py"],
+              "rust": ["sdks/rust/src/agentic/diagnostics.rs", "sdks/rust/src/agentic/sentinel.rs"]
+            },
+            "security": ["sdks/node/tests/agentic/sentinel.test.ts", "sdks/python/tests/agentic/test_sentinel.py", "sdks/rust/src/agentic/sentinel.rs"],
+            "artifacts": ["sdks/node/package.json", "sdks/python/pyproject.toml", "sdks/rust/Cargo.toml"]
+          }
+        },
+        {
+          "id": "operations.wait",
+          "maturity": "stable",
+          "evidence": {
+            "conformance": {
+              "node": ["sdks/node/tests/agentic-wait-for-operation.test.ts"],
+              "python": ["sdks/python/tests/test_agentic_wait_for_operation.py"],
+              "rust": ["sdks/rust/tests/agentic_wait_for_operation.rs"]
+            },
+            "security": ["sdks/node/tests/agentic-wait-for-operation.test.ts", "sdks/python/tests/test_agentic_wait_for_operation.py", "sdks/rust/tests/agentic_wait_for_operation.rs"],
+            "artifacts": ["sdks/node/package.json", "sdks/python/pyproject.toml", "sdks/rust/Cargo.toml"]
+          }
+        }
       ]
     },
     "metaLlm": {
@@ -81,7 +135,19 @@
       "notes": [
         "Meta-LLM platform resources (batches, pods, benchmarks, Brain, vectors, collaboration, flywheel) do not yet have typed SDK resource clients -- accessed via the REST API until issue #59 completes the product-resource layer."
       ],
-      "trackingIssues": ["https://github.com/cognitum-one/sdks/issues/59", "https://github.com/cognitum-one/sdks/issues/60"]
+      "trackingIssues": ["https://github.com/cognitum-one/sdks/issues/59", "https://github.com/cognitum-one/sdks/issues/60"],
+      "operations": [
+        { "id": "health", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/60" },
+        { "id": "models", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/60" },
+        { "id": "whoami", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/60" },
+        { "id": "chatCompletions", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/60" },
+        { "id": "messagesCreate", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/60" },
+        { "id": "messagesCountTokens", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/60" },
+        { "id": "completions", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/60" },
+        { "id": "responses", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/60" },
+        { "id": "embeddings", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/60" },
+        { "id": "usage", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/59" }
+      ]
     },
     "metaProxy": {
       "maturity": "available",
@@ -95,7 +161,14 @@
       "notes": [
         "Sponsor/budget operations remain fail-closed stubs pending ADR-0025b (MetaProxyManager lifecycle -- discovery, signed install, sponsor ledger), which has not been started."
       ],
-      "trackingIssues": ["https://github.com/cognitum-one/sdks/issues/62", "https://github.com/cognitum-one/sdks/issues/63"]
+      "trackingIssues": ["https://github.com/cognitum-one/sdks/issues/62", "https://github.com/cognitum-one/sdks/issues/63"],
+      "operations": [
+        { "id": "status", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/63" },
+        { "id": "capabilities", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/63" },
+        { "id": "chatCompletions", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/63" },
+        { "id": "chatCompletionsStream", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/63" },
+        { "id": "sponsoredChatCompletions", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/63" }
+      ]
     },
     "harnessaas": {
       "maturity": "available",
@@ -110,7 +183,12 @@
         "ADR-0027a's proposed async job/poll/SSE/approval/artifact contract is NOT implemented -- it does not exist upstream yet; building against it would produce bindings matching zero live routes.",
         "ADR-0027b (isolation, evidence, webhook contract) is not started."
       ],
-      "trackingIssues": ["https://github.com/cognitum-one/sdks/issues/67", "https://github.com/cognitum-one/sdks/issues/68", "https://github.com/cognitum-one/sdks/issues/69"]
+      "trackingIssues": ["https://github.com/cognitum-one/sdks/issues/67", "https://github.com/cognitum-one/sdks/issues/68", "https://github.com/cognitum-one/sdks/issues/69"],
+      "operations": [
+        { "id": "health", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/69" },
+        { "id": "solve", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/69" },
+        { "id": "lineage", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/69" }
+      ]
     },
     "metaharness": {
       "maturity": "contract_preview",
@@ -126,7 +204,20 @@
         "No operation performs real process spawn, network I/O, or filesystem access -- confirmed via import-absence (zero child_process/fs/fetch references in the module).",
         "Do not represent any MetaHarnessClient method as functioning until the upstream bridge protocol exists and this contract preview is promoted to available."
       ],
-      "trackingIssues": ["https://github.com/cognitum-one/sdks/issues/64", "https://github.com/cognitum-one/sdks/issues/65", "https://github.com/cognitum-one/sdks/issues/66"]
+      "trackingIssues": ["https://github.com/cognitum-one/sdks/issues/64", "https://github.com/cognitum-one/sdks/issues/65", "https://github.com/cognitum-one/sdks/issues/66"],
+      "operations": [
+        { "id": "capabilities", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/64" },
+        { "id": "listTemplates", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/64" },
+        { "id": "listHosts", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/64" },
+        { "id": "analyzeRepository", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/64" },
+        { "id": "scoreRepository", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/64" },
+        { "id": "planScaffold", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/64" },
+        { "id": "scaffold", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/64" },
+        { "id": "inspectManifest", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/64" },
+        { "id": "validateHarness", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/64" },
+        { "id": "compareHarnesses", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/64" },
+        { "id": "verifyWitness", "maturity": "preview", "trackingIssue": "https://github.com/cognitum-one/sdks/issues/64" }
+      ]
     }
   },
   "restFirstGaps": [

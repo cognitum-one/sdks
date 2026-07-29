@@ -9,9 +9,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  security:
+    # Pin the required GA security gate so its semantics cannot change
+    # underneath a reviewed SDK commit.
+    uses: cognitum-one/.github/.github/workflows/security-scan.yml@5eb92ac7c8a8b72814663ab58d9241dd8e0510ae
+
   node:
-    name: node (build, test, typecheck, lint)
-    runs-on: ubuntu-latest
+    name: node / ${{ matrix.os }} (build, test, typecheck, lint, audit)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     defaults:
       run:
         working-directory: sdks/node
@@ -34,10 +43,15 @@ jobs:
           SKIP_SEED_INTEGRATION: "1"
       - run: npm run typecheck
       - run: npm run lint
+      - run: npm audit --audit-level=high
 
   python:
-    name: python (pytest, ruff, mypy)
-    runs-on: ubuntu-latest
+    name: python / ${{ matrix.os }} (pytest, ruff, mypy)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     defaults:
       run:
         working-directory: sdks/python
@@ -57,8 +71,12 @@ jobs:
       - run: mypy
 
   rust:
-    name: rust (build, test, clippy)
-    runs-on: ubuntu-latest
+    name: rust / ${{ matrix.os }} (build, test, clippy)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     defaults:
       run:
         working-directory: sdks/rust
@@ -138,3 +156,15 @@ jobs:
       # the 2026-07-19 crates.io 0.3.0 publish gap. See issue #123 and
       # cognitum-one/website ADR-101 ("Drift prevention").
       - run: node scripts/verify-release-manifest.mjs
+
+  ga-gate:
+    name: GA gate (maturity + evidence)
+    runs-on: ubuntu-latest
+    needs: [security, node, python, rust]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: node --test scripts/tests/*.test.mjs
+      - run: node scripts/verify-ga-gate.mjs
