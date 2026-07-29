@@ -1,6 +1,16 @@
 {
   "name": "@cognitum-one/sdk",
   "version": "0.3.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cognitum-one/sdks.git",
+    "directory": "sdks/node"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "provenance": true
+  },
   "description": "Official Cognitum SDK for Node.js and TypeScript",
   "type": "module",
   "main": "./dist/index.cjs",

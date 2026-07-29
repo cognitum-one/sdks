@@ -1,0 +1,181 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "v*.*.*-*"
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build and verify release artifacts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: sdks/node/package-lock.json
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+      - name: Require the tagged commit to be on main with a green GA gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?per_page=100" --jq '[.check_runs[] | select(.name == "GA gate (maturity + evidence)" and .conclusion == "success")] | length')" -ge 1
+      - name: Enforce tag and source version parity
+        run: node scripts/release-preflight.mjs "${GITHUB_REF_NAME}"
+      - name: Re-run GA evidence gates at the tagged commit
+        run: |
+          node --test scripts/tests/*.test.mjs
+          node scripts/verify-ga-gate.mjs
+          node scripts/verify-release-manifest.mjs --offline
+      - name: Build npm tarball
+        working-directory: sdks/node
+        run: |
+          npm ci
+          npm run build
+          mkdir -p ../../release-bundle/npm
+          npm pack --pack-destination ../../release-bundle/npm
+      - name: Build Python wheel and sdist
+        working-directory: sdks/python
+        run: |
+          python -m pip install --disable-pip-version-check build
+          python -m build --outdir ../../release-bundle/python
+      - name: Build crates.io package
+        working-directory: sdks/rust
+        run: |
+          cargo package --locked
+          mkdir -p ../../release-bundle/cargo
+          cp target/package/cognitum-one-*.crate ../../release-bundle/cargo/
+      - name: Record artifact checksums
+        run: find release-bundle -type f -print0 | sort -z | xargs -0 sha256sum | tee release-bundle/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-bundle-${{ github.ref_name }}
+          path: release-bundle/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-npm:
+    name: publish npm
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-bundle-${{ github.ref_name }}
+          path: release-bundle
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Publish npm artifact
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "${VERSION}" == *-* ]]; then
+            npm publish release-bundle/npm/*.tgz --access public --tag next
+          else
+            npm publish release-bundle/npm/*.tgz --access public
+          fi
+
+  publish-pypi:
+    name: publish PyPI
+    needs: publish-npm
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-bundle-${{ github.ref_name }}
+          path: release-bundle
+      - uses: pypa/gh-action-pypi-publish@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          packages-dir: release-bundle/python/
+
+  publish-crates:
+    name: publish crates.io
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+      - run: cargo publish --locked --manifest-path sdks/rust/Cargo.toml
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  verify:
+    name: verify published artifacts and installs
+    needs: publish-crates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-bundle-${{ github.ref_name }}
+          path: release-bundle
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+      - name: Verify registry digests match the built artifacts
+        run: node scripts/verify-release-artifacts.mjs "${GITHUB_REF_NAME#v}" release-bundle
+      - name: Install exact npm and PyPI versions from public registries
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir smoke && cd smoke
+          npm init -y >/dev/null
+          npm install --ignore-scripts --save-exact "@cognitum-one/sdk@${VERSION}"
+          node -e "require('@cognitum-one/sdk')"
+          python -m venv venv
+          venv/bin/pip install --disable-pip-version-check "cognitum-sdk==${VERSION}"
+          venv/bin/python -c "import cognitum; assert cognitum.__version__ == '${VERSION}'"
+      - name: Install exact crate version from crates.io
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cargo new --quiet rust-smoke
+          cd rust-smoke
+          cargo add "cognitum-one@=${VERSION}"
+          cargo check --locked
