@@ -69,27 +69,33 @@ jobs:
           echo "RELEASE_VERSION=${VERSION}" >> "$GITHUB_ENV"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "rehearsing/releasing ${VERSION}"
-      - name: Require the tagged commit to be on main with a green GA gate
+      - name: Require the commit to be on main with a green GA gate
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # This fetch must stay depth-less. `actions/checkout` leaves a
-          # depth-1 shallow clone, and `merge-base --is-ancestor` can only
-          # walk history it actually has; fetching a ref into a shallow repo
-          # WITHOUT --depth is what pulls main's full history and makes the
-          # ancestry check answer truthfully. Verified both ways on a shallow
-          # clone: a tag on an older main commit passes, a tag on an off-main
-          # commit is rejected. Adding --depth here would silently turn this
-          # guard -- the only thing stopping a release being cut from an
-          # unreviewed commit -- into a coin flip.
-          git fetch --no-tags origin main:refs/remotes/origin/main
-          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main
-          # Match on the producing app as well as the name. A check run is
-          # just a name plus a conclusion, and any GitHub App installed on
-          # this org with `checks:write` can create one -- several are (the
-          # QE contract app among them). Without the `app.slug` constraint,
-          # authorising a release means "somebody wrote the right string on
-          # this commit" rather than "this repo's own CI passed".
+          set -euo pipefail
+          # Ancestry via the API, not git. `actions/checkout` runs with
+          # `persist-credentials: false`, so a plain `git fetch origin main`
+          # has no credentials and dies with "could not read Username" -- this
+          # guard could never run, and a real release would have failed on its
+          # very first step. Found by the first dispatch rehearsal.
+          #
+          # `compare/main...<sha>` answers ancestry directly:
+          #   identical -> the commit IS main's tip
+          #   behind    -> the commit is an ancestor of main
+          #   ahead / diverged -> it is not on main; refuse to release it
+          STATUS="$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${GITHUB_SHA}" --jq '.status')"
+          echo "commit ${GITHUB_SHA} is '${STATUS}' relative to main"
+          case "${STATUS}" in
+            identical|behind) ;;
+            *) echo "refusing to release a commit that is not on main (${STATUS})" >&2; exit 1 ;;
+          esac
+          # Match on the producing app as well as the name. A check run is just
+          # a name plus a conclusion, and any GitHub App installed on this org
+          # with `checks:write` can create one -- several are. Without the
+          # `app.slug` constraint, authorising a release means "somebody wrote
+          # the right string on this commit" rather than "this repo's own CI
+          # passed".
           test "$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?per_page=100" --jq '[.check_runs[] | select(.name == "GA gate (maturity + evidence)" and .conclusion == "success" and .app.slug == "github-actions")] | length')" -ge 1
       - name: Enforce tag and source version parity
         run: node scripts/release-preflight.mjs "v${RELEASE_VERSION}"
