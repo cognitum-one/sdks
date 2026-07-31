@@ -61,7 +61,14 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
-      - run: pytest
+      # `--no-cov` here on purpose: pyproject's addopts enable the coverage
+      # gate so a local `pytest` enforces the same bar CI does, but the
+      # THRESHOLD is enforced once, on Linux, in the `coverage` job. Checking
+      # it on three runners would let a platform-specific branch (mdns,
+      # tailscale discovery) fail the build on a number that says nothing
+      # about whether the code works there -- which the suites above already
+      # prove.
+      - run: pytest --no-cov
         env:
           # Same rationale as the Node job: the live-seed test module
           # self-skips without a reachable tunnel, but we pin this so CI
@@ -166,6 +173,54 @@ jobs:
       # cognitum-one/website ADR-101 ("Drift prevention").
       - run: node scripts/verify-release-manifest.mjs
 
+  coverage:
+    name: coverage thresholds (node, python, rust)
+    runs-on: ubuntu-latest
+    # One Linux job rather than per-OS: coverage measures which LINES the
+    # suite reaches, which does not vary by runner, and an instrumented Rust
+    # rebuild on three platforms would cost far more than it tells us. The
+    # per-OS matrices above already prove the suites pass everywhere.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: sdks/node/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sdks/rust
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      # Thresholds live with each language's own config (vitest.config.ts,
+      # pyproject.toml, and the flags below) so `npm test` / `pytest` enforce
+      # the same bar locally that CI does.
+      - name: node
+        working-directory: sdks/node
+        run: npm ci && npm run test:coverage
+        env:
+          SKIP_SEED_INTEGRATION: "1"
+      - name: python
+        working-directory: sdks/python
+        run: pip install -e ".[dev]" && pytest
+        env:
+          SKIP_SEED_INTEGRATION: "1"
+      # Ratchet, measured 2026-07-31: 80.43% regions, 80.42% lines, 78.03%
+      # functions. Same feature set as the `rust` job (live-seed-tests
+      # excluded -- it needs a real device over an SSH tunnel).
+      - name: rust
+        working-directory: sdks/rust
+        run: |
+          cargo llvm-cov --summary-only \
+            --features "native-tls,seed,stream,blocking,mdns,meta-llm,meta-proxy,metaharness,harnessaas" \
+            --fail-under-lines 79 --fail-under-regions 79 --fail-under-functions 77
+
   ga-gate:
     name: GA gate (maturity + evidence)
     runs-on: ubuntu-latest
@@ -176,7 +231,7 @@ jobs:
     # demotes it to advisory. `rust-feature-matrix` and `capability-manifest`
     # were previously missing, which meant a red per-feature build or a red
     # registry-drift check blocked neither a merge nor a release.
-    needs: [security, node, python, rust, rust-feature-matrix, capability-manifest]
+    needs: [security, node, python, rust, rust-feature-matrix, capability-manifest, coverage]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
