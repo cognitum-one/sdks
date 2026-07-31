@@ -38,3 +38,8 @@ CLAUDE.local.md
 /tmp-swarm/
 .agentic-qe/
 /seed-live
+
+# Coverage output
+coverage/
+.coverage
+lcov.info
