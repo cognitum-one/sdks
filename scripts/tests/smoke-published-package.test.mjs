@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -15,15 +15,25 @@ const run = promisify(execFile);
 
 // Builds a throwaway node_modules tree so the script can be exercised
 // end-to-end without touching a network or a real publish.
-async function fixturePackage({ name = "@fixture/pkg", exportsField, files }) {
+async function fixturePackage({ name = "@fixture/pkg", exportsField, files, bin }) {
   const dir = await mkdtemp(join(tmpdir(), "smoke-fixture-"));
   const pkgDir = join(dir, "node_modules", ...name.split("/"));
   await mkdir(pkgDir, { recursive: true });
   await writeFile(join(dir, "package.json"), JSON.stringify({ name: "host", type: "module" }));
-  await writeFile(join(pkgDir, "package.json"), JSON.stringify({ name, version: "9.9.9", type: "module", exports: exportsField }));
+  await writeFile(join(pkgDir, "package.json"), JSON.stringify({ name, version: "9.9.9", type: "module", exports: exportsField, bin }));
   for (const [relative, contents] of Object.entries(files)) {
     await mkdir(dirname(join(pkgDir, relative)), { recursive: true });
     await writeFile(join(pkgDir, relative), contents);
+  }
+  // npm materialises `bin` as symlinks in node_modules/.bin; mirror that so
+  // the fixture exercises the same path the smoke script uses in CI.
+  for (const [command, target] of Object.entries(bin ?? {})) {
+    const binDir = join(dir, "node_modules", ".bin");
+    await mkdir(binDir, { recursive: true });
+    const resolved = join(pkgDir, target);
+    // Linked whether or not the target exists: a dangling link is exactly
+    // what a tarball missing its built CLI produces on install.
+    await symlink(resolved, join(binDir, command)).catch(() => {});
   }
   return dir;
 }
@@ -119,7 +129,7 @@ test("fails when an advertised subpath build is missing", async () => {
     const { code, output } = await smoke(dir, "@fixture/pkg");
     assert.equal(code, 1, "a missing subpath build must fail the release");
     assert.match(output, /FAIL @fixture\/pkg\/seed/);
-    assert.match(output, /1\/2 entry point\(s\) failed to load/);
+    assert.match(output, /1 published interface\(s\) failed/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -145,4 +155,39 @@ test("the workflow invokes this script rather than a bare root require", async (
 
 test("the script file is reachable at the path the workflow uses", () => {
   assert.ok(pathToFileURL(script).href.endsWith("scripts/smoke-published-package.mjs"));
+});
+
+test("fails when an advertised bin is missing from the tarball", async () => {
+  const dir = await fixturePackage({
+    exportsField: { ".": { import: "./index.js", require: "./index.cjs" } },
+    files: { "index.js": "export const a = 1;\n", "index.cjs": "module.exports = { a: 1 };\n" },
+    bin: { "fixture-cli": "./cli.mjs" },   // cli.mjs deliberately not written
+  });
+  try {
+    const { code, output } = await smoke(dir, "@fixture/pkg");
+    assert.equal(code, 1, "a missing executable must fail the release");
+    assert.match(output, /FAIL fixture-cli/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("passes when the advertised bin runs", async () => {
+  const dir = await fixturePackage({
+    exportsField: { ".": { import: "./index.js", require: "./index.cjs" } },
+    files: {
+      "index.js": "export const a = 1;\n",
+      "index.cjs": "module.exports = { a: 1 };\n",
+      "cli.mjs": "#!/usr/bin/env node\nconsole.log('fixture-cli 9.9.9');\n",
+    },
+    bin: { "fixture-cli": "./cli.mjs" },
+  });
+  try {
+    const { code, output } = await smoke(dir, "@fixture/pkg");
+    assert.equal(code, 0, output);
+    assert.match(output, /ok {3}fixture-cli --version/);
+    assert.match(output, /1 executable\(s\)/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

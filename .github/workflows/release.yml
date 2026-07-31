@@ -129,9 +129,15 @@ jobs:
           # late: by then PyPI and crates.io have irreversibly published these
           # bytes against an npm artifact built from something else, producing
           # a version that disagrees with itself across registries.
-          if npm view "@cognitum-one/sdk@${VERSION}" version >/dev/null 2>&1; then
-            echo "npm already has ${VERSION}; proving it matches this bundle before skipping"
+          set +e
+          bash scripts/registry-has-version.sh npm "${VERSION}"
+          PUBLISHED=$?
+          set -e
+          if [ "${PUBLISHED}" -eq 0 ]; then
+            echo "proving the published ${VERSION} matches this bundle before skipping"
             node scripts/verify-release-artifacts.mjs "${VERSION}" release-bundle --only npm
+          elif [ "${PUBLISHED}" -ne 10 ]; then
+            exit 1  # registry gave no usable answer; see registry-has-version.sh
           elif [[ "${VERSION}" == *-* ]]; then
             npm publish release-bundle/npm/*.tgz --access public --tag next
           else
@@ -167,11 +173,18 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          if curl -sSfL -o /dev/null "https://pypi.org/pypi/cognitum-sdk/${VERSION}/json"; then
-            echo "PyPI already has ${VERSION}; proving it matches this bundle"
+          set +e
+          bash scripts/registry-has-version.sh pypi "${VERSION}"
+          PUBLISHED=$?
+          set -e
+          if [ "${PUBLISHED}" -eq 0 ]; then
+            echo "proving the published ${VERSION} matches this bundle"
             node scripts/verify-release-artifacts.mjs "${VERSION}" release-bundle --only pypi
-          else
-            echo "PyPI does not yet have ${VERSION}; nothing to compare"
+          elif [ "${PUBLISHED}" -ne 10 ]; then
+            # Must not fall through to the publish step: `skip-existing: true`
+            # below would silently accept whatever is already on PyPI without
+            # the digest proof this step exists to perform.
+            exit 1
           fi
       # v1.14.2. The SHA previously pinned here did not exist in
       # pypa/gh-action-pypi-publish at all, so this job could only ever have
@@ -237,10 +250,15 @@ jobs:
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
           # Resumability with prove-before-skip, as in the npm and PyPI jobs.
-          if curl -sSfL -o /dev/null -H "User-Agent: cognitum-sdks-release" \
-               "https://crates.io/api/v1/crates/cognitum-one/${VERSION}"; then
-            echo "crates.io already has ${VERSION}; proving it matches this bundle before skipping"
+          set +e
+          bash scripts/registry-has-version.sh crates "${VERSION}"
+          PUBLISHED=$?
+          set -e
+          if [ "${PUBLISHED}" -eq 0 ]; then
+            echo "proving the published ${VERSION} matches this bundle before skipping"
             node scripts/verify-release-artifacts.mjs "${VERSION}" release-bundle --only crates
+          elif [ "${PUBLISHED}" -ne 10 ]; then
+            exit 1
           else
             cargo publish --locked --manifest-path sdks/rust/Cargo.toml
           fi

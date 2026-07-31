@@ -47,16 +47,30 @@ jobs:
         with:
           node-version: "22"
       - name: Install the published SDK from npm
+        # Both values go through `env`, never into the script body. A `${{ }}`
+        # expression is substituted before bash parses the line, so a dispatch
+        # input of `"; id; echo "` would be executed as shell -- and the
+        # release tag, while trusted today, is attacker-influenceable the
+        # moment tag creation is opened up.
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+          # On a workflow_run trigger there is no input, and `@latest` would be
+          # the WRONG package: for a prerelease it is a different version
+          # entirely (prereleases publish to dist-tag `next`), so the smoke
+          # would pass while saying nothing about the release that triggered
+          # it. The triggering run's ref is the tag, which is the version.
+          RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
-          VERSION="${{ inputs.version }}"
+          VERSION="${VERSION_INPUT:-}"
+          if [ -z "${VERSION}" ] && [ -n "${RELEASE_TAG:-}" ]; then
+            VERSION="${RELEASE_TAG#v}"
+          fi
+          SPEC="@cognitum-one/sdk@${VERSION:-latest}"
+          echo "installing ${SPEC}"
           mkdir -p live && cd live
           npm init -y >/dev/null
-          if [ -n "${VERSION}" ]; then
-            npm install --save-exact "@cognitum-one/sdk@${VERSION}"
-          else
-            npm install --save-exact "@cognitum-one/sdk@latest"
-          fi
+          npm install --save-exact "${SPEC}"
           node -e "console.log('smoking @cognitum-one/sdk@' + require('./node_modules/@cognitum-one/sdk/package.json').version)"
       - name: Smoke the live gateway
         working-directory: live
