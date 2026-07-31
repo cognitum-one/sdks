@@ -46,7 +46,7 @@ exist yet. Do not describe any `MetaHarnessClient` method as working.
 
 ```
 sdks/{node,python,rust}/   the three SDKs
-sdks/fixtures/             cross-language conformance fixtures
+sdks/fixtures/             cross-language conformance corpora (see below)
 capabilities/              sdk-release.v1.json + its schema (public capability claims)
 scripts/                   release/verification tooling + its own node:test suites
 docs/adr/                  33 cross-cutting ADRs
@@ -115,17 +115,34 @@ that would notice the gateway changing a route or a response shape. Assertions a
 
 **`release`** — tag-triggered, see `.github/RELEASE-SETUP.md`.
 
-### Test inventory (measured 2026-07-31)
+### Test inventory (measured 2026-07-31, after #128 and #75)
 
 | Suite | Passing | Kind |
 |-------|---------|------|
-| node (vitest) | 589 (+8 skipped) | unit, wire-protocol, retry/idempotency, streaming decoders, ADR-compliance, mocked HTTP |
-| python (pytest) | 637 (+11 skipped) | same contracts via respx |
-| rust (cargo test) | 537 | unit + 36 integration files |
+| node (vitest) | 637 (+8 skipped) | unit, wire-protocol, retry/idempotency, streaming decoders, ADR-compliance, mocked HTTP |
+| python (pytest) | 689 (+11 skipped) | same contracts via respx |
+| rust (cargo test) | 564 | unit + 36 integration files |
 | `scripts/` (node:test) | 34 | release tooling: preflight, GA gate, manifest validator, smoke scripts |
 
-Plus cross-language conformance fixtures in `sdks/fixtures/` and per-feature Rust
-builds. Live-device suites exist in all three but are excluded from CI.
+### Cross-language conformance (`sdks/fixtures/`)
+
+The corpora that catch the three SDKs disagreeing. Each language's own suite only
+ever checks that language against itself; these are the tests where Node, Python and
+Rust are compared to each other. Governed by ADR-0030a §D1.
+
+| Corpus | Catches |
+|--------|---------|
+| `receipt-canonicalization/` | Canonical-JSON drift — key casing, number formatting, key order |
+| `error-mapping/` | Error semantics — kind, retryability, `Retry-After`, upgrade affordance |
+
+**Every language's behaviour on every case is pinned.** Where the three genuinely
+differ, the case carries a `knownDivergence` block naming the language and its actual
+result, so a divergence is a declared fact rather than absent coverage — and adding a
+new one means editing the corpus on purpose. Both corpora record, in a `bugContext`
+field, the real bug that motivated them; each found a live cross-SDK defect on the day
+it was written.
+
+Live-device suites exist in all three languages but are excluded from CI.
 
 ### Coverage thresholds
 

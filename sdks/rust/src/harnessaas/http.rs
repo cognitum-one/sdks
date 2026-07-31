@@ -86,13 +86,17 @@ impl AgenticErrorBuilderExt for AgenticError {
     }
 }
 
+/// `Retry-After` per RFC 9110. Was delta-seconds-only here too, a fourth
+/// variant of the same bug found across the SDKs (issue #75).
 fn retry_after_ms_of(response: &reqwest::Response) -> Option<u64> {
-    response
-        .headers()
-        .get("retry-after")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok())
-        .map(|secs| secs * 1000)
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    crate::agentic::parse_retry_after_ms(
+        response.headers().get("retry-after").and_then(|v| v.to_str().ok()),
+        now_ms,
+    )
 }
 
 /// HTTP-status -> `AgenticErrorKind` mapping. Shared by every operation's

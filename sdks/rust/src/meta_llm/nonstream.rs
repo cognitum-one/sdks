@@ -314,12 +314,11 @@ impl MetaLlmClient {
             .get("x-cognitum-idempotent-replay")
             .and_then(|v| v.to_str().ok())
             .map(|v| v.eq_ignore_ascii_case("true"));
-        let retry_after_header_ms = response
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<f64>().ok())
-            .map(|secs| (secs * 1000.0) as u64);
+        // Shared RFC 9110 parser: the old `parse::<f64>()` handled only
+        // delta-seconds, so an HTTP-date -- which the RFC equally permits --
+        // yielded None and the retry loop's `unwrap_or(0)` then ignored the
+        // server's backoff request entirely (issue #75).
+        let retry_after_header_ms = super::http::retry_after_ms_of(&response);
 
         if let Some(telemetry) = self.config.telemetry.as_ref() {
             telemetry.on_request_end(&MetaLlmTelemetryEvent {

@@ -34,6 +34,7 @@ import {
 } from "../agentic/index.js";
 import type { MetaLlmTelemetryHooks, MetaLlmTransport } from "./config.js";
 import type { MetaLlmResponseMeta, MetaLlmResult } from "./envelope.js";
+import { parseRetryAfterMs } from "../agentic/retry-after.js";
 import { mapMetaLlmHttpError } from "./http-errors.js";
 import { buildIdempotencyBinding, canonicalRequestSha256 } from "./idempotency.js";
 import { parseMetaLlmReceipt } from "./types/receipt.js";
@@ -193,8 +194,7 @@ async function sendPostOnce<T>(
   }
 
   const durationMs = Date.now() - startedAt;
-  const retryAfterHeader = response.headers.get("retry-after");
-  const retryAfterMs = retryAfterHeader ? Number(retryAfterHeader) * 1000 : undefined;
+  const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
   const idempotentReplayHeader = response.headers.get("x-cognitum-idempotent-replay");
   const idempotentReplay =
     idempotentReplayHeader !== null ? idempotentReplayHeader.toLowerCase() === "true" : undefined;
