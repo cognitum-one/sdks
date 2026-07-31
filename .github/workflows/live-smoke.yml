@@ -1,0 +1,66 @@
+name: live smoke
+
+# Drives the PUBLISHED SDK, installed from the public registry, against the
+# LIVE gateway. Every other suite in this repo runs against mocks, which
+# cannot notice api.cognitum.one changing a route, a response shape, or an
+# auth rule underneath a shipped release.
+#
+# Deliberately NOT part of `release.yml`'s chain and NOT in `ga-gate.needs`:
+# it depends on production being reachable, so wiring it into the publish path
+# would let a transient prod blip block a release, and wiring it into the merge
+# gate would make every PR hostage to prod. It runs after a release completes,
+# on a daily schedule, and on demand.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Published version to smoke (default: latest on npm)'
+        required: false
+        type: string
+  schedule:
+    # Daily. A contract break in the gateway should surface within a day,
+    # not at the next release.
+    - cron: "17 6 * * *"
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+
+concurrency:
+  group: live-smoke
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: published SDK against api.cognitum.one
+    # On a release trigger, only bother if the release actually succeeded.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install the published SDK from npm
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.version }}"
+          mkdir -p live && cd live
+          npm init -y >/dev/null
+          if [ -n "${VERSION}" ]; then
+            npm install --save-exact "@cognitum-one/sdk@${VERSION}"
+          else
+            npm install --save-exact "@cognitum-one/sdk@latest"
+          fi
+          node -e "console.log('smoking @cognitum-one/sdk@' + require('./node_modules/@cognitum-one/sdk/package.json').version)"
+      - name: Smoke the live gateway
+        working-directory: live
+        env:
+          COGNITUM_API_KEY: ${{ secrets.COGNITUM_LIVE_SMOKE_KEY }}
+          COGNITUM_API_BASE_URL: https://api.cognitum.one
+        run: node "${GITHUB_WORKSPACE}/scripts/live-smoke.mjs"
