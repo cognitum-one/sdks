@@ -169,7 +169,14 @@ jobs:
   ga-gate:
     name: GA gate (maturity + evidence)
     runs-on: ubuntu-latest
-    needs: [security, node, python, rust]
+    # This job's check-run name is the ONLY required status check on `main`
+    # and the only CI result `release.yml` consults before publishing, so its
+    # `needs` list is the de facto definition of "CI is green". Every job in
+    # this workflow must therefore be listed here: omitting one silently
+    # demotes it to advisory. `rust-feature-matrix` and `capability-manifest`
+    # were previously missing, which meant a red per-feature build or a red
+    # registry-drift check blocked neither a merge nor a release.
+    needs: [security, node, python, rust, rust-feature-matrix, capability-manifest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

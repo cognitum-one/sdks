@@ -39,9 +39,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # This fetch must stay depth-less. `actions/checkout` leaves a
+          # depth-1 shallow clone, and `merge-base --is-ancestor` can only
+          # walk history it actually has; fetching a ref into a shallow repo
+          # WITHOUT --depth is what pulls main's full history and makes the
+          # ancestry check answer truthfully. Verified both ways on a shallow
+          # clone: a tag on an older main commit passes, a tag on an off-main
+          # commit is rejected. Adding --depth here would silently turn this
+          # guard -- the only thing stopping a release being cut from an
+          # unreviewed commit -- into a coin flip.
           git fetch --no-tags origin main:refs/remotes/origin/main
           git merge-base --is-ancestor "${GITHUB_SHA}" origin/main
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?per_page=100" --jq '[.check_runs[] | select(.name == "GA gate (maturity + evidence)" and .conclusion == "success")] | length')" -ge 1
+          # Match on the producing app as well as the name. A check run is
+          # just a name plus a conclusion, and any GitHub App installed on
+          # this org with `checks:write` can create one -- several are (the
+          # QE contract app among them). Without the `app.slug` constraint,
+          # authorising a release means "somebody wrote the right string on
+          # this commit" rather than "this repo's own CI passed".
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?per_page=100" --jq '[.check_runs[] | select(.name == "GA gate (maturity + evidence)" and .conclusion == "success" and .app.slug == "github-actions")] | length')" -ge 1
       - name: Enforce tag and source version parity
         run: node scripts/release-preflight.mjs "${GITHUB_REF_NAME}"
       - name: Re-run GA evidence gates at the tagged commit
@@ -85,6 +100,9 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: release-bundle-${{ github.ref_name }}
@@ -97,8 +115,24 @@ jobs:
       - name: Publish npm artifact
         shell: bash
         run: |
+          set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          if [[ "${VERSION}" == *-* ]]; then
+          # Skip if this exact version is already on npm, so a mid-chain
+          # failure is recoverable. Registry uploads are immutable and there
+          # is no atomic three-registry commit: if PyPI 503s after npm has
+          # succeeded, the ONLY way to finish that version is to re-run this
+          # workflow, and a plain `npm publish` would abort on the already-
+          # published version and strand PyPI and crates.io forever.
+          #
+          # The skip must PROVE the existing version is this bundle before
+          # continuing. Deferring that to the final verify job would be too
+          # late: by then PyPI and crates.io have irreversibly published these
+          # bytes against an npm artifact built from something else, producing
+          # a version that disagrees with itself across registries.
+          if npm view "@cognitum-one/sdk@${VERSION}" version >/dev/null 2>&1; then
+            echo "npm already has ${VERSION}; proving it matches this bundle before skipping"
+            node scripts/verify-release-artifacts.mjs "${VERSION}" release-bundle --only npm
+          elif [[ "${VERSION}" == *-* ]]; then
             npm publish release-bundle/npm/*.tgz --access public --tag next
           else
             npm publish release-bundle/npm/*.tgz --access public
@@ -113,13 +147,44 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: release-bundle-${{ github.ref_name }}
           path: release-bundle
-      - uses: pypa/gh-action-pypi-publish@ece7cb06caefa5fff74198d8649806c4678c61a1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+      # Same prove-before-skip rule as the npm job: `skip-existing` below
+      # would otherwise silently accept a pre-existing version built from
+      # different bytes, and crates.io would then publish this bundle against
+      # it. Only assert when the version already exists -- a first publish has
+      # nothing to compare against yet.
+      - name: Prove any pre-existing PyPI version matches this bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          if curl -sSfL -o /dev/null "https://pypi.org/pypi/cognitum-sdk/${VERSION}/json"; then
+            echo "PyPI already has ${VERSION}; proving it matches this bundle"
+            node scripts/verify-release-artifacts.mjs "${VERSION}" release-bundle --only pypi
+          else
+            echo "PyPI does not yet have ${VERSION}; nothing to compare"
+          fi
+      # v1.14.2. The SHA previously pinned here did not exist in
+      # pypa/gh-action-pypi-publish at all, so this job could only ever have
+      # failed with "unable to resolve action" -- and it would have failed
+      # *after* the npm publish above had already succeeded, stranding the
+      # release half-published on an immutable registry.
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
         with:
           packages-dir: release-bundle/python/
+          # Same resumability rationale as the npm job: makes re-running a
+          # partially-failed release possible. The verify job still compares
+          # PyPI's digests against these exact files.
+          skip-existing: true
 
   publish-crates:
     name: publish crates.io
@@ -132,10 +197,53 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-bundle-${{ github.ref_name }}
+          path: release-bundle
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: stable
-      - run: cargo publish --locked --manifest-path sdks/rust/Cargo.toml
+      # `cargo publish` repackages from source rather than uploading the
+      # .crate the build job sealed and the approver reviewed, so without
+      # this step the bytes that reach crates.io are never the bytes anyone
+      # checked. The `verify` job does compare them -- but only after an
+      # irreversible upload. Re-package here and diff against the sealed
+      # digest so a mismatch stops the release while stopping is still free.
+      - name: Re-package and prove it matches the sealed .crate
+        shell: bash
+        run: |
+          # pipefail is NOT on by default in Actions' `bash -e {0}`: a missing
+          # file makes `sha256sum ... | cut` exit 0 with empty output, so both
+          # sides of the comparison become "" and the check passes having
+          # proved nothing. Require the files explicitly, then compare.
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          CRATE="cognitum-one-${VERSION}.crate"
+          cargo package --locked --manifest-path sdks/rust/Cargo.toml
+          test -f "release-bundle/cargo/${CRATE}"
+          test -f "sdks/rust/target/package/${CRATE}"
+          SEALED="$(sha256sum "release-bundle/cargo/${CRATE}" | cut -d' ' -f1)"
+          REBUILT="$(sha256sum "sdks/rust/target/package/${CRATE}" | cut -d' ' -f1)"
+          echo "sealed=${SEALED} rebuilt=${REBUILT}"
+          test -n "${SEALED}" && test -n "${REBUILT}"
+          test "${SEALED}" = "${REBUILT}"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+      - name: Publish crate
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Resumability with prove-before-skip, as in the npm and PyPI jobs.
+          if curl -sSfL -o /dev/null -H "User-Agent: cognitum-sdks-release" \
+               "https://crates.io/api/v1/crates/cognitum-one/${VERSION}"; then
+            echo "crates.io already has ${VERSION}; proving it matches this bundle before skipping"
+            node scripts/verify-release-artifacts.mjs "${VERSION}" release-bundle --only crates
+          else
+            cargo publish --locked --manifest-path sdks/rust/Cargo.toml
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -168,10 +276,16 @@ jobs:
           mkdir smoke && cd smoke
           npm init -y >/dev/null
           npm install --ignore-scripts --save-exact "@cognitum-one/sdk@${VERSION}"
-          node -e "require('@cognitum-one/sdk')"
+          # Load every entry point the package advertises, not just the root
+          # -- see the header of smoke-published-package.mjs for why digest
+          # verification alone cannot catch a missing subpath build.
+          node "${GITHUB_WORKSPACE}/scripts/smoke-published-package.mjs" "@cognitum-one/sdk"
           python -m venv venv
           venv/bin/pip install --disable-pip-version-check "cognitum-sdk==${VERSION}"
           venv/bin/python -c "import cognitum; assert cognitum.__version__ == '${VERSION}'"
+          # Same rationale on the Python side: import every public subpackage
+          # the wheel claims to ship, so a missing module fails here.
+          venv/bin/python "${GITHUB_WORKSPACE}/scripts/smoke_published_package.py"
       - name: Install exact crate version from crates.io
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
