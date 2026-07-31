@@ -186,7 +186,7 @@ export function resolveSeedConfig(opts: SeedClientOptions): ResolvedSeedConfig {
   // constructor surfaces a typed `ConfigError` pointing at the factory
   // instead of silently dispatching against an empty peer list.
   let discovery: DiscoveryProvider | undefined;
-  let resolvedEndpoints: string | string[] = opts.endpoints as
+  const resolvedEndpoints: string | string[] = opts.endpoints as
     | string
     | string[];
   if (isDiscoveryProvider(opts.endpoints)) {

@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 
-use cognitum_rs::seed::{
+use cognitum_one::seed::{
     PairCreate, SeedAuth, SeedClient, SeedTls, StoreIngest, StoreIngestEntry, StoreQuery,
 };
 

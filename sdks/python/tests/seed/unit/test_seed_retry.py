@@ -5,8 +5,6 @@ from __future__ import annotations
 import random
 import statistics
 
-import pytest
-
 from cognitum.seed._retry import (
     RetryPolicy,
     compute_delay,

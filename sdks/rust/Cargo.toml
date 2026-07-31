@@ -1,6 +1,6 @@
 [package]
 name = "cognitum-one"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 description = "Official Cognitum SDK for Rust"
 license = "MIT"
@@ -10,6 +10,7 @@ categories = ["api-bindings", "web-programming::http-client"]
 repository = "https://github.com/cognitum-one/sdks"
 homepage = "https://cognitum.one"
 documentation = "https://docs.rs/cognitum-one"
+publish = ["crates-io"]
 include = [
     "src/**/*",
     "benches/**/*",
@@ -27,6 +28,36 @@ rustls = ["reqwest/rustls-tls"]
 native-tls = ["reqwest/native-tls"]
 seed = ["dep:url"]
 stream = ["seed", "dep:eventsource-stream"]
+# Meta LLM serving client (ADR-0019 §D2, ADR-0024a). Gates the `meta_llm`
+# module's code and its one new optional dependency (`uuid`, for
+# ADR-0024a §D1 correlation IDs) — matches the ADR-0019 §D2 namespace map
+# (`cognitum_one::meta_llm`, `meta-llm`).
+meta-llm = ["dep:uuid"]
+# Meta Proxy client (ADR-0019 §D2, ADR-0025a). Gates the `meta_proxy`
+# module's code. Depends on `meta-llm` because ADR-0025a §D7 / ADR-0019 §D7
+# ("Meta LLM and Meta Proxy share OpenAI and Anthropic wire primitives where
+# their capability sets agree") reuse `meta_llm`'s OpenAI wire types
+# (`ChatCompletionRequest`/`ChatCompletion`) verbatim for the §D7 forwarding
+# contract rather than redefining them — this is wire-primitive sharing, NOT
+# client-class sharing (still forbidden by §D4). `meta-llm` already pulls in
+# the `uuid` optional dependency both modules use for correlation IDs.
+meta-proxy = ["meta-llm"]
+# MetaHarness client (ADR-0019 §D2, ADR-0026a). Gates the `metaharness`
+# module's code, per ADR-0026a §D1's namespace map
+# (`cognitum_one::metaharness`, feature `metaharness`). Issue #64 / M4
+# start: construction + fail-closed §D2 method stubs only — no bridge
+# process, no npm acquisition — so this pulls in no new optional
+# dependency (only `serde_json`, already a base dependency).
+metaharness = []
+# HarnessaaS client (ADR-0019 §D2, ADR-0027a). Gates the `harnessaas`
+# module's code. Issue #67/#68 / M5 start: construction + real
+# `health()`/`solve()`/`lineage()` HTTP call logic against the real,
+# deployed, synchronous upstream service — NOT ADR-0027a's proposed async
+# job/poll/SSE/approval contract. Pulls in `uuid` (the same request-ID
+# correlation dependency `meta-llm` already uses) but is otherwise
+# independent — HarnessaaS shares no wire types with Meta LLM/Meta Proxy
+# (ADR-0019 §D4: separate bounded context, no client-class sharing).
+harnessaas = ["dep:uuid"]
 blocking = ["reqwest/blocking"]
 live-seed-tests = ["seed"]
 # Opt-in mDNS discovery (ADR-0016a §D6, Phase 3). One-shot `_cognitum._tcp.local`
@@ -40,6 +71,11 @@ reqwest = { version = "0.12", default-features = false, features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+# Fixed-format sentinel matchers for the ADR-0028 §D13 redaction scan
+# (`agentic::sentinel::SentinelSecretRedactor`) — bearer/JWT/PEM/cloud-key/
+# pre-signed-URL patterns. Already pulled transitively via other deps; named
+# directly here since `agentic::sentinel` depends on it explicitly.
+regex = "1"
 # `process` + `io-util` are required for the MCP stdio transport
 # (OQ-4, src/mcp/stdio.rs): we spawn the MCP server as a tokio subprocess
 # and frame JSON over its stdin/stdout with BufReader::read_line.
@@ -64,10 +100,38 @@ mdns-sd = { version = "0.19", optional = true, default-features = false }
 # `rustls-tls` feature, we surface them here so our custom
 # `ServerCertVerifier` sees the same rustls 0.23 types reqwest does.
 sha2 = { version = "0.10", default-features = false }
+# HMAC-SHA256 receipt/lineage signing (ADR-0028 §D7/§D9, issue #56). Symmetric
+# HMAC is a deliberate scope limit vs. an asymmetric PKI — see
+# `agentic::receipt_verification` module docs.
+hmac = { version = "0.12", default-features = false }
 rustls = { version = "0.23", default-features = false }
 webpki-roots = "1.0"
+# Request-ID correlation for the Meta LLM client (ADR-0024a §D1, `meta-llm`
+# feature only). `v4` is the only generator strategy needed — random,
+# non-sequential request IDs, matching the Node SDK's `crypto.randomUUID()`
+# and Python's `uuid.uuid4()`.
+uuid = { version = "1", features = ["v4"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 wiremock = "0.6"
 rcgen = "0.13"
+
+# Issue #78: dependency-free micro-benchmarks for the agentic clients
+# (Meta LLM/Proxy, MetaHarness, HarnessaaS), mirroring `seed_bench.rs`'s
+# `std::time::Instant`-based style (no criterion). `harness = false`
+# because each bench is its own `fn main()`, not a `#[bench]` suite.
+[[bench]]
+name = "agentic_streaming_bench"
+harness = false
+required-features = ["meta-llm"]
+
+[[bench]]
+name = "agentic_capability_bench"
+harness = false
+required-features = ["meta-proxy", "metaharness", "harnessaas"]
+
+[[bench]]
+name = "agentic_receipt_bench"
+harness = false
+required-features = ["meta-llm"]

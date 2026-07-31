@@ -26,7 +26,7 @@ class PairStatus:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_wire(cls, data: Mapping[str, Any]) -> "PairStatus":
+    def from_wire(cls, data: Mapping[str, Any]) -> PairStatus:
         known = {
             "paired",
             "client_count",
@@ -57,7 +57,7 @@ class PairCreateResponse:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_wire(cls, data: Mapping[str, Any]) -> "PairCreateResponse":
+    def from_wire(cls, data: Mapping[str, Any]) -> PairCreateResponse:
         kwargs, extra = _split_known(data, {"paired", "token", "client_name"})
         # Wrap the wire-level string immediately so it cannot leak via
         # an interim dataclass repr.

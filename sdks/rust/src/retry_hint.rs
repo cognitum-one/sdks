@@ -158,7 +158,10 @@ fn month_from_abbrev(m: &str) -> Option<u32> {
 /// Convert civil (Gregorian) date to Unix seconds. Howard Hinnant's
 /// `days_from_civil` algorithm — validated for year range [1970, 2400].
 /// Returns `None` on out-of-range inputs.
-fn civil_to_unix_seconds(
+/// Days-from-civil algorithm (Howard Hinnant's `civil_from_days` inverse).
+/// `pub(crate)` so `agentic::receipt_verification` can reuse it for RFC3339
+/// timestamp parsing without a second copy of the calendar math.
+pub(crate) fn civil_to_unix_seconds(
     year: i32,
     month: u32,
     day: u32,

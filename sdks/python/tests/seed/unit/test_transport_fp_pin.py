@@ -28,7 +28,6 @@ from cognitum._errors import TlsPinError
 from cognitum.seed import SeedClient, SeedTLS
 from cognitum.seed.discovery._types import DiscoveredPeer, DiscoveryProvider
 
-
 # ---- fixture: self-signed HTTPS server in-process ------------------------
 
 
@@ -51,11 +50,12 @@ def _gen_self_signed(tmp_path: Path) -> tuple[Path, Path, str]:
     # Prefer ``cryptography`` when available; fall back to shelling out
     # to ``openssl`` — both are present on the ruvultra venv.
     try:
+        import datetime as _dt
+
         from cryptography import x509
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import ec
         from cryptography.x509.oid import NameOID
-        import datetime as _dt
 
         key = ec.generate_private_key(ec.SECP256R1())
         name = x509.Name(

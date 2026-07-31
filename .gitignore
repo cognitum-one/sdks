@@ -18,6 +18,7 @@ node_modules/
 CLAUDE.local.md
 .claude-flow/
 /tmp-swarm/
+.mission/
 
 # Python build artifacts
 *.egg-info/
@@ -35,3 +36,10 @@ CLAUDE.local.md
 
 # Test / validation scratch
 /tmp-swarm/
+.agentic-qe/
+/seed-live
+
+# Coverage output
+coverage/
+.coverage
+lcov.info

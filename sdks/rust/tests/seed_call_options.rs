@@ -6,8 +6,8 @@
 
 #![cfg(feature = "seed")]
 
-use cognitum_rs::error::Error;
-use cognitum_rs::seed::{CallOptions, Consistency, Prefer, SeedClient, SeedTls};
+use cognitum_one::error::Error;
+use cognitum_one::seed::{CallOptions, Consistency, Prefer, SeedClient, SeedTls};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

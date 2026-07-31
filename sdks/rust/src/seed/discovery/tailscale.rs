@@ -93,10 +93,10 @@ where
 /// ```no_run
 /// # #[cfg(feature = "seed")]
 /// # {
-/// use cognitum_rs::seed::{SeedClient, SeedTls};
-/// use cognitum_rs::seed::discovery::tailscale::TailscaleDiscovery;
+/// use cognitum_one::seed::{SeedClient, SeedTls};
+/// use cognitum_one::seed::discovery::tailscale::TailscaleDiscovery;
 ///
-/// # async fn _doc() -> Result<(), cognitum_rs::error::Error> {
+/// # async fn _doc() -> Result<(), cognitum_one::error::Error> {
 /// let client = SeedClient::builder()
 ///     .discovery(TailscaleDiscovery::new())
 ///     .tls(SeedTls::System)

@@ -22,7 +22,8 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
-from typing import Any, Callable, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any
 
 from cognitum._errors import ConfigError
 from cognitum.seed.discovery._types import DiscoveredPeer

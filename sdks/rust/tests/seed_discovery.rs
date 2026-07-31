@@ -19,8 +19,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cognitum_rs::error::Error;
-use cognitum_rs::seed::{DiscoveredPeer, Discovery, Explicit, PeerState, SeedClient, SeedTls};
+use cognitum_one::error::Error;
+use cognitum_one::seed::{DiscoveredPeer, Discovery, Explicit, PeerState, SeedClient, SeedTls};
 
 // ---------- Explicit provider ----------------------------------------------
 

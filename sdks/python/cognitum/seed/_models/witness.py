@@ -12,5 +12,5 @@ class WitnessChain:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_wire(cls, data: Mapping[str, Any]) -> "WitnessChain":
+    def from_wire(cls, data: Mapping[str, Any]) -> WitnessChain:
         return cls(extra=dict(data))

@@ -21,9 +21,9 @@
 //! Usage:
 //!
 //! ```no_run
-//! use cognitum_rs::seed::{SeedAuth, SeedClient, SeedTls};
+//! use cognitum_one::seed::{SeedAuth, SeedClient, SeedTls};
 //!
-//! # async fn example() -> Result<(), cognitum_rs::Error> {
+//! # async fn example() -> Result<(), cognitum_one::Error> {
 //! let client = SeedClient::builder()
 //!     .endpoint("https://localhost:18443")
 //!     .auth(SeedAuth::None)

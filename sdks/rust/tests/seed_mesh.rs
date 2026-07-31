@@ -11,7 +11,7 @@
 
 use std::time::{Duration, Instant};
 
-use cognitum_rs::seed::{
+use cognitum_one::seed::{
     InMemoryTokenBook, PairCreate, SecretString, SeedAuth, SeedClient, SeedTls, StoreIngest,
     StoreQuery, TokenBook,
 };
@@ -427,7 +427,7 @@ async fn test_mesh_health_probe_degrades_unhealthy_peer() {
     assert!(
         matches!(
             a_peer.state,
-            cognitum_rs::seed::PeerState::Degraded | cognitum_rs::seed::PeerState::Unhealthy
+            cognitum_one::seed::PeerState::Degraded | cognitum_one::seed::PeerState::Unhealthy
         ),
         "peer A should be degraded/unhealthy, got {:?}",
         a_peer.state

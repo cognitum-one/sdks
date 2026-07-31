@@ -25,7 +25,7 @@ class StoreStatus:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_wire(cls, data: Mapping[str, Any]) -> "StoreStatus":
+    def from_wire(cls, data: Mapping[str, Any]) -> StoreStatus:
         kwargs, extra = _split_known(
             data,
             {
@@ -47,7 +47,7 @@ class QueryMatch:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_wire(cls, data: Mapping[str, Any]) -> "QueryMatch":
+    def from_wire(cls, data: Mapping[str, Any]) -> QueryMatch:
         kwargs, extra = _split_known(data, {"id", "distance", "metadata"})
         meta = kwargs.pop("metadata", None) or {}
         return cls(metadata=meta, extra=extra, **kwargs)
@@ -60,7 +60,7 @@ class StoreQueryResult:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_wire(cls, data: Mapping[str, Any]) -> "StoreQueryResult":
+    def from_wire(cls, data: Mapping[str, Any]) -> StoreQueryResult:
         # seed may use "results" OR "matches" depending on version.
         raw = data.get("results") or data.get("matches") or []
         results = tuple(
@@ -97,7 +97,7 @@ class StoreIngestRequest:
         return {"vectors": [v.to_wire() for v in self.vectors]}
 
     @classmethod
-    def from_any(cls, items: Sequence[Any]) -> "StoreIngestRequest":
+    def from_any(cls, items: Sequence[Any]) -> StoreIngestRequest:
         out: list[VectorUpsert] = []
         for it in items:
             if isinstance(it, VectorUpsert):

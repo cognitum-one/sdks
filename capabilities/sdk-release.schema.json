@@ -1,0 +1,200 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cognitum.one/schemas/sdk-release.v1.json",
+  "title": "Cognitum SDK release capability manifest",
+  "description": "Machine-readable release manifest: package identifiers, registry versions, and product-client maturity for the Node, Python, and Rust SDKs. See ADR-101 (cognitum-one/website) and issue #123 (cognitum-one/sdks).",
+  "type": "object",
+  "required": ["schemaVersion", "generatedAt", "sourceCommit", "maturityLevels", "languages", "productClients"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "type": "string", "enum": ["1"] },
+    "schema": { "type": "string" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "sourceCommit": { "type": "string", "minLength": 7 },
+    "maturityLevels": {
+      "type": "object",
+      "required": ["available", "source_available", "contract_preview", "planned"],
+      "additionalProperties": false,
+      "properties": {
+        "available": { "type": "string" },
+        "source_available": { "type": "string" },
+        "contract_preview": { "type": "string" },
+        "planned": { "type": "string" }
+      }
+    },
+    "languages": {
+      "type": "object",
+      "required": ["node", "python", "rust"],
+      "additionalProperties": false,
+      "properties": {
+        "node": { "$ref": "#/$defs/nodeLanguage" },
+        "python": { "$ref": "#/$defs/pythonLanguage" },
+        "rust": { "$ref": "#/$defs/rustLanguage" }
+      }
+    },
+    "productClients": {
+      "type": "object",
+      "required": ["agenticCore", "metaLlm", "metaProxy", "harnessaas", "metaharness"],
+      "additionalProperties": false,
+      "properties": {
+        "agenticCore": { "$ref": "#/$defs/productClient" },
+        "metaLlm": { "$ref": "#/$defs/productClient" },
+        "metaProxy": { "$ref": "#/$defs/productClient" },
+        "harnessaas": { "$ref": "#/$defs/productClient" },
+        "metaharness": { "$ref": "#/$defs/productClient" }
+      }
+    },
+    "restFirstGaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["area", "description", "trackingIssue"],
+        "additionalProperties": false,
+        "properties": {
+          "area": { "type": "string" },
+          "description": { "type": "string" },
+          "trackingIssue": { "type": "string", "format": "uri" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "maturity": {
+      "type": "string",
+      "enum": ["available", "source_available", "contract_preview", "planned"]
+    },
+    "registryVersion": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$"
+    },
+    "nodeLanguage": {
+      "type": "object",
+      "required": ["packageName", "registry", "registryUrl", "sourceVersion", "registryVersion", "verifiedAt", "minRuntime", "installCommand"],
+      "additionalProperties": false,
+      "properties": {
+        "packageName": { "type": "string" },
+        "registry": { "type": "string", "const": "npm" },
+        "registryUrl": { "type": "string", "format": "uri" },
+        "sourceVersion": { "$ref": "#/$defs/registryVersion" },
+        "registryVersion": { "$ref": "#/$defs/registryVersion" },
+        "verifiedAt": { "type": "string", "format": "date-time" },
+        "minRuntime": { "type": "string" },
+        "installCommand": { "type": "string" },
+        "note": { "type": "string" }
+      }
+    },
+    "pythonLanguage": {
+      "type": "object",
+      "required": ["distributionName", "importName", "registry", "registryUrl", "sourceVersion", "registryVersion", "verifiedAt", "minRuntime", "installCommand"],
+      "additionalProperties": false,
+      "properties": {
+        "distributionName": { "type": "string" },
+        "importName": { "type": "string" },
+        "registry": { "type": "string", "const": "PyPI" },
+        "registryUrl": { "type": "string", "format": "uri" },
+        "sourceVersion": { "$ref": "#/$defs/registryVersion" },
+        "registryVersion": { "$ref": "#/$defs/registryVersion" },
+        "verifiedAt": { "type": "string", "format": "date-time" },
+        "minRuntime": { "type": "string" },
+        "installCommand": { "type": "string" },
+        "note": { "type": "string" }
+      }
+    },
+    "rustLanguage": {
+      "type": "object",
+      "required": ["crateName", "registry", "registryUrl", "sourceVersion", "registryVersion", "verifiedAt", "minRuntime", "installCommand"],
+      "additionalProperties": false,
+      "properties": {
+        "crateName": { "type": "string" },
+        "registry": { "type": "string", "const": "crates.io" },
+        "registryUrl": { "type": "string", "format": "uri" },
+        "sourceVersion": { "$ref": "#/$defs/registryVersion" },
+        "registryVersion": { "$ref": "#/$defs/registryVersion" },
+        "verifiedAt": { "type": "string", "format": "date-time" },
+        "minRuntime": { "type": "string" },
+        "installCommand": { "type": "string" },
+        "note": { "type": "string" }
+      }
+    },
+    "productClient": {
+      "type": "object",
+      "required": ["maturity", "namespace", "description", "operations"],
+      "additionalProperties": false,
+      "properties": {
+        "maturity": { "$ref": "#/$defs/maturity" },
+        "namespace": {
+          "type": "object",
+          "required": ["node", "python", "rust"],
+          "additionalProperties": false,
+          "properties": {
+            "node": { "type": "string" },
+            "python": { "type": "string" },
+            "rust": { "type": "string" }
+          }
+        },
+        "description": { "type": "string" },
+        "protocols": { "type": "array", "items": { "type": "string" } },
+        "streaming": { "type": "object" },
+        "features": { "type": "array", "items": { "type": "string" } },
+        "governingAdrs": { "type": "array", "items": { "type": "string" } },
+        "notes": { "type": "array", "items": { "type": "string" } },
+        "trackingIssues": { "type": "array", "items": { "type": "string", "format": "uri" } },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/operationMaturity" }
+        }
+      }
+    },
+    "operationMaturity": {
+      "type": "object",
+      "required": ["id", "maturity"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "maturity": { "const": "stable" } },
+            "required": ["maturity"]
+          },
+          "then": {
+            "required": ["evidence"],
+            "properties": {
+              "evidence": {
+                "required": ["conformance", "security", "artifacts"]
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-zA-Z0-9.]*$" },
+        "maturity": { "type": "string", "enum": ["stable", "preview", "internal"] },
+        "trackingIssue": { "type": "string", "format": "uri" },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "conformance": {
+              "type": "object",
+              "required": ["node", "python", "rust"],
+              "additionalProperties": false,
+              "properties": {
+                "node": { "$ref": "#/$defs/evidencePaths" },
+                "python": { "$ref": "#/$defs/evidencePaths" },
+                "rust": { "$ref": "#/$defs/evidencePaths" }
+              }
+            },
+            "security": { "$ref": "#/$defs/evidencePaths" },
+            "artifacts": { "$ref": "#/$defs/evidencePaths" }
+          }
+        }
+      }
+    },
+    "evidencePaths": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    }
+  }
+}

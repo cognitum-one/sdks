@@ -11,7 +11,8 @@ Mirrors the Rust reference at ``sdks/rust/src/seed/token_book.rs``.
 from __future__ import annotations
 
 import threading
-from typing import Iterable, Iterator, Mapping, Protocol, runtime_checkable
+from collections.abc import Iterable, Iterator, Mapping
+from typing import Protocol, runtime_checkable
 
 
 class SecretString:
@@ -151,9 +152,9 @@ class InMemoryTokenBook:
 
 
 def pair_all(
-    client: "object",  # SeedClient — forward-ref to avoid cycle
+    client: object,  # SeedClient — forward-ref to avoid cycle
     client_name: str,
-) -> dict[str, "SecretString | None"]:
+) -> dict[str, SecretString | None]:
     """Call ``POST /api/v1/pair`` on every peer and store the returned
     token in the client's :class:`TokenBook` (ADR-0016a §D5).
 

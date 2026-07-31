@@ -9,22 +9,22 @@ request loop in :mod:`cognitum.seed._client`.
 from __future__ import annotations
 
 import ssl
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Mapping, Sequence, Union
+from typing import Literal, Union
 from urllib.parse import urlparse
 
 from cognitum._errors import ConfigError
 from cognitum.seed._token_book import InMemoryTokenBook, TokenBook
 from cognitum.seed.discovery._types import DiscoveryProvider
 
-
 Routing = Literal["session", "pinned", "round-robin", "read-any-write-one"]
 VerifyInput = Union[bool, str, Path, ssl.SSLContext, "object"]
 # Accepted input shapes for ``endpoints=`` on the client constructors.
 # ADR-0016a §D6: explicit list is required; ``DiscoveryProvider`` is the
 # opt-in Phase 1.5 pluggable surface (mDNS today, more to come).
-EndpointsInput = Union[str, Sequence[str], DiscoveryProvider]
+EndpointsInput = str | Sequence[str] | DiscoveryProvider
 
 
 @dataclass(slots=True, frozen=True)

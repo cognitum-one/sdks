@@ -3,8 +3,8 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cognitum"
-version = "0.2.0"
+name = "cognitum-sdk"
+version = "0.3.0"
 description = "Official Cognitum SDK for Python"
 readme = "README.md"
 license = {text = "MIT"}
@@ -14,12 +14,54 @@ keywords = ["cognitum", "ai", "mcp", "sdk", "seed"]
 
 [project.optional-dependencies]
 # ADR-0016a §D6: mDNS discovery is opt-in. Install with
-#   pip install cognitum[mdns]
+#   pip install cognitum-sdk[mdns]
 # to pull in the `zeroconf` dependency; without it,
 # `cognitum.seed.discovery.MdnsDiscovery` raises a helpful ImportError.
 mdns = ["zeroconf>=0.131"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "respx>=0.21"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "respx>=0.21",
+    "ruff>=0.15",
+    "mypy>=1.13",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["cognitum*"]
+
+[tool.pytest.ini_options]
+# Coverage is measured on every `pytest` run rather than behind an opt-in
+# flag, so a regression cannot reach CI green by nobody having asked for it.
+addopts = "--cov=cognitum --cov-report=term-missing:skip-covered --cov-fail-under=85"
+
+[tool.coverage.run]
+branch = true
+source = ["cognitum"]
+
+[tool.coverage.report]
+# A RATCHET, not a target: 85.41% measured on 2026-07-31 (637 tests) with
+# branch coverage on. Note that is not comparable to a line-only figure --
+# line coverage alone reads 89% for the same suite, and branch coverage is the
+# honest number because it counts untaken conditional paths. Raise the gate
+# when coverage rises; never lower it to make a build pass.
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@(abc\\.)?abstractmethod",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+packages = ["cognitum"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true

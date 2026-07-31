@@ -11,6 +11,46 @@ For per-SDK detail, see:
 - [`sdks/rust/CHANGELOG.md`](sdks/rust/CHANGELOG.md)
 
 
+## [0.3.0] — 2026-07-19
+
+Cognitum Agentic SDK Integration — Node, Python, and Rust all gain new
+product clients (Meta LLM, Meta Proxy, MetaHarness, HarnessaaS) on top
+of a shared, frozen `agentic` contract module (credential providers,
+error taxonomy, telemetry primitives). See each per-SDK CHANGELOG for
+full detail; governing ADRs live in `docs/adr/`.
+
+### Added
+
+- Meta LLM client: real non-streaming support for all 5 serving
+  protocols plus streaming for `chat.completions` (OpenAI SSE) and
+  `messages.create` (native Anthropic events) on a shared SSE parser.
+- Meta Proxy client: data-plane, non-streaming and streaming
+  `chat.completions` forwarding, consent gating, browser-runtime guard.
+- MetaHarness client: construction and full method surface as
+  fail-closed stubs — the upstream bridge protocol doesn't exist yet.
+- HarnessaaS client: `health`/`solve`/`lineage` against the real
+  deployed synchronous surface.
+- OAuth token credential provider + scope preflight (ADR-0022).
+- Telemetry scaffolding: `TelemetrySink` interface + no-op default, W3C
+  trace-context primitives, event/metric catalog, diagnostic capture
+  policy — all type-only, zero product-client wiring yet.
+
+### Published
+
+- npm: `@cognitum-one/sdk@0.3.0` — https://www.npmjs.com/package/@cognitum-one/sdk
+- crates.io: `cognitum-one@0.3.0` — https://crates.io/crates/cognitum-one
+- PyPI: `cognitum-sdk@0.3.0` — https://pypi.org/project/cognitum-sdk/0.3.0/.
+  **Correction**: an initial upload attempt under the `pyproject.toml`
+  project name `cognitum` returned `403 Forbidden`. That name is not
+  this org's project at all — it's owned by an unrelated third party
+  (see PR #34, filed 2026-04-29: the PyPI name `cognitum` was taken by
+  another user in 2024, so this SDK's distribution was manually
+  published as `cognitum-sdk` back in v0.2.0, with the Python *import*
+  name staying `cognitum`). `pyproject.toml`'s `name` field was out of
+  sync with that decision; fixed to `cognitum-sdk` to match, and the
+  `PYPI_TOKEN` in GCP Secret Manager (already correctly scoped to
+  `cognitum-sdk`, per PR #34) published cleanly on the first retry.
+
 ## [0.2.1] — 2026-04-29
 
 ### Changed

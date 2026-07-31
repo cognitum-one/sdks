@@ -23,13 +23,12 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
 import httpx
 
 from cognitum._errors import ConfigError, UnsupportedError
 from cognitum.seed._peers import PeerSet
-
 
 Prefer = Literal["closest", "local-first", "random", "any"]
 Consistency = Literal["session", "eventual", "strong"]

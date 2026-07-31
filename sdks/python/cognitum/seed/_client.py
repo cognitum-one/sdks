@@ -5,28 +5,35 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import replace as dataclass_replace
-from typing import Any, Mapping, Sequence
 from types import TracebackType
+from typing import TYPE_CHECKING, Any
 
 import httpx
+
+if TYPE_CHECKING:
+    from cognitum.seed._session import SeedSession
 
 from cognitum._errors import (
     ApiError,
     AuthError,
     AuthReason,
     CognitumError,
-    ConfigError,
     ConflictError,
     NetworkError,
     NotFoundError,
-    NotImplementedError as SeedNotImplementedError,
     ParseError,
     RateLimitError,
     ServiceUnavailableError,
-    TimeoutError as SeedTimeoutError,
     TrustScoreBlockedError,
     ValidationError,
+)
+from cognitum._errors import (
+    NotImplementedError as SeedNotImplementedError,
+)
+from cognitum._errors import (
+    TimeoutError as SeedTimeoutError,
 )
 from cognitum.seed._call_options import CallOptions, resolve_call_options
 from cognitum.seed._config import (
@@ -38,7 +45,6 @@ from cognitum.seed._config import (
     normalise_options,
 )
 from cognitum.seed._health import HealthProbe
-from cognitum.seed.discovery._types import DiscoveryProvider
 from cognitum.seed._models import Identity, PairCreateResponse, Status
 from cognitum.seed._peers import Peer, PeerErrorClass, PeerSet
 from cognitum.seed._retry import (
@@ -49,6 +55,7 @@ from cognitum.seed._retry import (
 )
 from cognitum.seed._token_book import InMemoryTokenBook, SecretString, TokenBook
 from cognitum.seed._transport import PinVerifier, build_sync_client, safe_json
+from cognitum.seed.discovery._types import DiscoveryProvider
 from cognitum.seed.resources import (
     CustodyResource,
     MeshResource,
@@ -585,7 +592,7 @@ class SeedClient:
             self._transport._peers = PeerSet.new(list(self._options.endpoints))
         self._transport._trust_reset_all()
 
-    def session(self) -> "SeedSession":
+    def session(self) -> SeedSession:
         """Open a peer-pinned :class:`SeedSession` (ADR-0016a §D4/D9).
 
         Pins to the currently closest-first peer; all calls through the
@@ -658,7 +665,7 @@ class SeedClient:
     def closed(self) -> bool:
         return self._closed
 
-    def __enter__(self) -> "SeedClient":
+    def __enter__(self) -> SeedClient:
         return self
 
     def __exit__(
