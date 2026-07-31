@@ -9,6 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+# Direct, not TYPE_CHECKING-guarded: ``upgrade`` imports nothing from this
+# package, so there is no cycle, and the annotation stays resolvable at
+# runtime for anyone introspecting the signature.
+from .upgrade import UpgradeAffordance
+
 #: Agentic extension of the ADR-0004 base error kind enumeration
 #: (ADR-0023 §D1).
 AgenticErrorKind = Literal[
@@ -20,6 +25,15 @@ AgenticErrorKind = Literal[
     "conflict",
     "rate_limited",
     "budget_exceeded",
+    # The caller's plan does not include what they asked for -- a *scope*
+    # shortfall, not a spend one (ADR-0023 D1, added 2026-07-31). Distinct
+    # from ``budget_exceeded`` because the remedy differs and a caller cannot
+    # act on the wrong one: ``budget_exceeded`` means "you spent what you
+    # allocated" and sends a user to usage; ``upgrade_required`` means "you
+    # never bought this tier" and sends them to their plan. Both arrive as
+    # HTTP 402, so status alone cannot separate them -- the server's ``code``
+    # does. See ``AgenticError.upgrade`` for the affordance.
+    "upgrade_required",
     "safety_blocked",
     "consent_required",
     "unsupported_capability",
@@ -49,8 +63,8 @@ OperationRetryClass = Literal[
 class AgenticError(Exception):
     """Common failure shape shared by every agentic product (ADR-0023 §D1).
 
-    ``message``, ``details``, and ``cause`` MUST be redacted by the caller
-    before this is constructed for exposure -- this base class does not
+    ``message``, ``details``, ``cause``, and ``upgrade`` MUST be redacted by
+    the caller before this is constructed for exposure -- this base class does not
     perform redaction itself (see :class:`cognitum.agentic.credentials.SecretRedactor`).
     """
 
@@ -70,6 +84,7 @@ class AgenticError(Exception):
         retry_after_ms: int | None = None,
         attempt_count: int | None = None,
         details: Any = None,
+        upgrade: UpgradeAffordance | None = None,
         cause: BaseException | None = None,
     ) -> None:
         super().__init__(message)
@@ -86,6 +101,17 @@ class AgenticError(Exception):
         self.retry_after_ms = retry_after_ms
         self.attempt_count = attempt_count
         self.details = details
+        #: Server-supplied upgrade affordance. Set only for
+        #: ``upgrade_required``. Kept on the common shape rather than a
+        #: subclass so all three SDKs expose one field name apiece -- Rust
+        #: has no subclassing, and a caller reading ``error.upgrade`` in
+        #: Node, Python and Rust alike is the point.
+        #:
+        #: SUBJECT TO THE SAME REDACTION OBLIGATION as ``message``/
+        #: ``details``/``cause``: every value here is server-supplied.
+        #: ``upgrade_url`` in particular may carry a tenant-scoped or
+        #: pre-signed link, which ADR-0028 §D10 classes as never capturable.
+        self.upgrade = upgrade
         if cause is not None:
             self.__cause__ = cause
 

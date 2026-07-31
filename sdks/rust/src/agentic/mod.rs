@@ -34,8 +34,13 @@ pub mod sentinel;
 pub mod telemetry;
 pub mod telemetry_metrics;
 pub mod trace_context;
+pub mod upgrade;
 
 pub use capability::{CapabilitySet, CapabilitySource};
+pub use upgrade::{
+    is_upgrade_required, parse_error_body, parse_upgrade_affordance, UpgradeAffordance,
+    UpgradeRetryHint, UPGRADE_REQUIRED_CODE,
+};
 pub use context::{BudgetPolicy, OnUnknownEstimate, RequestContext, TenantContext};
 pub use credentials::{
     Credential, CredentialAuthority, CredentialProvider, CredentialRequest, RedactedSecret,

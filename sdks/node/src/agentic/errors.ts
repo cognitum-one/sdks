@@ -14,6 +14,19 @@ export type AgenticErrorKind =
   | "conflict"
   | "rate_limited"
   | "budget_exceeded"
+  /**
+   * The caller's plan does not include what they asked for — a *scope*
+   * shortfall, not a spend one (ADR-0023 §D1, added 2026-07-31).
+   *
+   * Distinct from `budget_exceeded` because the remedy is different and a
+   * caller cannot act on the wrong one: `budget_exceeded` means "you have
+   * spent what you allocated", and sends a user to look at usage;
+   * `upgrade_required` means "you never bought this tier", and sends them
+   * to their plan. Both arrive as HTTP 402, so status alone cannot separate
+   * them — the server's `code` field does. See `upgrade` on `AgenticError`
+   * for the affordance describing what to buy.
+   */
+  | "upgrade_required"
   | "safety_blocked"
   | "consent_required"
   | "unsupported_capability"
@@ -27,6 +40,51 @@ export type AgenticErrorKind =
   | "operation_failed"
   | "unknown";
 
+/**
+ * What the server says would make the rejected call succeed, carried on a
+ * `upgrade_required` error (ADR-0023 §D1).
+ *
+ * Every field is optional on purpose: this is a server-supplied affordance,
+ * and a caller that hard-requires any one of them would break the moment the
+ * gateway omits it. Render what is present; never infer what is not.
+ */
+export interface UpgradeAffordance {
+  /** Tier that would satisfy the request, e.g. `"mid"`. */
+  readonly requiredTier?: string;
+  /** Tier the credential currently holds, e.g. `"low"`. */
+  readonly heldTier?: string;
+  /** Scope that was missing, e.g. `"completions:mid"`. */
+  readonly requiredScope?: string;
+  /** Where a human goes to change their plan. */
+  readonly upgradeUrl?: string;
+  /**
+   * Present only when the server can offer an in-scope retry (auto mode with
+   * `fail_fast`); an explicitly over-scope model alias omits it. Absence
+   * means "there is no way to retry this as asked" — it is not an error.
+   *
+   * This SDK never acts on it automatically. `upgrade_required` is
+   * non-retryable, and silently downgrading someone's request to a cheaper
+   * tier is a decision only the caller can make.
+   */
+  readonly retryWith?: UpgradeRetryHint;
+}
+
+/**
+ * Server hint describing a retry that would be in scope.
+ *
+ * Deliberately narrow. An earlier draft preserved every unrecognised
+ * `retry_with` key verbatim for forward compatibility, which put unbounded,
+ * server-controlled JSON onto an error object that callers routinely log.
+ * ADR-0028 §D10 forbids capturing credentials, cookies and pre-signed URLs at
+ * all, and nothing downstream redacts this field. A key no version of this
+ * SDK understands is also a key no caller can act on, so the trade bought
+ * nothing and cost a leak path. Add fields here as the server ships them.
+ */
+export interface UpgradeRetryHint {
+  /** e.g. `"best_effort"`. */
+  readonly fallbackPolicy?: string;
+}
+
 /** Operation retry classification (ADR-0023 §D3). A status code alone is never sufficient. */
 export type OperationRetryClass =
   | "safe_read"
@@ -39,8 +97,8 @@ export type OperationRetryClass =
 /**
  * Common failure shape shared by every agentic product (ADR-0023 §D1).
  *
- * `message`, `details`, and `cause` MUST be redacted by the caller before
- * this type is constructed for exposure — this base class does not perform
+ * `message`, `details`, `cause`, and `upgrade` MUST be redacted by the caller
+ * before this type is constructed for exposure — this base class does not perform
  * redaction itself (see `SecretRedactor` in `./credentials.js` for that
  * contract).
  */
@@ -56,6 +114,19 @@ export class AgenticError extends Error {
   readonly retryable: boolean;
   readonly retryAfterMs?: number;
   readonly attemptCount?: number;
+  /**
+   * Server-supplied upgrade affordance. Set only for `upgrade_required`.
+   *
+   * Kept on the base shape rather than a subclass so the three SDKs expose
+   * one field name apiece — Rust has no subclassing, and a caller reading
+   * `error.upgrade` in Node, Python and Rust alike is the point.
+   *
+   * SUBJECT TO THE SAME REDACTION OBLIGATION as `message`/`details`/`cause`:
+   * every value here is server-supplied. `upgradeUrl` in particular may carry
+   * a tenant-scoped or pre-signed link, which ADR-0028 §D10 classes as never
+   * capturable. Redact before logging or forwarding.
+   */
+  readonly upgrade?: UpgradeAffordance;
   readonly details?: unknown;
   /**
    * Underlying cause of this error, wired through to the native ES2022
@@ -89,6 +160,7 @@ export class AgenticError extends Error {
     this.retryable = fields?.retryable ?? false;
     this.retryAfterMs = fields?.retryAfterMs;
     this.attemptCount = fields?.attemptCount;
+    this.upgrade = fields?.upgrade;
     this.details = fields?.details;
     Object.setPrototypeOf(this, new.target.prototype);
   }

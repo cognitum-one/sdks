@@ -198,8 +198,22 @@ from cognitum.agentic.trace_context import (
     parse_trace_parent,
     parse_trace_state,
 )
+from cognitum.agentic.upgrade import (
+    UPGRADE_REQUIRED_CODE,
+    UpgradeAffordance,
+    UpgradeRetryHint,
+    is_upgrade_required,
+    parse_error_body,
+    parse_upgrade_affordance,
+)
 
 __all__ = [
+    "UPGRADE_REQUIRED_CODE",
+    "UpgradeAffordance",
+    "UpgradeRetryHint",
+    "is_upgrade_required",
+    "parse_error_body",
+    "parse_upgrade_affordance",
     # Capability negotiation
     "CapabilitySet",
     "CapabilitySource",

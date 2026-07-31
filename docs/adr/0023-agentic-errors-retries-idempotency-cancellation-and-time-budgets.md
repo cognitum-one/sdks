@@ -3,6 +3,7 @@
 - **Status:** Implemented
 - **Date:** 2026-07-18
 - **Updated:** 2026-07-19 — `AgenticError`/`AgenticErrorKind`, `RetryPolicy`/`equalJitterDelayMs`, `IdempotencyBindingV1`, `CancellationToken`, `TimeBudget`, and `OperationHandle`/`OperationEventStream` are frozen and built (PR #79), and are the load-bearing retry/idempotency/time-budget primitives used throughout Meta LLM (ADR-0024a, PRs #85-#89) and Meta Proxy (ADR-0025a, PRs #91-#96). The "no retry after first byte" and "never mutate routing/payer/tier during retry" rules from this ADR were verified end-to-end for streaming in PR #88/#95 and for non-streaming POST forwarding in PR #93 (which required a post-merge fix, commit `eb553f7`, after independent review found an ADR-0025a-specific auto-retry violation).
+- **Updated:** 2026-07-31 — `upgrade_required` added to the §D1 taxonomy (issue #128). The gateway returns 402 for two unrelated failures: the caller has spent their allocation, or the caller never bought the tier they asked for. Both were mapped to `budget_exceeded`, which sends the second group to look at usage when their problem is their plan. HTTP status cannot separate them, and the message must never be parsed to try — it is prose, it is localisable, and it is redacted before callers see it. The server's `code` field is the discriminator. `AgenticError` gains an `upgrade` field carrying the server's affordance (`required_tier`, `held_tier`, `required_scope`, `upgrade_url`, and an optional `retry_with` hint). The affordance is surfaced, never acted on: `upgrade_required` stays non-retryable, because silently downgrading someone's request to a cheaper tier is a decision only the caller can make. A 402 whose `code` this SDK does not recognise stays `budget_exceeded`, so a future server code cannot become `upgrade_required` by accident.
 
 ## Context
 
@@ -82,7 +83,8 @@ The agentic extension adds these categories to ADR-0004:
 | `validation` | 400 or schema failure | Never |
 | `conflict` | 409 state or idempotency mismatch | Never automatically |
 | `rate_limited` | 429 | Only for retry-safe operations and within budget |
-| `budget_exceeded` | 402 or budget code | Never automatically |
+| `budget_exceeded` | 402 with a budget code | Never automatically |
+| `upgrade_required` | 402 with `code: "upgrade_required"` | Never; only a plan change resolves it |
 | `safety_blocked` | 422 or safety code | Never |
 | `consent_required` | Missing exact grant | Never; caller supplies consent |
 | `unsupported_capability` | Required capability absent/unknown | Never |

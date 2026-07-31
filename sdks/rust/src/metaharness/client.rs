@@ -164,6 +164,7 @@ fn not_yet_available<T>(operation: &str) -> Result<T, AgenticError> {
         retry_after_ms: None,
         attempt_count: None,
         details: None,
+        upgrade: None,
         cause: None,
     })
 }
