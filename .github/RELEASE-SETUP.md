@@ -37,6 +37,25 @@ all three `sourceVersion` values in `capabilities/sdk-release.v1.json`. Add the
 same version to the root and three language changelogs. Keep `registryVersion`
 at the last version actually observed in each registry until publication.
 
+## Rehearsing
+
+Run the `release` workflow via **workflow_dispatch** with the version you are
+about to ship. It runs every gate and builds every artifact, then stops before
+the three publish jobs. It is free, repeatable, and publishes nothing.
+
+Do this before every release. It is the only safe rehearsal available:
+
+- A **prerelease tag is not a rehearsal.** `release-preflight.mjs` requires the
+  tag version to equal every source literal, so `v0.4.0-rc.1` fails against a
+  0.4.0 source tree. Bumping the source to `0.4.0-rc.1` does not fix it
+  either: PEP 440 normalises that to `0.4.0rc1`, so the built wheel is named
+  for a version `verify-release-artifacts.mjs` will not find on PyPI. Proper
+  prerelease support is tracked separately.
+- A **failed tag cannot be retried.** The `release tags` ruleset blocks
+  deletion, update and force-push on `refs/tags/v*` with no bypass actors, by
+  design -- a published release tag must be immutable. The consequence is that
+  a tag which fails burns that version string permanently.
+
 After the PR passes the required `GA gate (maturity + evidence)` and is merged,
 a release maintainer creates and pushes the matching tag from that exact `main`
 commit. Approve the `release` environment only after reviewing the tag, commit,
