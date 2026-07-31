@@ -113,6 +113,7 @@ from cognitum.agentic.receipts import (
     VerificationLevel,
     VerificationResult,
 )
+from cognitum.agentic.retry_after import MAX_RETRY_AFTER_MS, parse_retry_after_ms
 from cognitum.agentic.scope_preflight import assert_scope_granted
 from cognitum.agentic.sentinel import D12Category, SentinelSecretRedactor
 from cognitum.agentic.static_api_key_provider import (
@@ -208,6 +209,8 @@ from cognitum.agentic.upgrade import (
 )
 
 __all__ = [
+    "MAX_RETRY_AFTER_MS",
+    "parse_retry_after_ms",
     "UPGRADE_REQUIRED_CODE",
     "UpgradeAffordance",
     "UpgradeRetryHint",

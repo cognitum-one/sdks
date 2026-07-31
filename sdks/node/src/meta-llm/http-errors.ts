@@ -7,6 +7,7 @@
  */
 
 import { AgenticError } from "../agentic/index.js";
+import { parseRetryAfterMs } from "../agentic/retry-after.js";
 import {
   isUpgradeRequired,
   parseErrorBody,
@@ -98,8 +99,10 @@ export async function mapMetaLlmHttpError(
     // is what actually gates this; `retryable: true` here only reflects
     // the status's own classification.
     case 429: {
-      const retryAfterHeader = response.headers.get("retry-after");
-      const retryAfterMs = retryAfterHeader ? Number(retryAfterHeader) * 1000 : undefined;
+      // RFC 9110 allows an HTTP-date here, not just delta-seconds. The old
+      // `Number(header) * 1000` turned one into NaN, and a NaN backoff fires
+      // immediately -- the SDK would retry a rate-limited gateway at once.
+      const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
       return new AgenticError("rate_limited", nonEmpty(bodyText, "rate limited"), {
         ...fields,
         retryable: true,

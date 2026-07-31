@@ -5,6 +5,30 @@ This crate follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+
+### Added
+
+- Cross-language error-mapping conformance corpus
+  (`sdks/fixtures/error-mapping/`) driven by all three SDK suites, and an
+  RFC 9110 `Retry-After` parser shared across them (issue #75, ADR-0030a §D1).
+
+### Fixed
+
+- `Retry-After` accepts an HTTP-date as well as delta-seconds (RFC 9110
+  §10.2.3). Previously Node computed `NaN` (a NaN backoff fires immediately),
+  Python raised an uncaught `ValueError` **while mapping an error**, Rust's
+  non-streaming path parsed only seconds, and Rust's streaming paths never
+  read the header at all -- so a rate-limited gateway was retried differently,
+  and too soon, depending on which SDK you used. A malformed value now falls
+  back to local retry policy rather than becoming a zero delay.
+- **Compatibility:** a hint above 24h is now clamped to 24h rather than
+  surfaced verbatim, and `Retry-After: 30.5` is rejected rather than coerced
+  (RFC 9110 defines delta-seconds as `1*DIGIT`). Both change a caller-visible
+  `retryAfterMs` and the telemetry derived from it. Only strict IMF-fixdate is
+  accepted for the date form -- `UTC` for `GMT`, lowercase names, trailing
+  junk, leap seconds and impossible dates like `31 Feb` are all rejected,
+  because each platform's own date parser accepted a different subset of them
+  and that is precisely how the three SDKs came to disagree.
 ### Added
 
 - `upgrade_required` error kind, and an `upgrade` field on the common error

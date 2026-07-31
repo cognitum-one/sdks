@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 
 from cognitum.agentic import AgenticError
+from cognitum.agentic.retry_after import parse_retry_after_ms
 from cognitum.agentic.upgrade import (
     is_upgrade_required,
     parse_error_body,
@@ -95,8 +96,10 @@ def map_meta_llm_http_error(
     # is what actually gates this; ``retryable=True`` here only reflects
     # the status's own classification.
     if status == 429:
-        retry_after_header = response.headers.get("retry-after")
-        retry_after_ms = int(float(retry_after_header) * 1000) if retry_after_header else None
+        # RFC 9110 allows an HTTP-date here, not just delta-seconds. The old
+        # `float(header)` raised ValueError on one -- crashing *while mapping
+        # an error*, which is the worst possible moment to raise.
+        retry_after_ms = parse_retry_after_ms(response.headers.get("retry-after"))
         return AgenticError(
             "rate_limited",
             body_text or "rate limited",

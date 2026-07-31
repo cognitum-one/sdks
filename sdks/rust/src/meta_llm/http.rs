@@ -98,6 +98,25 @@ impl AgenticErrorBuilderExt for AgenticError {
         self.status = Some(status);
         self
     }
+
+}
+
+/// `Retry-After` from a response, per RFC 9110 (both legal forms).
+///
+/// Previously this product never read the header at all: `map_http_error`
+/// took only the body, so `retry_after_ms` was always `None` and the retry
+/// loop's `unwrap_or(0)` silently discarded the server's backoff request --
+/// this SDK retried a rate-limited gateway sooner than Node or Python did.
+/// Found by the cross-language conformance corpus (issue #75).
+pub(super) fn retry_after_ms_of(response: &reqwest::Response) -> Option<u64> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    crate::agentic::parse_retry_after_ms(
+        response.headers().get("retry-after").and_then(|v| v.to_str().ok()),
+        now_ms,
+    )
 }
 
 impl MetaLlmClient {
@@ -479,5 +498,97 @@ mod upgrade_required_tests {
         ] {
             assert_eq!(map(status, r#"{"code":"upgrade_required"}"#).kind, kind);
         }
+    }
+}
+
+#[cfg(test)]
+mod conformance_corpus_tests {
+    //! In-crate half of the cross-language error-mapping corpus adapter
+    //! (`sdks/fixtures/error-mapping/`, issue #75). `map_http_error` is
+    //! `pub(super)`, so the kind mapping -- the part the corpus exists to
+    //! compare -- cannot be reached from `tests/`.
+    use super::*;
+    use serde_json::Value;
+
+    fn corpus() -> Value {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../fixtures/error-mapping/meta-llm-http-errors-v1.json");
+        serde_json::from_str(&std::fs::read_to_string(path).expect("corpus readable"))
+            .expect("corpus is valid JSON")
+    }
+
+    /// The language-neutral shape the corpus compares. Absent values are
+    /// `null`, never omitted, so a missing security-significant field cannot
+    /// normalize into equality (ADR-0030a §D2).
+    fn canonical(error: &AgenticError) -> Value {
+        let upgrade = error.upgrade.as_ref().map_or(Value::Null, |u| {
+            serde_json::json!({
+                "requiredTier": u.required_tier,
+                "heldTier": u.held_tier,
+                "requiredScope": u.required_scope,
+                "upgradeUrl": u.upgrade_url,
+                "retryWith": u.retry_with.as_ref().map_or(Value::Null, |r| {
+                    serde_json::json!({ "fallbackPolicy": r.fallback_policy })
+                }),
+            })
+        });
+        serde_json::json!({
+            "kind": error.kind,
+            "retryable": error.retryable,
+            "code": error.code,
+            "retryAfterMs": error.retry_after_ms,
+            "upgrade": upgrade,
+        })
+    }
+
+    #[test]
+    fn error_mapping_matches_the_corpus() {
+        let corpus = corpus();
+        let operation = corpus["operation"].as_str().unwrap();
+        let request_id = corpus["requestId"].as_str().unwrap();
+        let mut checked = 0;
+
+        for case in corpus["cases"].as_array().expect("cases array") {
+            let id = case["id"].as_str().unwrap();
+            let status = case["response"]["status"].as_u64().unwrap() as u16;
+            let body = case["response"]["body"].as_str().unwrap();
+
+            // A declared divergence pins THIS language's actual behaviour, so
+            // a divergence can neither hide nor drift unnoticed.
+            let expected = case
+                .get("knownDivergence")
+                .and_then(|d| d.get("rust"))
+                .unwrap_or(&case["expected"]);
+
+            let error = MetaLlmClient::map_http_error(
+                reqwest::StatusCode::from_u16(status).unwrap(),
+                body,
+                operation,
+                request_id,
+            );
+
+            let actual = canonical(&error);
+            // `retryAfterMs` comes from a header, which this mapper does not
+            // receive; the parser half is asserted in tests/conformance_error_mapping.rs.
+            for field in ["kind", "retryable", "code", "upgrade"] {
+                assert_eq!(actual[field], expected[field], "case {id}, field {field}");
+            }
+            let needle = expected["messageContains"].as_str().unwrap();
+            assert!(
+                error.message.contains(needle),
+                "case {id}: message {:?} does not contain {needle:?}",
+                error.message
+            );
+
+            if let Some(forbidden) = case.get("mustNotAppearInUpgrade").and_then(Value::as_str) {
+                assert!(
+                    !format!("{:?}", error.upgrade).contains(forbidden),
+                    "case {id}: {forbidden:?} leaked into the upgrade affordance"
+                );
+            }
+            checked += 1;
+        }
+
+        assert!(checked > 20, "corpus shrank to {checked} cases");
     }
 }

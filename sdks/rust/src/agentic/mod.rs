@@ -33,10 +33,12 @@ pub mod static_api_key_provider;
 pub mod sentinel;
 pub mod telemetry;
 pub mod telemetry_metrics;
+pub mod retry_after;
 pub mod trace_context;
 pub mod upgrade;
 
 pub use capability::{CapabilitySet, CapabilitySource};
+pub use retry_after::{parse_retry_after_ms, MAX_RETRY_AFTER_MS};
 pub use upgrade::{
     is_upgrade_required, parse_error_body, parse_upgrade_affordance, UpgradeAffordance,
     UpgradeRetryHint, UPGRADE_REQUIRED_CODE,

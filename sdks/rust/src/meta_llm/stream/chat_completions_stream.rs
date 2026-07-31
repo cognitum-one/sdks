@@ -166,8 +166,15 @@ async fn open_stream_with_pre_byte_retry(
         }
 
         let status = response.status();
+        // Read the header BEFORE consuming the response body: the streaming
+        // paths previously dropped `Retry-After` on the floor entirely, so a
+        // 429 mid-stream retried with no server hint (issue #75).
+        let retry_after_ms = crate::meta_llm::http::retry_after_ms_of(&response);
         let body_text = response.text().await.unwrap_or_default();
-        let err = MetaLlmClient::map_http_error(status, &body_text, OPERATION, request_id);
+        let mut err = MetaLlmClient::map_http_error(status, &body_text, OPERATION, request_id);
+        if err.retry_after_ms.is_none() {
+            err.retry_after_ms = retry_after_ms;
+        }
 
         if err.status == Some(401) && !refreshed_once {
             refreshed_once = true;

@@ -45,6 +45,7 @@ export {
   DEFAULT_RETRY_POLICY,
   equalJitterDelayMs,
 } from "./errors.js";
+export { parseRetryAfterMs } from "./retry-after.js";
 export {
   UPGRADE_REQUIRED_CODE,
   isUpgradeRequired,

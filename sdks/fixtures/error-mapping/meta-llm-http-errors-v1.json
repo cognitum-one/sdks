@@ -1,0 +1,711 @@
+{
+  "$schema_note": "Cross-language conformance corpus for meta-llm HTTP error mapping (ADR-0030a §D1 'Domain' layer, ADR-0024a §D6, ADR-0023 §D1). Each of the Node, Python and Rust suites loads this file, drives its OWN error mapper over every case, and asserts the canonical result matches `expected` field for field. This is the test that catches a cross-SDK error-semantics regression -- unlike each language's own suite, which only ever checks a language against itself. Every language's behaviour on every case is pinned: where the three genuinely differ, the case carries a `knownDivergence` block naming the language and its actual result, so a divergence is a declared, reviewable fact rather than an absence of coverage. Adding a new divergence requires editing this file on purpose.",
+  "bugContext": "Built for issue #75 after issue #128 (PR #140) showed the three SDKs already disagreed in production-relevant ways. Writing the corpus immediately surfaced a worse bug than the one it was written for: `Retry-After` legally carries EITHER delta-seconds OR an HTTP-date (RFC 9110 §10.2.3), and on the HTTP-date form Node computed NaN (a NaN backoff fires immediately), Python raised an uncaught ValueError from float() and CRASHED while mapping an error, Rust's nonstream path parsed f64 and fell back to no hint, and Rust's streaming paths never read the header at all. Four code paths, four different wrong answers, one of them a crash -- on a spec-compliant response from our own gateway. All four are fixed in the same change; case `rate-limited.retry-after.http-date` is the regression test.",
+  "contract": "meta-llm ADR-0024a §D6 status table + ADR-0023 §D1 error taxonomy",
+  "product": "meta-llm",
+  "operation": "chatCompletions",
+  "requestId": "req_conformance_0001",
+  "canonicalResultNote": "Adapters emit this shape with these exact camelCase names, regardless of the language's own naming. Absent values are null, never omitted, so a missing field cannot normalize into equality. `message` is compared only via `messageContains` because it carries server prose.",
+  "nowMsForHttpDateCases": 1445412480000,
+  "nowMsNote": "2015-10-21T07:28:00Z -- the instant of the IMF-fixdate used below. Adapters inject it when exercising the Retry-After PARSER directly, where `retryAfterMsAtPinnedInstant` is the expectation. Driving a case through the full mapper resolves the date against the real clock instead, so `expected.retryAfterMs` states that answer; every date in the corpus is in the past, making it a stable 0 rather than a moving target (ADR-0030a §D5).",
+  "cases": [
+    {
+      "id": "validation.400",
+      "why": "ADR-0024a §D6: invalid request, never retried.",
+      "response": {
+        "status": 400,
+        "body": "{\"error\":\"bad model\"}",
+        "headers": {}
+      },
+      "expected": {
+        "kind": "validation",
+        "retryable": false,
+        "code": null,
+        "retryAfterMs": null,
+        "upgrade": null,
+        "messageContains": "bad model"
+      }
+    },
+    {
+      "id": "authentication.401",
+      "why": "ADR-0024a §D6: authentication. Retry is a credential refresh decision made by the caller's loop, not a property of the mapped error.",
+      "response": {
+        "status": 401,
+        "body": "{\"error\":\"invalid key\"}",
+        "headers": {}
+      },
+      "expected": {
+        "kind": "authentication",
+        "retryable": false,
+        "code": null,
+        "retryAfterMs": null,
+        "upgrade": null,
+        "messageContains": "invalid key"
+      }
+    },
+    {
+      "id": "permission.403",
+      "why": "ADR-0024a §D6: permission. Distinct from 402 -- denied, not purchasable.",
+      "response": {
+        "status": 403,
+        "body": "{\"error\":\"forbidden\"}",
+        "headers": {}
+      },
+      "expected": {
+        "kind": "permission_denied",
+        "retryable": false,
+        "code": null,
+        "retryAfterMs": null,
+        "upgrade": null,
+        "messageContains": "forbidden"
+      }
+    },
+    {
+      "id": "not-found.404",
+      "why": "ADR-0024a §D6: resource or model not found.",
+      "response": {
+        "status": 404,
+        "body": "{\"error\":\"no such model\"}",
+        "headers": {}
+      },
+      "expected": {
+        "kind": "not_found",
+        "retryable": false,
+        "code": null,
+        "retryAfterMs": null,
+        "upgrade": null,
+        "messageContains": "no such model"
+      }
+    },
+    {
+      "id": "conflict.409",
+      "why": "ADR-0024a §D6: state conflict or idempotency mismatch. Never retried automatically -- replaying a mutation whose key already resolved is exactly the danger.",
+      "response": {
+        "status": 409,
+        "body": "{\"error\":\"idempotency mismatch\"}",
+        "headers": {}
+      },
+      "expected": {
+        "kind": "conflict",
+        "retryable": false,
+        "code": null,
+        "retryAfterMs": null,
+        "upgrade": null,
+        "messageContains": "idempotency mismatch"
+      }
+    },
+    {
+      "id": "budget.402",
+      "why": "ADR-0023 §D1: spend exhausted. Sends a user to look at usage.",
+      "response": {
+        "status": 402,
+        "body": "{\"error\":\"budget exhausted\",\"code\":\"budget_exceeded\"}",
+        "headers": {}
+      },
+      "expected": {
+        "kind": "budget_exceeded",
+        "retryable": false,
+        "code": "budget_exceeded",
+        "retryAfterMs": null,
+        "upgrade": null,
+        "messageContains": "budget exhausted"
+      }
+    },
+    {
+      "id": "upgrade-required.402.live-payload",
+      "why": "Issue #128. Verbatim body returned by api.cognitum.one on 2026-07-31 for a key holding completions:low asking for cognitum-high. A scope shortfall, not a spend one -- sends a user to their plan.",
+      "response": {
+        "status": 402,
+        "body": "{\"error\":\"Model 'cognitum-high' requires the completions:high scope, which this API key does not hold.\",\"code\":\"upgrade_required\",\"requestId\":\"f892a402-f488-46b1-93d9-86ccdfcaf53b\",\"required_tier\":\"high\",\"held_tier\":\"low\",\"required_scope\":\"completions:high\",\"upgrade_url\":\"https://dashboard.cognitum.one/settings/billing\"}",
+        "headers": {
+          "x-cognitum-plan-state": "upgrade-required"
+        }
+      },
+      "expected": {
+        "kind": "upgrade_required",
+        "retryable": false,
+        "code": "upgrade_required",
+        "retryAfterMs": null,
+        "upgrade": {
+          "requiredTier": "high",
+          "heldTier": "low",
+          "requiredScope": "completions:high",
+          "upgradeUrl": "https://dashboard.cognitum.one/settings/billing",
+          "retryWith": null
+        },
+        "messageContains": "completions:high"
+      }
+    },
+    {
+      "id": "upgrade-required.402.retry-with",
+      "why": "The server can offer an in-scope retry. Surfaced, never acted on: downgrading a caller's request to a cheaper tier is their decision.",
+      "response": {
+        "status": 402,
+        "body": "{\"code\":\"upgrade_required\",\"required_tier\":\"mid\",\"retry_with\":{\"fallback_policy\":\"best_effort\"}}",
+        "headers": {}
+      },
+      "expected": {
+        "kind": "upgrade_required",
+        "retryable": false,
+        "code": "upgrade_required",
+        "retryAfterMs": null,
+        "upgrade": {
+          "requiredTier": "mid",
+          "heldTier": null,
+          "requiredScope": null,
+          "upgradeUrl": null,
+          "retryWith": {
+            "fallbackPolicy": "best_effort"
+          }
+        },
+        "messageContains": "upgrade_required"
+      }
+    },
+    {
+      "id": "upgrade-required.402.unknown-retry-with-keys-dropped",
+      "why": "ADR-0028 §D10: credentials, cookies and pre-signed URLs are never capturable, and nothing redacts this field. Unrecognised keys are dropped, not preserved.",
+      "response": {
+        "status": 402,
+        "body": "{\"code\":\"upgrade_required\",\"retry_with\":{\"fallback_policy\":\"best_effort\",\"authorization\":\"Bearer SECRET\"}}",
+        "headers": {}
+      },
+      "expected": {
+        "kind": "upgrade_required",
+        "retryable": false,
+        "code": "upgrade_required",
+        "retryAfterMs": null,
+        "upgrade": {
+          "requiredTier": null,
+          "heldTier": null,
+          "requiredScope": null,
+          "upgradeUrl": null,
+          "retryWith": {
+            "fallbackPolicy": "best_effort"
+          }
+        },
+        "messageContains": "upgrade_required"
+      },
+      "mustNotAppearInUpgrade": "SECRET"
+    },
+    {
+      "id": "upgrade-required.402.no-affordance-fields",
+      "why": "'No affordance' and 'no usable affordance' must look identical to a caller checking `if (error.upgrade)`.",
+      "response": {
+        "status": 402,
+        "body": "{\"code\":\"upgrade_required\"}",
+        "headers": {}
+      },
+      "expected": {
+        "kind": "upgrade_required",
+        "retryable": false,
+        "code": "upgrade_required",
+        "retryAfterMs": null,
+        "upgrade": null,
+        "messageContains": "upgrade_required"
+      }
+    },
+    {
+      "id": "upgrade-required.402.non-string-fields-ignored",
+      "why": "A wrong-typed field is dropped rather than surfaced as junk; siblings still parse.",
+      "response": {
+        "status": 402,
+        "body": "{\"code\":\"upgrade_required\",\"required_tier\":42,\"held_tier\":\"low\"}",
+        "headers": {}
+      },
+      "expected": {
+        "kind": "upgrade_required",
+        "retryable": false,
+        "code": "upgrade_required",
+        "retryAfterMs": null,
+        "upgrade": {
+          "requiredTier": null,
+          "heldTier": "low",
+          "requiredScope": null,
+          "upgradeUrl": null,
+          "retryWith": null
+        },
+        "messageContains": "upgrade_required"
+      }
+    },
+    {
+      "id": "budget.402.unrecognised-code",
+      "why": "Forward compatibility: a 402 code no SDK version has heard of must NOT become upgrade_required by accident.",
+      "response": {
+        "status": 402,
+        "body": "{\"code\":\"some_future_402_reason\"}",
+        "headers": {}
+      },
+      "expected": {
+        "kind": "budget_exceeded",
+        "retryable": false,
+        "code": "some_future_402_reason",
+        "retryAfterMs": null,
+        "upgrade": null,
+        "messageContains": "some_future_402_reason"
+      }
+    },
+    {
+      "id": "budget.402.non-json-body",
+      "why": "A WAF or proxy can answer 402 with HTML. Mapping an error must never itself throw.",
+      "response": {
+        "status": 402,
+        "body": "<html>Payment Required</html>",
+        "headers": {}
+      },
+      "expected": {
+        "kind": "budget_exceeded",
+        "retryable": false,
+        "code": null,
+        "retryAfterMs": null,
+        "upgrade": null,
+        "messageContains": "Payment Required"
+      }
+    },
+    {
+      "id": "budget.402.empty-body",
+      "why": "Empty body falls back to the contract's default message rather than an empty string.",
+      "response": {
+        "status": 402,
+        "body": "",
+        "headers": {}
+      },
+      "expected": {
+        "kind": "budget_exceeded",
+        "retryable": false,
+        "code": null,
+        "retryAfterMs": null,
+        "upgrade": null,
+        "messageContains": "budget or upgrade required"
+      }
+    },
+    {
+      "id": "safety.422",
+      "why": "ADR-0024a §D6: safety or semantic validation.",
+      "response": {
+        "status": 422,
+        "body": "{\"error\":\"blocked\"}",
+        "headers": {}
+      },
+      "expected": {
+        "kind": "safety_blocked",
+        "retryable": false,
+        "code": null,
+        "retryAfterMs": null,
+        "upgrade": null,
+        "messageContains": "blocked"
+      }
+    },
+    {
+      "id": "rate-limited.429.no-header",
+      "why": "Rate limited with no server hint: retryable, but the delay comes from local policy.",
+      "response": {
+        "status": 429,
+        "body": "{\"error\":\"slow down\"}",
+        "headers": {}
+      },
+      "expected": {
+        "kind": "rate_limited",
+        "retryable": true,
+        "code": null,
+        "retryAfterMs": null,
+        "upgrade": null,
+        "messageContains": "slow down"
+      }
+    },
+    {
+      "id": "rate-limited.retry-after.delta-seconds",
+      "why": "RFC 9110 §10.2.3 form 1: delta-seconds. The common case.",
+      "response": {
+        "status": 429,
+        "body": "{\"error\":\"slow down\"}",
+        "headers": {
+          "retry-after": "30"
+        }
+      },
+      "expected": {
+        "kind": "rate_limited",
+        "retryable": true,
+        "code": null,
+        "retryAfterMs": 30000,
+        "upgrade": null,
+        "messageContains": "slow down"
+      }
+    },
+    {
+      "id": "rate-limited.retry-after.http-date",
+      "why": "RFC 9110 §10.2.3 form 2: HTTP-date, equally legal. THE REGRESSION TEST -- before issue #75 this crashed Python (uncaught ValueError from float()), produced NaN in Node (a NaN backoff fires immediately), and was ignored by Rust.",
+      "response": {
+        "status": 429,
+        "body": "{\"error\":\"slow down\"}",
+        "headers": {
+          "retry-after": "Wed, 21 Oct 2015 07:28:00 GMT"
+        }
+      },
+      "expected": {
+        "kind": "rate_limited",
+        "retryable": true,
+        "code": null,
+        "retryAfterMs": 0,
+        "upgrade": null,
+        "messageContains": "slow down"
+      },
+      "retryAfterMsAtPinnedInstant": 0
+    },
+    {
+      "id": "rate-limited.retry-after.http-date-future",
+      "why": "An HTTP-date 60s after `nowMsForHttpDateCases` must yield 60000 AT THAT INSTANT, proving the date branch computes a delta rather than returning a constant. Through the mapper it resolves against the real clock, where 2015 is long past, so the mapper-level answer is 0 -- stable forever, and the reason the two expectations are stated separately.",
+      "response": {
+        "status": 429,
+        "body": "{\"error\":\"slow down\"}",
+        "headers": {
+          "retry-after": "Wed, 21 Oct 2015 07:29:00 GMT"
+        }
+      },
+      "expected": {
+        "kind": "rate_limited",
+        "retryable": true,
+        "code": null,
+        "retryAfterMs": 0,
+        "upgrade": null,
+        "messageContains": "slow down"
+      },
+      "retryAfterMsAtPinnedInstant": 60000
+    },
+    {
+      "id": "rate-limited.retry-after.past-date-is-zero",
+      "why": "A date already elapsed means 'you may retry now' -- 0, never a negative delay.",
+      "response": {
+        "status": 429,
+        "body": "{\"error\":\"slow down\"}",
+        "headers": {
+          "retry-after": "Wed, 21 Oct 2015 07:27:00 GMT"
+        }
+      },
+      "expected": {
+        "kind": "rate_limited",
+        "retryable": true,
+        "code": null,
+        "retryAfterMs": 0,
+        "upgrade": null,
+        "messageContains": "slow down"
+      },
+      "retryAfterMsAtPinnedInstant": 0
+    },
+    {
+      "id": "rate-limited.retry-after.malformed-falls-back-to-policy",
+      "why": "An unusable hint means 'use local policy', never 'retry now'. Garbage must not become 0ms.",
+      "response": {
+        "status": 429,
+        "body": "{\"error\":\"slow down\"}",
+        "headers": {
+          "retry-after": "soon-ish"
+        }
+      },
+      "expected": {
+        "kind": "rate_limited",
+        "retryable": true,
+        "code": null,
+        "retryAfterMs": null,
+        "upgrade": null,
+        "messageContains": "slow down"
+      }
+    },
+    {
+      "id": "rate-limited.retry-after.fractional-is-not-delta-seconds",
+      "why": "RFC 9110 defines delta-seconds as 1*DIGIT, so '30.5' is malformed. All three previously coerced it differently (Number/float/f64); rejecting it is both spec-correct and the only answer the three can agree on.",
+      "response": {
+        "status": 429,
+        "body": "{\"error\":\"slow down\"}",
+        "headers": {
+          "retry-after": "30.5"
+        }
+      },
+      "expected": {
+        "kind": "rate_limited",
+        "retryable": true,
+        "code": null,
+        "retryAfterMs": null,
+        "upgrade": null,
+        "messageContains": "slow down"
+      }
+    },
+    {
+      "id": "transport.502",
+      "why": "ADR-0024a §D6: upstream error, bounded retry only when replay-safe.",
+      "response": {
+        "status": 502,
+        "body": "",
+        "headers": {}
+      },
+      "expected": {
+        "kind": "transport",
+        "retryable": true,
+        "code": null,
+        "retryAfterMs": null,
+        "upgrade": null,
+        "messageContains": "upstream error 502"
+      }
+    },
+    {
+      "id": "transport.503",
+      "why": "ADR-0024a §D6: dependency unavailable.",
+      "response": {
+        "status": 503,
+        "body": "",
+        "headers": {}
+      },
+      "expected": {
+        "kind": "transport",
+        "retryable": true,
+        "code": null,
+        "retryAfterMs": null,
+        "upgrade": null,
+        "messageContains": "upstream error 503"
+      }
+    },
+    {
+      "id": "protocol.unmapped-status",
+      "why": "A status outside the contract table is a protocol failure, not a guess at the nearest category.",
+      "response": {
+        "status": 418,
+        "body": "",
+        "headers": {}
+      },
+      "expected": {
+        "kind": "protocol",
+        "retryable": false,
+        "code": null,
+        "retryAfterMs": null,
+        "upgrade": null,
+        "messageContains": "unexpected status 418"
+      }
+    },
+    {
+      "id": "budget.402.non-standard-json-constant",
+      "why": "Python's decoder accepts NaN/Infinity; JSON.parse and serde_json reject them. Left unfixed, the same 402 classified as upgrade_required in Python and budget_exceeded elsewhere. Python now rejects them too (parse_constant), so all three agree.",
+      "response": {
+        "status": 402,
+        "body": "{\"code\":\"upgrade_required\",\"required_tier\":\"high\",\"x\":NaN}",
+        "headers": {}
+      },
+      "expected": {
+        "kind": "budget_exceeded",
+        "retryable": false,
+        "code": null,
+        "retryAfterMs": null,
+        "upgrade": null,
+        "messageContains": "NaN"
+      }
+    },
+    {
+      "id": "divergent.402.number-out-of-f64-range",
+      "why": "A syntactically valid JSON number in an IRRELEVANT field. serde_json rejects 'number out of range'; JSON.parse and Python coerce to Infinity. The whole body is then unparseable in Rust only, so the error KIND differs on a field that has nothing to do with classification.",
+      "response": {
+        "status": 402,
+        "body": "{\"code\":\"upgrade_required\",\"required_tier\":\"high\",\"x\":1e400}",
+        "headers": {}
+      },
+      "expected": {
+        "kind": "upgrade_required",
+        "retryable": false,
+        "code": "upgrade_required",
+        "retryAfterMs": null,
+        "upgrade": {
+          "requiredTier": "high",
+          "heldTier": null,
+          "requiredScope": null,
+          "upgradeUrl": null,
+          "retryWith": null
+        },
+        "messageContains": "upgrade_required"
+      },
+      "knownDivergence": {
+        "trackedBy": "https://github.com/cognitum-one/sdks/issues/75",
+        "reason": "Fixing this properly means discriminating on the X-Cognitum-Plan-State header rather than the body, so a body one parser rejects cannot change the kind. Our gateway cannot emit these bodies; it takes a hostile or broken proxy.",
+        "rust": {
+          "kind": "budget_exceeded",
+          "retryable": false,
+          "code": null,
+          "retryAfterMs": null,
+          "upgrade": null,
+          "messageContains": "1e400"
+        }
+      }
+    },
+    {
+      "id": "divergent.402.lone-surrogate",
+      "why": "An escaped lone UTF-16 surrogate in an irrelevant field. serde_json rejects the document; JSON.parse and Python accept it.",
+      "response": {
+        "status": 402,
+        "body": "{\"code\":\"upgrade_required\",\"required_tier\":\"high\",\"x\":\"\\ud800\"}",
+        "headers": {}
+      },
+      "expected": {
+        "kind": "upgrade_required",
+        "retryable": false,
+        "code": "upgrade_required",
+        "retryAfterMs": null,
+        "upgrade": {
+          "requiredTier": "high",
+          "heldTier": null,
+          "requiredScope": null,
+          "upgradeUrl": null,
+          "retryWith": null
+        },
+        "messageContains": "upgrade_required"
+      },
+      "knownDivergence": {
+        "trackedBy": "https://github.com/cognitum-one/sdks/issues/75",
+        "reason": "Same class as divergent.402.number-out-of-f64-range.",
+        "rust": {
+          "kind": "budget_exceeded",
+          "retryable": false,
+          "code": null,
+          "retryAfterMs": null,
+          "upgrade": null,
+          "messageContains": "ud800"
+        }
+      }
+    }
+  ],
+  "retryAfterEdgeCasesNote": "Parser-level cases, evaluated at `nowMsForHttpDateCases`. These are NOT full mapper cases -- they exist because the first version of this work delegated to each platform's date parser (Date.parse / parsedate_to_datetime / a hand-rolled Rust one) and the three then disagreed on every single row below: leap seconds, impossible dates, `UTC` for `GMT`, lowercase names and trailing junk each produced a different answer per language. The grammar is now spelled out identically in all three SDKs and these rows prove it. `null` means 'unparseable -- fall back to local retry policy', never 'retry now'.",
+  "retryAfterEdgeCases": [
+    {
+      "header": "30",
+      "expectedMs": 30000,
+      "why": "delta-seconds, the common case"
+    },
+    {
+      "header": "0",
+      "expectedMs": 0,
+      "why": "zero is a legal delta-seconds"
+    },
+    {
+      "header": "007",
+      "expectedMs": 7000,
+      "why": "leading zeros are still 1*DIGIT"
+    },
+    {
+      "header": "  30  ",
+      "expectedMs": 30000,
+      "why": "surrounding whitespace is trimmed"
+    },
+    {
+      "header": "-30",
+      "expectedMs": null,
+      "why": "signed is not 1*DIGIT"
+    },
+    {
+      "header": "+30",
+      "expectedMs": null,
+      "why": "signed is not 1*DIGIT"
+    },
+    {
+      "header": "30.5",
+      "expectedMs": null,
+      "why": "fractional is not 1*DIGIT; the three previously coerced it three ways"
+    },
+    {
+      "header": "1e3",
+      "expectedMs": null,
+      "why": "exponent form is not 1*DIGIT"
+    },
+    {
+      "header": "30s",
+      "expectedMs": null,
+      "why": "units are not part of the grammar"
+    },
+    {
+      "header": "",
+      "expectedMs": null,
+      "why": "empty means no hint, not zero delay"
+    },
+    {
+      "header": "soon-ish",
+      "expectedMs": null,
+      "why": "garbage must not become a zero delay"
+    },
+    {
+      "header": "99999999",
+      "expectedMs": 86400000,
+      "why": "clamped to 24h rather than honoured unbounded"
+    },
+    {
+      "header": "Wed, 21 Oct 2015 07:29:00 GMT",
+      "expectedMs": 60000,
+      "why": "IMF-fixdate 60s after the pinned instant"
+    },
+    {
+      "header": "Wed, 21 Oct 2015 07:27:00 GMT",
+      "expectedMs": 0,
+      "why": "a past date means retry now -- 0, never negative"
+    },
+    {
+      "header": "Wed, 21 Oct 2015 07:28:60 GMT",
+      "expectedMs": null,
+      "why": "leap second rejected, not rolled forward a minute (Rust used to return 60000 here)"
+    },
+    {
+      "header": "Fri, 31 Feb 2015 07:28:00 GMT",
+      "expectedMs": null,
+      "why": "31 Feb is not a date; Date.parse used to roll it into March"
+    },
+    {
+      "header": "Sun, 29 Feb 2015 07:28:00 GMT",
+      "expectedMs": null,
+      "why": "2015 is not a leap year"
+    },
+    {
+      "header": "Sun, 29 Feb 2016 07:29:00 GMT",
+      "expectedMs": 86400000,
+      "why": "2016 IS a leap year, so it parses -- then clamps to 24h"
+    },
+    {
+      "header": "Wed, 21 Oct 2015 07:28:00 UTC",
+      "expectedMs": null,
+      "why": "IMF-fixdate is GMT-only; Date.parse used to accept UTC"
+    },
+    {
+      "header": "wed, 21 oct 2015 07:28:00 gmt",
+      "expectedMs": null,
+      "why": "case-sensitive; Date.parse used to accept lowercase"
+    },
+    {
+      "header": "Wed, 21 Oct 2015 07:28:00 GMT extra",
+      "expectedMs": null,
+      "why": "trailing junk rejected; parsedate_to_datetime used to ignore it"
+    },
+    {
+      "header": "Xyz, 21 Oct 2015 07:28:00 GMT",
+      "expectedMs": null,
+      "why": "day-name must be one of the seven"
+    },
+    {
+      "header": "Wed, 21 Foo 2015 07:28:00 GMT",
+      "expectedMs": null,
+      "why": "month must be one of the twelve"
+    },
+    {
+      "header": "Wed, 21 Oct 2015 24:00:00 GMT",
+      "expectedMs": null,
+      "why": "hour 24 is out of range"
+    }
+  ],
+  "divergenceInvariants": {
+    "note": "Asserted by every adapter. A knownDivergence is a deliberate, reviewed exception -- these stop one being added, widened or left to rot without somebody noticing.",
+    "expectedDivergentCaseIds": [
+      "divergent.402.number-out-of-f64-range",
+      "divergent.402.lone-surrogate"
+    ],
+    "requiredKeys": [
+      "trackedBy",
+      "reason"
+    ],
+    "languages": [
+      "node",
+      "python",
+      "rust"
+    ],
+    "maxLanguagesPerDivergence": 1
+  }
+}
