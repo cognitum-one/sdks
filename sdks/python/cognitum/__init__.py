@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, Any
 # do ``from cognitum import SeedClient`` should still hit the same lazy
 # path below to avoid re-triggering cloud module loads.
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 
 # Map of public names → (module, attr) for PEP 562 lazy resolution.

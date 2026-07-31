@@ -8,9 +8,9 @@ One surface. Three runtimes.
 
 | Language | Package | Version | Install |
 |----------|---------|---------|---------|
-| Node.js / TypeScript | [`@cognitum-one/sdk`](sdks/node/) | 0.3.0 | `npm install @cognitum-one/sdk` |
-| Python | [`cognitum-sdk`](sdks/python/) (import as `cognitum`) | 0.3.0 | `pip install cognitum-sdk` |
-| Rust | [`cognitum-one`](sdks/rust/) | 0.3.0 | `cognitum-one = "0.3"` |
+| Node.js / TypeScript | [`@cognitum-one/sdk`](sdks/node/) | 0.4.0 | `npm install @cognitum-one/sdk` |
+| Python | [`cognitum-sdk`](sdks/python/) (import as `cognitum`) | 0.4.0 | `pip install cognitum-sdk` |
+| Rust | [`cognitum-one`](sdks/rust/) | 0.4.0 | `cognitum-one = "0.4"` |
 
 > The Python **distribution** name is `cognitum-sdk` (the PyPI project name
 > `cognitum` belongs to an unrelated third party) but the **import** name is
