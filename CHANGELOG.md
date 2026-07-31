@@ -14,6 +14,22 @@ For per-SDK detail, see:
 ## [Unreleased]
 
 
+
+### Added
+
+- Cross-language request-body conformance corpus (`sdks/fixtures/wire/`),
+  driven by all three SDK suites (issue #75, ADR-0030a §D1 Wire layer).
+
+### Fixed
+
+- **Request bodies no longer send `null` for optional fields the caller did
+  not set.** They are now omitted, matching the wire contract. The published
+  Python and Rust SDKs could not make a basic chat completion against
+  `api.cognitum.one` because of this: `{"n": null}` returned
+  `HTTP 400 Only n=1 is supported in v1.`, and `messages[].name: null`
+  returned `HTTP 400 messages[0].name must be a string, got null.` Fixed and
+  verified against production in both languages. Affects every request type,
+  not only chat completions.
 ### Added
 
 - Cross-language error-mapping conformance corpus

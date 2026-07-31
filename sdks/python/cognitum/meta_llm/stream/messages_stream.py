@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from cognitum.agentic import DEFAULT_RETRY_POLICY, AgenticError, equal_jitter_delay_ms
+from cognitum.agentic.wire import request_body
 from cognitum.meta_llm.http_errors import map_meta_llm_http_error
 from cognitum.meta_llm.nonstream import _apply_auth, _require_credential
 from cognitum.meta_llm.stream.anthropic_events import (
@@ -345,13 +346,12 @@ async def messages_stream(
     end-of-iteration raises an :class:`AgenticError` describing exactly
     why, per ADR-0024a §D5.
     """
-    from dataclasses import asdict
 
     time_budget = request_context.time_budget if request_context is not None else None
     cancellation = request_context.cancellation if request_context is not None else None
     request_id = request_context.request_id if request_context is not None else _new_request_id()
 
-    body = asdict(request)
+    body = request_body(request)
     response, cm = await _open_stream_with_pre_byte_retry(config, transport, body, request_id)
     try:
         async for envelope in _read_sse_body(response, request_id, time_budget, cancellation):

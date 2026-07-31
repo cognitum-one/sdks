@@ -119,9 +119,9 @@ that would notice the gateway changing a route or a response shape. Assertions a
 
 | Suite | Passing | Kind |
 |-------|---------|------|
-| node (vitest) | 637 (+8 skipped) | unit, wire-protocol, retry/idempotency, streaming decoders, ADR-compliance, mocked HTTP |
-| python (pytest) | 689 (+11 skipped) | same contracts via respx |
-| rust (cargo test) | 564 | unit + 36 integration files |
+| node (vitest) | 675 (+8 skipped) | unit, wire-protocol, retry/idempotency, streaming decoders, ADR-compliance, mocked HTTP |
+| python (pytest) | 727 (+11 skipped) | same contracts via respx |
+| rust (cargo test) | 569 | unit + 36 integration files |
 | `scripts/` (node:test) | 34 | release tooling: preflight, GA gate, manifest validator, smoke scripts |
 
 ### Cross-language conformance (`sdks/fixtures/`)
@@ -134,13 +134,14 @@ Rust are compared to each other. Governed by ADR-0030a §D1.
 |--------|---------|
 | `receipt-canonicalization/` | Canonical-JSON drift — key casing, number formatting, key order |
 | `error-mapping/` | Error semantics — kind, retryability, `Retry-After`, upgrade affordance |
+| `wire/` | Request bodies — that an unset optional is **absent**, never `null` |
 
 **Every language's behaviour on every case is pinned.** Where the three genuinely
 differ, the case carries a `knownDivergence` block naming the language and its actual
 result, so a divergence is a declared fact rather than absent coverage — and adding a
-new one means editing the corpus on purpose. Both corpora record, in a `bugContext`
-field, the real bug that motivated them; each found a live cross-SDK defect on the day
-it was written.
+new one means editing the corpus on purpose. Every corpus records, in a `bugContext`
+field, the real bug that motivated it — each found a live cross-SDK defect on the day it
+was written, and `wire/` found two shipped SDKs that could not call production at all.
 
 Live-device suites exist in all three languages but are excluded from CI.
 
