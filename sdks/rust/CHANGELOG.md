@@ -3,7 +3,12 @@
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/en/1.1.0/).
 This crate follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.4.0] — 2026-07-31
+
+Fixes a defect that made the published Python and Rust SDKs unusable against
+`api.cognitum.one`, and lands the error-taxonomy and `Retry-After` work that
+accumulated behind it. **Minor, not patch:** several changes below are
+observable to a caller, and one widens a TypeScript union.
 
 
 

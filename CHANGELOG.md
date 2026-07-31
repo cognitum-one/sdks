@@ -11,7 +11,12 @@ For per-SDK detail, see:
 - [`sdks/rust/CHANGELOG.md`](sdks/rust/CHANGELOG.md)
 
 
-## [Unreleased]
+## [0.4.0] — 2026-07-31
+
+Fixes a defect that made the published Python and Rust SDKs unusable against
+`api.cognitum.one`, and lands the error-taxonomy and `Retry-After` work that
+accumulated behind it. **Minor, not patch:** several changes below are
+observable to a caller, and one widens a TypeScript union.
 
 
 
