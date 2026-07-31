@@ -207,8 +207,10 @@ from cognitum.agentic.upgrade import (
     parse_error_body,
     parse_upgrade_affordance,
 )
+from cognitum.agentic.wire import request_body
 
 __all__ = [
+    "request_body",
     "MAX_RETRY_AFTER_MS",
     "parse_retry_after_ms",
     "UPGRADE_REQUIRED_CODE",

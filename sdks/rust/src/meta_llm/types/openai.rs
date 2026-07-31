@@ -31,9 +31,13 @@ use super::routing::MetaLlmRoutingControls;
 #[serde(rename_all = "snake_case")]
 pub struct ChatMessage {
     pub role: ChatRole,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<ChatMessageContent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ChatToolCall>>,
 }
 
@@ -121,22 +125,37 @@ pub struct ChatToolChoiceFunction {
 pub struct ChatCompletionRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f64>,
     /// Server-enforced maximum of 1 (ADR-0024a §D3).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub n: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stop: Option<StringOrStrings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub presence_penalty: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub frequency_penalty: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub logit_bias: Option<HashMap<String, f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ChatToolDefinition>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ChatToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub seed: Option<i64>,
     /// ADR-0024b §D2. Body controls win over any `X-Cognitum-*` header.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub routing_controls: Option<MetaLlmRoutingControls>,
 }
 
@@ -184,20 +203,34 @@ pub struct ChatCompletion {
 pub struct LegacyCompletionRequest {
     pub model: String,
     pub prompt: StringOrStrings,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub n: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub logprobs: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub echo: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stop: Option<StringOrStrings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub presence_penalty: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub frequency_penalty: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub best_of: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub logit_bias: Option<HashMap<String, f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
     /// ADR-0024b §D2. Body controls win over any `X-Cognitum-*` header.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub routing_controls: Option<MetaLlmRoutingControls>,
 }
 
@@ -251,17 +284,27 @@ pub enum ResponsesOutputItem {
 pub struct ResponsesRequest {
     pub model: String,
     pub input: ChatMessageContent,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
     /// Preview-only; server does not restore conversation state (ADR-0024a §D3).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_response_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ChatToolDefinition>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ChatToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, String>>,
     /// ADR-0024b §D2. Body controls win over any `X-Cognitum-*` header.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub routing_controls: Option<MetaLlmRoutingControls>,
 }
 
@@ -287,8 +330,11 @@ pub struct ResponsesResponse {
 pub struct EmbeddingRequest {
     pub model: String,
     pub input: StringOrStrings,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub encoding_format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub dimensions: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
 }
 

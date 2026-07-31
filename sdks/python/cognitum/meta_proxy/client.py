@@ -53,6 +53,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from cognitum.agentic import AgenticError, UnsupportedCapabilityError
+from cognitum.agentic.wire import request_body
 from cognitum.meta_proxy.config import MetaProxyClientConfig
 from cognitum.meta_proxy.consent import assert_consent_for_routing_intent
 from cognitum.meta_proxy.envelope import (
@@ -167,7 +168,6 @@ class _ChatNamespace:
         it at decode time -- a mismatch raises a non-retryable
         ``protocol`` error even on an otherwise-valid 200 (§D5 rule 7).
         """
-        from dataclasses import asdict
 
         from cognitum.meta_llm.parsing import parse_chat_completion
 
@@ -183,7 +183,7 @@ class _ChatNamespace:
             "chat.completions",
         )
 
-        body = asdict(request)
+        body = request_body(request)
         data, meta = await post_chat_forwarding(
             self._client._config,
             self._client._transport,
@@ -230,10 +230,9 @@ class _ChatNamespace:
         :mod:`cognitum.meta_proxy.stream.chat_completions_stream` for the
         full contract.
         """
-        from dataclasses import asdict
 
         opts = options or MetaProxyChatCallOptions()
-        body = asdict(request)
+        body = request_body(request)
         return chat_completions_stream(
             self._client._config,
             self._client._transport,

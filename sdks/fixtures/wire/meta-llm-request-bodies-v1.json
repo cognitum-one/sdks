@@ -1,0 +1,157 @@
+{
+  "$schema_note": "Cross-language conformance corpus for the meta-llm REQUEST BODY (ADR-0030a §D1 'Wire' layer, ADR-0024a). Each of the Node, Python and Rust suites builds its own native request object from `input`, serialises it the way that SDK actually sends it, and asserts the result equals `expectedBody`. Compared as parsed JSON: object key order is not wire-significant, presence and value of every key is. This is the test that catches the three SDKs sending different requests for the same call -- which each language's own suite cannot see, because each only ever compares itself to itself.",
+  "bugContext": "Written for issue #75 after the error-mapping corpus proved the approach. Capturing what each SDK actually put on a real socket for one identical call found three different bodies -- Node 83 bytes, Python 320, Rust 370 -- because Python's `dataclasses.asdict` and Rust's missing `skip_serializing_if` serialised every UNSET optional as an explicit null. Absent and null are not the same request, and api.cognitum.one agreed: verified 2026-07-31, the published Python SDK got `HTTP 400 Only n=1 is supported in v1.` (from `\"n\": null`) and the published Rust SDK got `HTTP 400 messages[0].name must be a string, got null.` Two of the three shipped SDKs could not make a basic chat completion against production while the capability manifest called meta-llm `available` in all three. The live smoke had not caught it because it drives Node only.",
+  "canonicalNote": "An optional field the caller did not set MUST be absent from the body, never null. That is what these contracts mean by optional, it is what the gateway enforces, and it is the only form all three SDKs can agree on.",
+  "cases": [
+    {
+      "id": "chat.completions.minimal",
+      "operation": "chat.completions",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "why": "The flagship call. THE REGRESSION TEST: this exact shape returned HTTP 400 from production in Python and Rust before the fix.",
+      "input": {
+        "model": "cognitum-low",
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "max_tokens": 4
+      },
+      "expectedBody": {
+        "model": "cognitum-low",
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "max_tokens": 4
+      }
+    },
+    {
+      "id": "chat.completions.optionals-set-are-sent",
+      "operation": "chat.completions",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "why": "The other half of the rule: a field the caller DID set must appear, including falsey values. Omitting unset fields must not turn into omitting false or 0.",
+      "input": {
+        "model": "cognitum-low",
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "max_tokens": 4,
+        "temperature": 0,
+        "stream": false,
+        "seed": 0,
+        "user": ""
+      },
+      "expectedBody": {
+        "model": "cognitum-low",
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "max_tokens": 4,
+        "temperature": 0,
+        "stream": false,
+        "seed": 0,
+        "user": ""
+      }
+    },
+    {
+      "id": "chat.completions.message-name-set",
+      "operation": "chat.completions",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "why": "Nested optionals follow the same rule. `messages[].name` unset must be absent -- that exact key produced `messages[0].name must be a string, got null` from production -- but when set it must be sent.",
+      "input": {
+        "model": "cognitum-low",
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi",
+            "name": "alice"
+          },
+          {
+            "role": "user",
+            "content": "again"
+          }
+        ],
+        "max_tokens": 4
+      },
+      "expectedBody": {
+        "model": "cognitum-low",
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi",
+            "name": "alice"
+          },
+          {
+            "role": "user",
+            "content": "again"
+          }
+        ],
+        "max_tokens": 4
+      }
+    },
+    {
+      "id": "embeddings.minimal",
+      "operation": "embeddings",
+      "method": "POST",
+      "path": "/v1/embeddings",
+      "why": "The same defect existed on every request type, not just chat -- all of them were serialised by the same asdict/serde path.",
+      "input": {
+        "model": "cognitum-embed",
+        "input": "hello"
+      },
+      "expectedBody": {
+        "model": "cognitum-embed",
+        "input": "hello"
+      }
+    },
+    {
+      "id": "messages.create.minimal",
+      "operation": "messages.create",
+      "method": "POST",
+      "path": "/v1/messages",
+      "why": "Anthropic-shaped surface, same rule. Its request types had the same missing skip_serializing_if.",
+      "input": {
+        "model": "cognitum-low",
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "max_tokens": 4
+      },
+      "expectedBody": {
+        "model": "cognitum-low",
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "max_tokens": 4
+      }
+    }
+  ],
+  "requiredHeadersNote": "Header NAMES only, compared case-insensitively -- HTTP/1.1 treats them that way and HTTP/2 lowercases them, so casing is not wire-significant and the three SDKs legitimately differ (Node and Python send `X-API-Key`, Rust sends `x-api-key`). Values are per-request (a fresh uuid each) and so are not pinned; that each header is PRESENT is the contract.",
+  "requiredHeaders": [
+    "accept",
+    "content-type",
+    "x-cognitum-request-id",
+    "idempotency-key",
+    "x-api-key"
+  ],
+  "numberComparisonNote": "Bodies are compared with numbers normalised, because JSON has ONE number type: `0` and `0.0` are the same JSON number and every parser reads both as zero. The three SDKs do render them differently -- Rust's f64 `temperature` serialises as `0.0`, JavaScript's single number type makes JSON.stringify emit `0`, and Python emits whichever the caller passed. That is a representation difference, not a wire-semantic one, so it is normalised here rather than pinned. It is recorded because it is NOT harmless everywhere: the same int-vs-float split broke cross-SDK receipt verification before (see fixtures/receipt-canonicalization/), and it would matter again for any byte-level canonical request hash -- ADR-0023 §D7's idempotency binding names one. If that hash is ever computed over the raw body, this becomes a real divergence and needs its own case here."
+}

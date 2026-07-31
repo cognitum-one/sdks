@@ -90,16 +90,26 @@ pub struct AnthropicMessageRequest {
     pub model: String,
     pub messages: Vec<AnthropicMessageParam>,
     pub max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub top_k: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_sequences: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<AnthropicToolDefinition>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<AnthropicToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, String>>,
     /// ADR-0024b §D2. Body controls win over any `X-Cognitum-*` header.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub routing_controls: Option<MetaLlmRoutingControls>,
 }
 
@@ -132,7 +142,9 @@ pub struct AnthropicMessage {
 pub struct CountTokensRequest {
     pub model: String,
     pub messages: Vec<AnthropicMessageParam>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<AnthropicToolDefinition>>,
 }
 

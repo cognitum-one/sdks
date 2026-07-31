@@ -41,13 +41,13 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from cognitum.agentic import AgenticError, CapabilitySet
 from cognitum.agentic.scope_preflight import assert_scope_granted
+from cognitum.agentic.wire import request_body
 from cognitum.meta_llm.config import MetaLlmClientConfig
 from cognitum.meta_llm.discovery import (
     MetaLlmHealth,
@@ -141,7 +141,7 @@ class _ChatNamespace:
         path (§D5 is a follow-up issue).
         """
         _assert_routing_controls_sendable("chat.completions", request.routing_controls)
-        body = asdict(request)
+        body = request_body(request)
         data, meta = await post_json_idempotent(
             self._client._config,
             self._client._transport,
@@ -184,7 +184,7 @@ class _MessagesNamespace:
         docstring and ``nonstream.py`` for the shared idempotency/retry logic.
         """
         _assert_routing_controls_sendable("messages.create", request.routing_controls)
-        body = asdict(request)
+        body = request_body(request)
         data, meta = await post_json_idempotent(
             self._client._config,
             self._client._transport,
@@ -201,7 +201,7 @@ class _MessagesNamespace:
         call" class as ``messages.create`` (ADR-0024a §D7) -- reuses
         ``post_json_idempotent`` verbatim.
         """
-        body = asdict(request)
+        body = request_body(request)
         data, meta = await post_json_idempotent(
             self._client._config,
             self._client._transport,
@@ -398,7 +398,7 @@ class MetaLlmClient:
         ``nonstream.py`` verbatim.
         """
         _assert_routing_controls_sendable("completions", request.routing_controls)
-        body = asdict(request)
+        body = request_body(request)
         data, meta = await post_json_idempotent(
             self._config, self._transport, "/v1/completions", "completions", body
         )
@@ -416,7 +416,7 @@ class MetaLlmClient:
         ``chat.completions``.
         """
         _assert_routing_controls_sendable("responses", request.routing_controls)
-        body = asdict(request)
+        body = request_body(request)
         data, meta = await post_json_idempotent(
             self._config, self._transport, "/v1/responses", "responses", body
         )
@@ -432,7 +432,7 @@ class MetaLlmClient:
         gate criteria in ADR-0024a §D2 ("input limits, dimensions, usage,
         errors and auth published").
         """
-        body = asdict(request)
+        body = request_body(request)
         data, meta = await post_json_idempotent(
             self._config, self._transport, "/v1/embeddings", "embeddings", body
         )
