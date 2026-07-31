@@ -36,3 +36,5 @@ CLAUDE.local.md
 
 # Test / validation scratch
 /tmp-swarm/
+.agentic-qe/
+/seed-live
