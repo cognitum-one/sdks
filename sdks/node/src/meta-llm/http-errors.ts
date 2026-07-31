@@ -7,6 +7,11 @@
  */
 
 import { AgenticError } from "../agentic/index.js";
+import {
+  isUpgradeRequired,
+  parseErrorBody,
+  parseUpgradeAffordance,
+} from "../agentic/upgrade.js";
 
 const PRODUCT = "meta-llm";
 
@@ -58,12 +63,30 @@ export async function mapMetaLlmHttpError(
         nonEmpty(bodyText, "state conflict or idempotency mismatch"),
         { ...fields, retryable: false },
       );
-    case 402:
+    case 402: {
+      // Two unrelated failures share this status: the caller is out of
+      // budget, or the caller never bought the tier they asked for. The
+      // remedies point in different directions -- usage vs plan -- so
+      // collapsing both into `budget_exceeded` sends half of them to the
+      // wrong page. The server's `code` is what separates them.
+      const body = parseErrorBody(bodyText);
+      const code = typeof body?.code === "string" ? body.code : undefined;
+      if (isUpgradeRequired(body)) {
+        return new AgenticError("upgrade_required", nonEmpty(bodyText, "upgrade required"), {
+          ...fields,
+          code,
+          upgrade: parseUpgradeAffordance(body),
+          // Still never retried: only a plan change makes this succeed, and
+          // the `retry_with` hint is for the caller to decide on, not us.
+          retryable: false,
+        });
+      }
       return new AgenticError(
         "budget_exceeded",
         nonEmpty(bodyText, "budget or upgrade required"),
-        { ...fields, retryable: false },
+        { ...fields, code, retryable: false },
       );
+    }
     case 422:
       return new AgenticError(
         "safety_blocked",

@@ -11,6 +11,26 @@ For per-SDK detail, see:
 - [`sdks/rust/CHANGELOG.md`](sdks/rust/CHANGELOG.md)
 
 
+## [Unreleased]
+
+### Added
+
+- `upgrade_required` error kind and an `upgrade` affordance on `AgenticError`,
+  across Node, Python and Rust (issue #128, ADR-0023 §D1).
+
+### Changed
+
+- A 402 carrying `code: "upgrade_required"` now maps to the new kind instead of
+  `budget_exceeded`. A tier shortfall is not a spend problem, and reporting it
+  as one sends users to look at usage when they need to look at their plan.
+  An unrecognised 402 code still maps to `budget_exceeded`, so a future server
+  code cannot become `upgrade_required` by accident.
+- Every 402 now populates `code` from the response body, budget ones included.
+  It was previously always absent. Callers using `code == null` to tell an SDK
+  status mapping apart from a structured service error will see a value where
+  they saw none.
+
+
 ## [0.3.0] — 2026-07-19
 
 Cognitum Agentic SDK Integration — Node, Python, and Rust all gain new

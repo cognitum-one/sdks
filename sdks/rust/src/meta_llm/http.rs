@@ -328,11 +328,41 @@ impl MetaLlmClient {
                 non_empty(body_text, "state conflict or idempotency mismatch"),
                 false,
             ),
-            402 => base(
-                AgenticErrorKind::BudgetExceeded,
-                non_empty(body_text, "budget or upgrade required"),
-                false,
-            ),
+            // Two unrelated failures share this status: the caller is out
+            // of budget, or the caller never bought the tier they asked for.
+            // The remedies point in different directions -- usage vs plan --
+            // so collapsing both into `BudgetExceeded` sends half of them to
+            // the wrong page. The server's `code` is what separates them.
+            402 => {
+                let body = crate::agentic::upgrade::parse_error_body(body_text);
+                let code = body
+                    .as_ref()
+                    .and_then(|b| b.get("code"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned);
+                if crate::agentic::upgrade::is_upgrade_required(body.as_ref()) {
+                    let mut error = base(
+                        AgenticErrorKind::UpgradeRequired,
+                        non_empty(body_text, "upgrade required"),
+                        // Still never retried: only a plan change makes this
+                        // succeed, and the `retry_with` hint is for the
+                        // caller to decide on, not us.
+                        false,
+                    );
+                    error.code = code;
+                    error.upgrade =
+                        crate::agentic::upgrade::parse_upgrade_affordance(body.as_ref());
+                    error
+                } else {
+                    let mut error = base(
+                        AgenticErrorKind::BudgetExceeded,
+                        non_empty(body_text, "budget or upgrade required"),
+                        false,
+                    );
+                    error.code = code;
+                    error
+                }
+            }
             422 => base(
                 AgenticErrorKind::SafetyBlocked,
                 non_empty(body_text, "safety or semantic validation failed"),
@@ -357,6 +387,97 @@ impl MetaLlmClient {
                 non_empty(body_text, &format!("unexpected status {status}")),
                 false,
             ),
+        }
+    }
+}
+
+#[cfg(test)]
+mod upgrade_required_tests {
+    //! Issue #128 / ADR-0023 §D1. These live in-crate because
+    //! `map_http_error` is `pub(super)` -- the kind mapping is the whole
+    //! point of the issue, and an integration test cannot reach it.
+    use super::*;
+    use crate::agentic::AgenticErrorKind;
+
+    /// Verbatim body from https://api.cognitum.one on 2026-07-31, when a key
+    /// holding `completions:low` requested `cognitum-high`.
+    const LIVE_TIER_SHORTFALL_BODY: &str = r#"{"error":"Model 'cognitum-high' requires the completions:high scope, which this API key does not hold.","code":"upgrade_required","required_tier":"high","held_tier":"low","required_scope":"completions:high","upgrade_url":"https://dashboard.cognitum.one/settings/billing"}"#;
+
+    fn map(status: u16, body: &str) -> AgenticError {
+        MetaLlmClient::map_http_error(
+            reqwest::StatusCode::from_u16(status).unwrap(),
+            body,
+            "chatCompletions",
+            "req-1",
+        )
+    }
+
+    #[test]
+    fn live_tier_shortfall_maps_to_upgrade_required_not_budget_exceeded() {
+        let error = map(402, LIVE_TIER_SHORTFALL_BODY);
+
+        assert_eq!(error.kind, AgenticErrorKind::UpgradeRequired);
+        assert_eq!(error.status, Some(402));
+        assert_eq!(error.code.as_deref(), Some("upgrade_required"));
+    }
+
+    #[test]
+    fn affordance_is_attached_to_the_error() {
+        let error = map(402, LIVE_TIER_SHORTFALL_BODY);
+        let upgrade = error.upgrade.expect("affordance present");
+
+        assert_eq!(upgrade.required_tier.as_deref(), Some("high"));
+        assert_eq!(upgrade.held_tier.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn upgrade_required_stays_non_retryable() {
+        assert!(!map(402, LIVE_TIER_SHORTFALL_BODY).retryable);
+    }
+
+    #[test]
+    fn budget_402_is_unchanged() {
+        let error = map(402, r#"{"error":"budget exhausted","code":"budget_exceeded"}"#);
+
+        assert_eq!(error.kind, AgenticErrorKind::BudgetExceeded);
+        assert_eq!(error.code.as_deref(), Some("budget_exceeded"));
+        assert!(error.upgrade.is_none());
+    }
+
+    #[test]
+    fn unrecognised_402_code_stays_budget_exceeded() {
+        assert_eq!(
+            map(402, r#"{"code":"some_future_402_reason"}"#).kind,
+            AgenticErrorKind::BudgetExceeded
+        );
+    }
+
+    #[test]
+    fn non_json_402_body_does_not_panic() {
+        let error = map(402, "<html>Payment Required</html>");
+
+        assert_eq!(error.kind, AgenticErrorKind::BudgetExceeded);
+        assert!(error.upgrade.is_none());
+        assert!(error.message.contains("Payment Required"));
+    }
+
+    #[test]
+    fn empty_402_body_falls_back_to_the_default_message() {
+        let error = map(402, "");
+
+        assert_eq!(error.kind, AgenticErrorKind::BudgetExceeded);
+        assert_eq!(error.message, "budget or upgrade required");
+    }
+
+    #[test]
+    fn other_statuses_are_undisturbed() {
+        for (status, kind) in [
+            (400, AgenticErrorKind::Validation),
+            (401, AgenticErrorKind::Authentication),
+            (403, AgenticErrorKind::PermissionDenied),
+            (422, AgenticErrorKind::SafetyBlocked),
+        ] {
+            assert_eq!(map(status, r#"{"code":"upgrade_required"}"#).kind, kind);
         }
     }
 }

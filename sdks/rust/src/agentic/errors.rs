@@ -20,6 +20,16 @@ pub enum AgenticErrorKind {
     Conflict,
     RateLimited,
     BudgetExceeded,
+    /// The caller's plan does not include what they asked for -- a *scope*
+    /// shortfall, not a spend one (ADR-0023 §D1, added 2026-07-31).
+    ///
+    /// Distinct from [`AgenticErrorKind::BudgetExceeded`] because the remedy
+    /// differs and a caller cannot act on the wrong one: `BudgetExceeded`
+    /// means "you spent what you allocated" and sends a user to usage;
+    /// `UpgradeRequired` means "you never bought this tier" and sends them to
+    /// their plan. Both arrive as HTTP 402, so status alone cannot separate
+    /// them -- the server's `code` does. See [`AgenticError::upgrade`].
+    UpgradeRequired,
     SafetyBlocked,
     ConsentRequired,
     UnsupportedCapability,
@@ -73,6 +83,18 @@ pub struct AgenticError {
     pub retry_after_ms: Option<u64>,
     pub attempt_count: Option<u32>,
     pub details: Option<serde_json::Value>,
+    /// Server-supplied upgrade affordance. Set only for
+    /// [`AgenticErrorKind::UpgradeRequired`].
+    ///
+    /// Kept on the common shape rather than a dedicated error type so the
+    /// three SDKs expose one field name apiece -- a caller reading
+    /// `error.upgrade` in Node, Python and Rust alike is the point.
+    ///
+    /// SUBJECT TO THE SAME REDACTION OBLIGATION as `message`/`details`/
+    /// `cause`: every value here is server-supplied. `upgrade_url` in
+    /// particular may carry a tenant-scoped or pre-signed link, which
+    /// ADR-0028 §D10 classes as never capturable.
+    pub upgrade: Option<crate::agentic::upgrade::UpgradeAffordance>,
     /// Redacted string representation of the underlying cause, if any.
     /// Not a `Box<dyn Error>` chain — keeping this type-only avoids forcing
     /// every product's transport error into one trait-object shape before
@@ -97,6 +119,7 @@ impl AgenticError {
             retry_after_ms: None,
             attempt_count: None,
             details: None,
+            upgrade: None,
             cause: None,
         }
     }
@@ -151,6 +174,7 @@ impl From<UnsupportedCapabilityError> for AgenticError {
             retry_after_ms: None,
             attempt_count: None,
             details: None,
+            upgrade: None,
             cause: None,
         }
     }
@@ -217,6 +241,7 @@ impl From<PermissionDeniedError> for AgenticError {
             retry_after_ms: None,
             attempt_count: None,
             details: None,
+            upgrade: None,
             cause: None,
         }
     }
@@ -325,6 +350,7 @@ impl From<ConsentRequiredError> for AgenticError {
             retry_after_ms: None,
             attempt_count: None,
             details: None,
+            upgrade: None,
             cause: None,
         }
     }

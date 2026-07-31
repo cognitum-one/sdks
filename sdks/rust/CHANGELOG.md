@@ -3,6 +3,28 @@
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/en/1.1.0/).
 This crate follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `upgrade_required` error kind, and an `upgrade` field on the common error
+  shape carrying the server's affordance: `required_tier`, `held_tier`,
+  `required_scope`, `upgrade_url`, and an optional `retry_with` hint
+  (issue #128, ADR-0023 §D1).
+
+### Changed
+
+- 402 responses carrying `code: "upgrade_required"` now map to
+  `upgrade_required` rather than `budget_exceeded`. The affordance is surfaced
+  but never acted on -- the error stays non-retryable, because downgrading a
+  caller's request to a cheaper tier is their decision, not the SDK's. Budget
+  402s and unrecognised 402 codes still map to `budget_exceeded`.
+- Every 402 now populates `code` from the response body, budget ones included.
+  It was previously always absent. Callers using `code == null` to tell an SDK
+  status mapping apart from a structured service error will see a value where
+  they saw none.
+
+
 ## [0.3.0] — 2026-07-19
 
 Cognitum Agentic SDK Integration — new product clients on top of the

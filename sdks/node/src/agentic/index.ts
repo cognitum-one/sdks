@@ -33,6 +33,8 @@ export type {
   TimeBudget,
   ConsentGrantKind,
   ConsentGrant,
+  UpgradeAffordance,
+  UpgradeRetryHint,
 } from "./errors.js";
 export {
   AgenticError,
@@ -43,6 +45,12 @@ export {
   DEFAULT_RETRY_POLICY,
   equalJitterDelayMs,
 } from "./errors.js";
+export {
+  UPGRADE_REQUIRED_CODE,
+  isUpgradeRequired,
+  parseErrorBody,
+  parseUpgradeAffordance,
+} from "./upgrade.js";
 
 export type {
   CredentialRequest,

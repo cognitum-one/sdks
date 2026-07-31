@@ -13,6 +13,11 @@ from typing import Any
 import httpx
 
 from cognitum.agentic import AgenticError
+from cognitum.agentic.upgrade import (
+    is_upgrade_required,
+    parse_error_body,
+    parse_upgrade_affordance,
+)
 
 _PRODUCT = "meta-llm"
 
@@ -52,9 +57,29 @@ def map_meta_llm_http_error(
             **common,
         )
     if status == 402:
+        # Two unrelated failures share this status: the caller is out of
+        # budget, or the caller never bought the tier they asked for. The
+        # remedies point in different directions -- usage vs plan -- so
+        # collapsing both into ``budget_exceeded`` sends half of them to the
+        # wrong page. The server's ``code`` is what separates them.
+        body = parse_error_body(body_text)
+        code = body.get("code") if isinstance(body, dict) else None
+        code = code if isinstance(code, str) else None
+        if is_upgrade_required(body):
+            return AgenticError(
+                "upgrade_required",
+                body_text or "upgrade required",
+                code=code,
+                upgrade=parse_upgrade_affordance(body),
+                # Still never retried: only a plan change makes this succeed,
+                # and the ``retry_with`` hint is for the caller to decide on.
+                retryable=False,
+                **common,
+            )
         return AgenticError(
             "budget_exceeded",
             body_text or "budget or upgrade required",
+            code=code,
             retryable=False,
             **common,
         )
