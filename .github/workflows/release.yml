@@ -5,6 +5,22 @@ on:
     tags:
       - "v*.*.*"
       - "v*.*.*-*"
+  # Rehearsal. Runs every gate and builds every artifact, then stops before
+  # the three publish jobs.
+  #
+  # This exists because the prerelease rehearsal RELEASE-SETUP.md used to
+  # prescribe could not work: `release-preflight.mjs` requires the tag version
+  # to equal every source literal, so `v0.4.0-rc.1` fails against 0.4.0
+  # source; and the `release tags` ruleset has no bypass actors, so a tag that
+  # fails is burnt permanently -- you cannot retry the same name. A rehearsal
+  # whose failure mode is "that version string is now unusable forever" is not
+  # a rehearsal. This one is free and repeatable.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to rehearse, e.g. 0.4.0 (must match the source tree)"
+        required: true
+        type: string
 
 concurrency:
   group: release-${{ github.ref_name }}
@@ -17,6 +33,8 @@ jobs:
   build:
     name: build and verify release artifacts
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     permissions:
       contents: read
       checks: read
@@ -35,6 +53,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: stable
+      # On a dispatch rehearsal there is no tag, so the version comes from the
+      # input. Everything downstream reads RELEASE_VERSION rather than the ref.
+      - name: Resolve the version under test
+        id: version
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -n "${VERSION_INPUT:-}" ]; then
+            VERSION="${VERSION_INPUT#v}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "RELEASE_VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "rehearsing/releasing ${VERSION}"
       - name: Require the tagged commit to be on main with a green GA gate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -58,7 +92,7 @@ jobs:
           # this commit" rather than "this repo's own CI passed".
           test "$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?per_page=100" --jq '[.check_runs[] | select(.name == "GA gate (maturity + evidence)" and .conclusion == "success" and .app.slug == "github-actions")] | length')" -ge 1
       - name: Enforce tag and source version parity
-        run: node scripts/release-preflight.mjs "${GITHUB_REF_NAME}"
+        run: node scripts/release-preflight.mjs "v${RELEASE_VERSION}"
       - name: Re-run GA evidence gates at the tagged commit
         run: |
           node --test scripts/tests/*.test.mjs
@@ -86,12 +120,15 @@ jobs:
         run: find release-bundle -type f -print0 | sort -z | xargs -0 sha256sum | tee release-bundle/SHA256SUMS
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: release-bundle-${{ github.ref_name }}
+          name: release-bundle-${{ steps.version.outputs.version }}
           path: release-bundle/
           if-no-files-found: error
           retention-days: 30
 
   publish-npm:
+    # Never on a rehearsal: a dispatch run proves the gates and the artifacts,
+    # and deliberately publishes nothing.
+    if: github.event_name == 'push'
     name: publish npm
     needs: build
     runs-on: ubuntu-latest
@@ -105,7 +142,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: release-bundle-${{ github.ref_name }}
+          name: release-bundle-${{ needs.build.outputs.version }}
           path: release-bundle
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
@@ -145,8 +182,11 @@ jobs:
           fi
 
   publish-pypi:
+    # Never on a rehearsal: a dispatch run proves the gates and the artifacts,
+    # and deliberately publishes nothing.
+    if: github.event_name == 'push'
     name: publish PyPI
-    needs: publish-npm
+    needs: [build, publish-npm]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -158,7 +198,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: release-bundle-${{ github.ref_name }}
+          name: release-bundle-${{ needs.build.outputs.version }}
           path: release-bundle
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -200,8 +240,11 @@ jobs:
           skip-existing: true
 
   publish-crates:
+    # Never on a rehearsal: a dispatch run proves the gates and the artifacts,
+    # and deliberately publishes nothing.
+    if: github.event_name == 'push'
     name: publish crates.io
-    needs: publish-pypi
+    needs: [build, publish-pypi]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -212,7 +255,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: release-bundle-${{ github.ref_name }}
+          name: release-bundle-${{ needs.build.outputs.version }}
           path: release-bundle
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
@@ -266,8 +309,11 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   verify:
+    # Never on a rehearsal: a dispatch run proves the gates and the artifacts,
+    # and deliberately publishes nothing.
+    if: github.event_name == 'push'
     name: verify published artifacts and installs
-    needs: publish-crates
+    needs: [build, publish-crates]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -275,7 +321,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: release-bundle-${{ github.ref_name }}
+          name: release-bundle-${{ needs.build.outputs.version }}
           path: release-bundle
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
