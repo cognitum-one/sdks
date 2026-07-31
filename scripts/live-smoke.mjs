@@ -14,8 +14,19 @@
 //
 // Usage: node live-smoke.mjs            (reads COGNITUM_API_KEY, COGNITUM_API_BASE_URL)
 
-import { StaticApiKeyCredentialProvider } from "@cognitum-one/sdk/agentic";
-import { MetaLlmClient } from "@cognitum-one/sdk/meta-llm";
+import { createRequire } from "node:module";
+
+// The SDK is resolved from the CURRENT WORKING DIRECTORY, not from this
+// file's location. This script lives in the repo while the package under test
+// is installed into a throwaway directory elsewhere, so a static top-level
+// `import "@cognitum-one/sdk/..."` resolves against scripts/ and dies with
+// ERR_MODULE_NOT_FOUND no matter how correctly the package was published --
+// the smoke test would report a failure that says nothing about the release.
+// (Module resolution itself, ESM and CJS, is covered by
+// smoke-published-package.mjs; this script's job is the network contract.)
+const require = createRequire(`${process.cwd()}/`);
+const { StaticApiKeyCredentialProvider } = require("@cognitum-one/sdk/agentic");
+const { MetaLlmClient } = require("@cognitum-one/sdk/meta-llm");
 
 const baseUrl = process.env.COGNITUM_API_BASE_URL ?? "https://api.cognitum.one";
 const apiKey = process.env.COGNITUM_API_KEY;
