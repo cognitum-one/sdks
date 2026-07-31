@@ -53,9 +53,12 @@ docs/adr/                  33 cross-cutting ADRs
 sdks/*/docs/adr/           per-SDK ADRs (node 5, python 5, rust 7)
 ```
 
-`.gitmodules` still declares a `seed` submodule. That is the wrong dependency
-direction — the seed firmware repo vendors these SDKs, not the reverse — and PR #35
-removes it. Do not add code that depends on it.
+This repo has **no submodules**. It used to carry the `seed` firmware repo as one,
+which was the wrong dependency direction — the seed repo vendors these SDKs as
+`external/sdks`, so the pair would have become circular. Removed in #35. Consumers do
+not need firmware source to use the packages. Some ADRs still cite evidence at paths
+like `/home/ruvultra/projects/sdks/seed/...`; those are historical provenance
+pointers, not build inputs, and they do not resolve.
 
 ## Build & test
 
