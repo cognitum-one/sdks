@@ -13,10 +13,14 @@
 // Usage: node smoke-published-package.mjs [package-name]
 //   Run from a directory where the package is already installed.
 
+import { execFile } from "node:child_process";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 export function entryPoints(packageName, exportsField) {
   // A package with no `exports` map is reachable only at its root.
@@ -73,10 +77,28 @@ async function main() {
     await rm(bridgePath, { force: true });
   }
 
-  if (failures.length > 0) {
-    throw new Error(`${failures.length}/${targets.length} entry point(s) failed to load`);
+  // The `bin` map is as much a published interface as `exports` -- installing
+  // this package puts `cognitum` and `cognitum-sdk` on a user's PATH. A
+  // tarball that omitted dist/cli.mjs, or a CLI that throws on startup, would
+  // pass every check above while both commands were broken on install.
+  const bins = Object.keys(manifest.bin ?? {});
+  for (const bin of bins) {
+    const binPath = join(process.cwd(), "node_modules", ".bin", bin);
+    try {
+      const { stdout, stderr } = await execFileAsync(process.execPath, [binPath, "--version"], { timeout: 30_000 });
+      const output = `${stdout}${stderr}`.trim();
+      if (!output) throw new Error("produced no output");
+      console.log(`ok   ${bin} --version -> ${output.split("\n")[0].slice(0, 60)}`);
+    } catch (error) {
+      failures.push(`bin ${bin}: ${error.message}`);
+      console.error(`FAIL ${bin}: ${error.message}`);
+    }
   }
-  console.log(`smoked ${targets.length} entry point(s) of ${packageName}@${manifest.version}`);
+
+  if (failures.length > 0) {
+    throw new Error(`${failures.length} published interface(s) failed: ${targets.length} entry point(s) and ${bins.length} executable(s) checked`);
+  }
+  console.log(`smoked ${targets.length} entry point(s) and ${bins.length} executable(s) of ${packageName}@${manifest.version}`);
 }
 
 if (process.argv[1] === new URL(import.meta.url).pathname) {

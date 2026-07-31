@@ -130,3 +130,15 @@ test("a stable operation stripped of its evidence is rejected", async () => {
   assert.ok(errors.length > 0, "a stable operation without evidence must fail schema validation");
   assert.match(errors.join("\n"), /evidence/);
 });
+
+test("date-time format rejects impossible timestamps", () => {
+  const schema = { type: "string", format: "date-time" };
+  const bad = ["2026-99-99T25:61:61Z", "2026-02-30T00:00:00Z", "2026-13-01T00:00:00Z", "2025-02-29T00:00:00Z"];
+  for (const value of bad) {
+    assert.equal(validateManifest(value, schema).length, 1, `${value} should be rejected`);
+  }
+  const good = ["2026-07-31T09:00:00Z", "2024-02-29T00:00:00Z", "2026-07-31T09:00:00.123+02:00"];
+  for (const value of good) {
+    assert.deepEqual(validateManifest(value, schema), [], `${value} should be accepted`);
+  }
+});

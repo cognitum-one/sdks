@@ -132,7 +132,23 @@ function canonicalJson(value) {
   return JSON.stringify(value);
 }
 
-const DATE_TIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+const DATE_TIME_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+// Shape alone is not validity: the regex happily accepts "2026-99-99T25:61:61Z".
+// These fields are release evidence (`verifiedAt`, `generatedAt`) -- a
+// timestamp that cannot exist is exactly the kind of thing a hand-edited
+// manifest grows, and the check that lets it through is worse than absent
+// because it looks like the question was asked.
+function isDateTime(value) {
+  const match = DATE_TIME_RE.exec(value);
+  if (!match) return false;
+  const [, year, month, day, hour, minute, second] = match.map(Number);
+  if (month < 1 || month > 12 || day < 1 || hour > 23 || minute > 59 || second > 60) return false;
+  // Round-trip through Date to reject impossible days (Feb 30, Apr 31, and
+  // non-leap Feb 29) rather than hand-rolling a calendar.
+  const utc = new Date(Date.UTC(year, month - 1, day));
+  return utc.getUTCFullYear() === year && utc.getUTCMonth() === month - 1 && utc.getUTCDate() === day;
+}
 const URI_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\s]+$/;
 
 function validate(instance, schema, schemaRoot, path, errors) {
@@ -226,7 +242,7 @@ function validate(instance, schema, schemaRoot, path, errors) {
     if (schema.pattern && !new RegExp(schema.pattern).test(instance)) {
       errors.push(`${path}: "${instance}" does not match pattern ${schema.pattern}`);
     }
-    if (schema.format === "date-time" && !DATE_TIME_RE.test(instance)) {
+    if (schema.format === "date-time" && !isDateTime(instance)) {
       errors.push(`${path}: "${instance}" is not a valid date-time`);
     }
     if (schema.format === "uri" && !URI_RE.test(instance)) {
