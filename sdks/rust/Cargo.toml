@@ -10,6 +10,7 @@ categories = ["api-bindings", "web-programming::http-client"]
 repository = "https://github.com/cognitum-one/sdks"
 homepage = "https://cognitum.one"
 documentation = "https://docs.rs/cognitum-one"
+publish = ["crates-io"]
 include = [
     "src/**/*",
     "benches/**/*",
