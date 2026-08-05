@@ -16,7 +16,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
 const MANIFEST_PATH = join(ROOT, "capabilities", "sdk-release.v1.json");
 const SCHEMA_PATH = join(ROOT, "capabilities", "sdk-release.schema.json");
-const USER_AGENT = "cognitum-sdks-check (ruvnet@gmail.com)";
+// Keep registry probes attributable without embedding a maintainer's personal
+// email address in a public repository or outbound request metadata.
+const USER_AGENT = "cognitum-sdks-check (+https://github.com/cognitum-one/sdks)";
 const OFFLINE = process.argv.includes("--offline");
 
 let errorCount = 0;
