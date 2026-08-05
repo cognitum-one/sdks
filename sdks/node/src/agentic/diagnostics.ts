@@ -80,6 +80,35 @@ export interface DiagnosticPolicy {
 }
 
 /**
+ * Validate a diagnostic policy before any future capture pipeline consumes
+ * it.  Capture is fail-closed: malformed limits, empty field names, or an
+ * invalid sink path are rejected rather than silently broadening collection.
+ * This remains a pure check and performs no filesystem or network I/O.
+ */
+export function validateDiagnosticPolicy(policy: DiagnosticPolicy): void {
+  if (!Number.isSafeInteger(policy.maxBytes) || policy.maxBytes <= 0) {
+    throw new TypeError("DiagnosticPolicy.maxBytes must be a positive safe integer");
+  }
+  if (!Number.isSafeInteger(policy.maxDurationMs) || policy.maxDurationMs <= 0) {
+    throw new TypeError("DiagnosticPolicy.maxDurationMs must be a positive safe integer");
+  }
+  if (policy.retention.maxAgeMs !== undefined &&
+      (!Number.isSafeInteger(policy.retention.maxAgeMs) || policy.retention.maxAgeMs <= 0)) {
+    throw new TypeError("DiagnosticPolicy.retention.maxAgeMs must be a positive safe integer");
+  }
+  if (!Array.isArray(policy.includedFields) ||
+      policy.includedFields.some((field) => typeof field !== "string" || field.trim().length === 0)) {
+    throw new TypeError("DiagnosticPolicy.includedFields must contain non-empty field names");
+  }
+  if (policy.sink.kind === "local_path" && policy.sink.path.trim().length === 0) {
+    throw new TypeError("DiagnosticPolicy.sink.path must be non-empty");
+  }
+  if (!(policy.allowedCategories instanceof Set)) {
+    throw new TypeError("DiagnosticPolicy.allowedCategories must be a Set");
+  }
+}
+
+/**
  * The 6 of {@link D12Category}'s 11 values that §D10 governs, in the ADR's
  * own prose order ("prompt, output, source, patch, tool, and environment
  * categories"). This mapping is a design decision, not a literal ADR
