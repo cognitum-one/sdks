@@ -262,7 +262,9 @@ export function applyTraceContext(
   carrier?: Record<string, string>,
 ): void {
   const context = joinOrGenerateTraceContext(carrier?.traceparent, carrier?.tracestate);
-  headers.traceparent = context.traceParent;
+  // The shared telemetry carrier intentionally keeps fields optional; an
+  // outgoing request must nevertheless always carry a concrete traceparent.
+  headers.traceparent = context.traceParent ?? generateTraceParent().traceParent;
   if (context.traceState !== undefined) headers.tracestate = context.traceState;
 }
 
