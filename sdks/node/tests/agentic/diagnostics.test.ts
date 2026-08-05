@@ -21,6 +21,7 @@ import {
   NEVER_CAPTURABLE_CATEGORIES,
   isNeverCapturable,
   previewDiagnosticManifest,
+  validateDiagnosticPolicy,
   type DiagnosticPolicy,
   type DiagnosticManifest,
   type DiagnosticBundle,
@@ -138,6 +139,22 @@ describe("ADR-0028 §D10 diagnostic-capture policy/manifest", () => {
     const sink = { kind: "callback" as const };
     const json = JSON.parse(JSON.stringify(sink));
     expect(json).toEqual({ kind: "callback" });
+  });
+
+  it("rejects invalid limits and sink/field values before capture", () => {
+    expect(() => validateDiagnosticPolicy(policyWithAllowed([]))).not.toThrow();
+    expect(() => validateDiagnosticPolicy({
+      ...policyWithAllowed([]), maxBytes: 0,
+    })).toThrow(/maxBytes/);
+    expect(() => validateDiagnosticPolicy({
+      ...policyWithAllowed([]), maxDurationMs: Number.NaN,
+    })).toThrow(/maxDurationMs/);
+    expect(() => validateDiagnosticPolicy({
+      ...policyWithAllowed([]), includedFields: [""],
+    })).toThrow(/includedFields/);
+    expect(() => validateDiagnosticPolicy({
+      ...policyWithAllowed([]), sink: { kind: "local_path", path: "  " },
+    })).toThrow(/sink.path/);
   });
 
   it("DiagnosticManifest round-trips through JSON", () => {
