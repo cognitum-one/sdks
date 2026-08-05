@@ -1,0 +1,37 @@
+name: Feature request
+description: Propose a new SDK capability or compatibility improvement
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Describe the user outcome, not only the desired API shape.
+    validations:
+      required: true
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - Shared contract
+        - Node / TypeScript
+        - Python
+        - Rust
+        - CI / release
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Related service contract, issue, ADR, or evidence
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and migration considerations

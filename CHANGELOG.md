@@ -10,6 +10,16 @@ For per-SDK detail, see:
 - [`sdks/python/CHANGELOG.md`](sdks/python/CHANGELOG.md)
 - [`sdks/rust/CHANGELOG.md`](sdks/rust/CHANGELOG.md)
 
+## [Unreleased]
+
+### Changed
+
+- Relicensed the repository and all three SDK packages from MIT to Apache-2.0,
+  adding an explicit patent grant for users and contributors.
+- Added the public security, support, contribution, conduct, ownership, issue,
+  and pull-request policies required before repository visibility changes.
+- Distinguished prepared source version `0.4.0` from registry version `0.3.0`.
+
 
 ## [0.4.0] — 2026-07-31
 

@@ -133,7 +133,10 @@ are referenced by each SDK's architecture + implementation ADRs.
 26. [`0030a-conformance-ci-and-release-evidence.md`](0030a-conformance-ci-and-release-evidence.md)
     and [`0030b-migration-rollout-and-publication.md`](0030b-migration-rollout-and-publication.md) —
     Twelve-binding conformance, adversarial CI, migration, unique work
-    breakdown, staged rollout, and coordinated publication.
+    breakdown, staged rollout, and coordinated publication. ADR-0030a is
+    **Partially Implemented**; ADR-0030b is **Accepted — Partially Implemented**
+    and was reconciled on 2026-08-05 after the `0.3.0` release and `0.4.0`
+    preparation.
 
 Then jump into the per-SDK folders:
 

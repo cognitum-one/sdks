@@ -1,7 +1,8 @@
 # ADR 0030b: Migration, Rollout, and Publication
 
-- **Status:** Proposed
+- **Status:** Accepted — Partially Implemented
 - **Date:** 2026-07-18
+- **Updated:** 2026-08-05 — reconciled the plan after the `0.3.0` publication and implemented `0.4.0` release preparation. Baseline remediation, the shared agentic core, selected remote product clients, coverage gates, release tooling, and npm published-artifact smoke are implemented. Source is `0.4.0` while all registries still serve `0.3.0`; public docs now state both. Public conversion and Apache-2.0 are accepted but remain gated by history/privacy/IP review, public documentation, repository hardening, and artifact proof. PyPI/crates publication is deferred. `/v1/whoami` deployment is owned by `cognitum-one/api#96`.
 - **Deciders:** Cognitum SDK Working Group, Product API Owners, Release Engineering, Security, Developer Experience
 - **Scope:** cross-cutting (`sdks/node`, `sdks/python`, `sdks/rust`, migration, compatibility, registries and release operations)
 
@@ -22,11 +23,32 @@ process bridge and HarnessaaS must reconcile job, approval, artifact, isolation,
 receipt, and lineage semantics. Migration and release claims therefore require
 explicit gates, not a single feature-complete assertion.
 
+### 2026-08-05 implementation reconciliation
+
+The original proposal targeted the then-future `0.3.0` release. That release is
+now historical. The live state is:
+
+- npm, PyPI, and crates.io serve `0.3.0`;
+- source manifests and release preflight are prepared at `0.4.0`;
+- the release workflow and registry-safe resume logic are implemented;
+- npm trusted publishing is available for the next authorized release, while
+  PyPI and crates.io owner setup remains deferred;
+- public repository conversion is accepted with Apache-2.0, but visibility
+  waits for the public-readiness gates;
+- operation maturity remains independent from package version: MetaHarness is
+  a fail-closed contract preview and `whoami` is not live at the public gateway
+  until `cognitum-one/api#96` is deployed and verified.
+
+Where this reconciliation conflicts with obsolete `0.3.0` future-tense wording
+below, this section and the current capability manifest govern. Older phase and
+effort material remains as decision history rather than a claim that all work is
+still unstarted.
+
 ## Decision
 
 Remediate the current SDK baseline before publishing any agentic preview. Roll
 out through contract, shared-core, remote-product, local-product, beta, and
-general-availability gates. Coordinate the first agentic version at `0.3.0`,
+general-availability gates. The first agentic version was coordinated at `0.3.0`; coordinate subsequent versions,
 publish only artifacts already proven by ADR-0030a, and bind source, contract,
 conformance, SBOM, provenance, compatibility, and registry digests in one
 signed release manifest. Operation maturity remains per-contract; package
@@ -117,7 +139,7 @@ row passes. A product with zero stable rows never satisfies this claim.
 
 ### D10. Prerelease and maturity policy
 
-The coordinated version sequence is:
+The original coordinated `0.3.0` sequence was:
 
 ```text
 0.3.0-alpha.1   internal contract and package validation
@@ -126,7 +148,7 @@ The coordinated version sequence is:
 0.3.0           first stable agentic SDK release
 ```
 
-Registry conventions map appropriately: npm uses the `next` dist-tag, Python
+For subsequent releases, registry conventions map appropriately: npm uses the `next` dist-tag, Python
 uses PEP 440 prerelease versions such as `0.3.0a1` and `0.3.0b1`, and crates.io
 uses SemVer prerelease identifiers. Documentation shows the exact install
 syntax for each registry rather than pretending one version string is accepted

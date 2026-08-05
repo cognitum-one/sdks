@@ -3,6 +3,12 @@
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/en/1.1.0/).
 This package follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- License changed from MIT to Apache-2.0.
+
 ## [0.4.0] — 2026-07-31
 
 Fixes a defect that made the published Python and Rust SDKs unusable against

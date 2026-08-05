@@ -1,0 +1,10 @@
+# Default review ownership
+* @ruvnet @proffesor-for-testing
+
+# Public contracts, architecture, and release controls
+/capabilities/ @ruvnet @proffesor-for-testing
+/docs/adr/ @ruvnet @proffesor-for-testing
+/.github/ @ruvnet @proffesor-for-testing
+/scripts/ @ruvnet @proffesor-for-testing
+/SECURITY.md @ruvnet @proffesor-for-testing
+/LICENSE @ruvnet @proffesor-for-testing
