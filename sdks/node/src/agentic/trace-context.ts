@@ -256,6 +256,16 @@ export function joinOrGenerateTraceContext(
   return traceState !== undefined ? { traceParent, traceState } : { traceParent };
 }
 
+/** Attach a validated W3C trace context to an outgoing request. */
+export function applyTraceContext(
+  headers: Record<string, string>,
+  carrier?: Record<string, string>,
+): void {
+  const context = joinOrGenerateTraceContext(carrier?.traceparent, carrier?.tracestate);
+  headers.traceparent = context.traceParent;
+  if (context.traceState !== undefined) headers.tracestate = context.traceState;
+}
+
 // ---------------------------------------------------------------------
 // §D2: Stable span names, `cognitum.<product>.<operation>` format.
 // ---------------------------------------------------------------------
