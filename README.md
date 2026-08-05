@@ -8,9 +8,9 @@ One surface. Three runtimes.
 
 | Language | Package | Version | Install |
 |----------|---------|---------|---------|
-| Node.js / TypeScript | [`@cognitum-one/sdk`](sdks/node/) | 0.4.0 | `npm install @cognitum-one/sdk` |
-| Python | [`cognitum-sdk`](sdks/python/) (import as `cognitum`) | 0.4.0 | `pip install cognitum-sdk` |
-| Rust | [`cognitum-one`](sdks/rust/) | 0.4.0 | `cognitum-one = "0.4"` |
+| Node.js / TypeScript | [`@cognitum-one/sdk`](sdks/node/) | published `0.3.0`; `0.4.0` prepared on `main` | `npm install @cognitum-one/sdk` |
+| Python | [`cognitum-sdk`](sdks/python/) (import as `cognitum`) | published `0.3.0`; `0.4.0` prepared on `main` | `pip install cognitum-sdk` |
+| Rust | [`cognitum-one`](sdks/rust/) | published `0.3.0`; `0.4.0` prepared on `main` | `cognitum-one = "0.3"` |
 
 > The Python **distribution** name is `cognitum-sdk` (the PyPI project name
 > `cognitum` belongs to an unrelated third party) but the **import** name is
@@ -26,6 +26,10 @@ published as a machine-readable manifest:
 (validated against [`capabilities/sdk-release.schema.json`](capabilities/sdk-release.schema.json)
 and cross-checked against live npm/PyPI/crates.io in CI — see
 [`scripts/verify-release-manifest.mjs`](scripts/verify-release-manifest.mjs)).
+
+The version in the source manifests is not proof that a registry publish has
+happened. The table above names both states deliberately. Use the registry
+version for installs and the capability manifest for operation maturity.
 
 ## Quick start — talking to a Seed
 
@@ -225,8 +229,11 @@ Pairing-token resolution is analogous (`pairingToken` arg, then
 - Issues: [`cognitum-one/sdks/issues`](https://github.com/cognitum-one/sdks/issues)
 - Seed firmware: [`cognitum-one/seed`](https://github.com/cognitum-one/seed)
 - Website: [cognitum.one](https://cognitum.one)
+- Usage and support policy: [`SUPPORT.md`](SUPPORT.md)
+- Security reports: [`SECURITY.md`](SECURITY.md) — do not disclose vulnerabilities in public issues
+- Contributions: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 
 ## License
 
-MIT. Every SDK package carries its own `LICENSE` file matching the root
-`LICENSE`; the licence applies identically.
+Apache-2.0. Every SDK package carries its own `LICENSE` file matching the root
+`LICENSE`; the license applies identically.

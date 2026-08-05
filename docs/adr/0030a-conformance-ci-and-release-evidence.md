@@ -2,6 +2,7 @@
 
 - **Status:** Partially Implemented
 - **Date:** 2026-07-18
+- **Updated:** 2026-08-05 — reconciled the ADR with the implemented repository. CI now includes cross-platform language gates, per-language coverage ratchets, a Rust feature matrix, capability-manifest validation, an aggregate GA gate, protected release tooling, and a published npm live smoke. The Domain and Wire fixture layers are implemented under `sdks/fixtures/`. Still open: Security-and-governance and Packaging fixture layers; the complete multi-runtime matrix; rendered cross-language product/compatibility reports; generated-code drift checks; Python/Rust published-artifact live smoke; mutation/regenerability evidence; and the full provenance/evidence bundle. Public-repository preparation is tracked in the private Cognitum coordination workspace.
 - **Updated:** 2026-07-31 — first slice built (issue #75): the §D1 **Domain** layer for meta-llm HTTP error mapping. A shared corpus of 28 cases lives at `sdks/fixtures/error-mapping/meta-llm-http-errors-v1.json`; the Node, Python and Rust suites each drive their own mapper over it and assert a canonical camelCase result, so a cross-SDK error-semantics regression fails a build instead of reaching a user. NOTE ON LOCATION: §D2 proposes `specs/agentic/scenarios/` + `expected/`. The corpus was placed in `sdks/fixtures/` instead, alongside the existing `receipt-canonicalization/` fixture that already serves exactly this cross-language purpose — one convention beats two, and the receipt fixture is the working precedent. Adopt §D2's tree only if a scenario needs setup/teardown that a flat fixture cannot express. Where the three languages genuinely differ, a case carries a `knownDivergence` block pinning each language's ACTUAL result, so a divergence is a declared fact rather than missing coverage, and a new one requires editing the corpus deliberately. Writing the corpus immediately found a four-way `Retry-After` bug (RFC 9110 permits an HTTP-date; Node yielded NaN, Python raised an uncaught ValueError mid-error-mapping, Rust's nonstream path parsed f64 only, and Rust's streaming paths never read the header) — all four fixed in the same change. STILL OPEN from this ADR: the Wire, Security-and-governance and Packaging layers; the multi-runtime CI matrix (§D3); the product matrix report (§D4); generated-code diffing and the fake MetaHarness bridge (§D5); staging/live validation (§D6); and the provenance gates (§D7).
 - **Updated:** 2026-07-31 (second slice, issue #75) — §D1 **Wire** layer for meta-llm request bodies: `sdks/fixtures/wire/meta-llm-request-bodies-v1.json`, driven by all three SDKs. It found a shipped production outage on its first run. Capturing what each SDK put on a real socket for one identical call produced three different bodies (Node 83 bytes, Python 320, Rust 370), because `dataclasses.asdict` and missing `skip_serializing_if` serialised every UNSET optional as an explicit null. Absent and null are not the same request: verified against api.cognitum.one, the published Python SDK got `HTTP 400 Only n=1 is supported in v1.` and the published Rust SDK got `HTTP 400 messages[0].name must be a string, got null.` — **two of the three shipped SDKs could not make a basic chat completion against production**, while the capability manifest called meta-llm `available` in all three, because the live smoke drives Node only. Fixed in both, verified live in both, and pinned by the corpus. Header casing and int-vs-float rendering are recorded as deliberate non-divergences (not wire-significant), with a note on where the float split WOULD matter — a byte-level canonical request hash, which ADR-0023 §D7 names.
 - **Deciders:** Cognitum SDK Working Group, Product API Owners, Release Engineering, Security, Developer Experience
@@ -16,33 +17,33 @@ retry, cancellation, telemetry, receipt, lineage, and generated wire-model
 behavior. A green unit test in one language is not evidence that the twelve
 bindings agree or that the registry artifacts contain what was tested.
 
-The current repository has strong language-local tests but no verified
-cross-language release gate:
+The original 2026-07-18 review found strong language-local tests but no verified
+cross-language release gate. The implementation has since advanced as follows:
 
 | Area | Current verified state |
 |------|------------------------|
-| Node | `npm test`, `npm run typecheck`, and `npm run build` scripts; unit and Seed integration tests under `sdks/node/tests/`; generated `dist/` committed |
-| Python | pytest, pytest-asyncio, and respx dev dependencies; sync, async, Seed, and MCP tests under `sdks/python/tests/` |
-| Rust | wiremock and tokio tests under `sdks/rust/tests/`; feature-gated Seed, discovery, and MCP coverage |
-| CI | `.github/workflows/security.yml` delegates to `cognitum-one/.github/.github/workflows/security-scan.yml@main` |
-| Release | Keep a Changelog files and SemVer policy; no repository-local build, cross-language conformance, package, or release workflow was verified during the source review |
+| Node | Build, test, typecheck, lint, audit, and coverage ratchet across Linux/macOS/Windows; ESM/CJS exports and CLI are checked during release/live smoke |
+| Python | pytest, ruff, mypy, branch-coverage ratchet, and packaging checks across Linux/macOS/Windows |
+| Rust | Build, test, clippy, coverage ratchet, cross-platform all-feature gate, and isolated feature matrix |
+| Cross-language | Receipt canonicalization, error mapping/`Retry-After`, and request-body wire corpora under `sdks/fixtures/`, driven by all three languages |
+| CI | `.github/workflows/ci.yml` aggregates language, security, feature, manifest, and coverage jobs into required `GA gate (maturity + evidence)`; `.github/workflows/security.yml` remains a separate reusable scan |
+| Release | `.github/workflows/release.yml` builds once, validates immutable artifacts, supports non-publishing rehearsal, publishes sequentially with digest-safe resume, and verifies registry artifacts; release tags are immutable |
+| Deployed seam | `.github/workflows/live-smoke.yml` installs the published npm artifact and checks semantic behavior against `api.cognitum.one`; Python/Rust parity remains open in issue #143 |
 
-Representative package/test baselines are `sdks/node/package.json:2-67`,
-`sdks/python/pyproject.toml:5-25`, and `sdks/rust/Cargo.toml:1-73`. The verified
-workflow is `.github/workflows/security.yml:1-20`; absence claims are limited to
+Representative package/test baselines are `sdks/node/package.json`,
+`sdks/python/pyproject.toml`, and `sdks/rust/Cargo.toml`. The authoritative
+workflows are `.github/workflows/ci.yml`, `.github/workflows/security.yml`,
+`.github/workflows/release.yml`, and `.github/workflows/live-smoke.yml`. Absence claims are limited to
 the paths inspected during the pinned source review.
 
-The reusable security workflow reference is mutable because it uses `@main`.
-That is acceptable as an observed current fact, but it is not reproducible
-release evidence. All release-critical actions and reusable workflows must be
-pinned to immutable revisions before `0.3.0`.
+The reusable security workflow and all third-party Actions references are now
+pinned to immutable revisions. The release workflow had already done this;
+the 2026-08-05 public-readiness change extended the invariant to CI, security,
+and live smoke.
 
-Package state is also not aligned. Node is `@cognitum-one/sdk@0.2.1`, Python's
-manifest is `cognitum==0.2.0`, and Rust is `cognitum-one@0.2.1`. The root
-changelog says PyPI was still `0.0.1.dev2` when `0.2.1` was recorded. README,
-source examples, ADR indexes, crate imports, and endpoint-count claims disagree
-with one another as detailed in ADR-0029. New product work cannot use those
-documents as a trustworthy release baseline.
+Package state is intentionally split: source manifests are prepared at `0.4.0`,
+while npm, PyPI, and crates.io still serve `0.3.0`. README and capability
+material must name both states until coordinated publication is verified.
 
 The four upstream products have different readiness risks:
 

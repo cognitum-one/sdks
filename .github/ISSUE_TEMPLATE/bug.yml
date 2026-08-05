@@ -1,0 +1,53 @@
+name: Bug report
+description: Report a reproducible SDK or packaged-artifact defect
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Do not report security vulnerabilities here. Follow SECURITY.md.
+  - type: dropdown
+    id: sdk
+    attributes:
+      label: SDK
+      options:
+        - Node / TypeScript
+        - Python
+        - Rust
+        - Cross-language
+        - Release / CI
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Exact version and install source
+      placeholder: "@cognitum-one/sdk@0.3.0 from npm"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Runtime and environment
+      placeholder: "Node 22, ESM, macOS 15"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal synthetic reproduction
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: Sanitize keys, tenants, prompts, signed URLs, and device identifiers.
+    validations:
+      required: true

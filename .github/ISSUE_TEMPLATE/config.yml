@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/cognitum-one/sdks/security
+    about: Report vulnerabilities privately; never include them in a public issue.
+  - name: Cognitum website
+    url: https://cognitum.one
+    about: Product and platform information.

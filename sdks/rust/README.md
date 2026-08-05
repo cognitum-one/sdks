@@ -129,4 +129,4 @@ for the full, machine-readable maturity/feature matrix across all 3 SDKs.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+Apache-2.0 — see [`LICENSE`](LICENSE).

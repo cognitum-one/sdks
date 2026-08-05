@@ -7,7 +7,7 @@ name = "cognitum-sdk"
 version = "0.4.0"
 description = "Official Cognitum SDK for Python"
 readme = "README.md"
-license = {text = "MIT"}
+license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
 dependencies = ["httpx>=0.25.0"]
 keywords = ["cognitum", "ai", "mcp", "sdk", "seed"]
