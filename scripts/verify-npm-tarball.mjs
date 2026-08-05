@@ -15,6 +15,7 @@ const exec = promisify(execFile);
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packageDir = join(repoRoot, "sdks", "node");
 const smokeScript = join(repoRoot, "scripts", "smoke-published-package.mjs");
+const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 
 export const MAX_PACKED_BYTES = 1_500_000;
 export const MAX_UNPACKED_BYTES = 6_000_000;
@@ -48,8 +49,8 @@ async function main() {
   const packDir = await mkdtemp(join(tmpdir(), "cognitum-npm-pack-"));
   const consumerDir = await mkdtemp(join(tmpdir(), "cognitum-npm-consumer-"));
   try {
-    await run("npm", ["run", "build"], { cwd: packageDir });
-    const { stdout } = await exec("npm", ["pack", "--json", "--pack-destination", packDir], {
+    await run(npmCommand, ["run", "build"], { cwd: packageDir });
+    const { stdout } = await exec(npmCommand, ["pack", "--json", "--pack-destination", packDir], {
       cwd: packageDir,
       maxBuffer: 20 * 1024 * 1024,
     });
@@ -59,8 +60,8 @@ async function main() {
     if (errors.length) throw new Error(`npm tarball policy failed:\n- ${errors.join("\n- ")}`);
 
     const tarball = join(packDir, pack.filename);
-    await run("npm", ["init", "--yes"], { cwd: consumerDir });
-    await run("npm", ["install", "--ignore-scripts", tarball], { cwd: consumerDir });
+    await run(npmCommand, ["init", "--yes"], { cwd: consumerDir });
+    await run(npmCommand, ["install", "--ignore-scripts", tarball], { cwd: consumerDir });
     await run(process.execPath, [smokeScript, "@cognitum-one/sdk"], { cwd: consumerDir });
 
     const installed = JSON.parse(await readFile(join(consumerDir, "node_modules", "@cognitum-one", "sdk", "package.json"), "utf8"));
