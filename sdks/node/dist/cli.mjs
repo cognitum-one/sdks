@@ -283,6 +283,7 @@ var McpResource = class {
   constructor(client) {
     this.client = client;
   }
+  client;
   /** List all available MCP tools. */
   async listTools() {
     return this.client.request("GET", "/apiMcpTools");
@@ -320,6 +321,7 @@ var CatalogResource = class {
   constructor(client) {
     this.client = client;
   }
+  client;
   /** Browse available products, optionally filtered by category. */
   async browse(options) {
     const params = new URLSearchParams();
@@ -463,7 +465,7 @@ async function startStdioServer(apiKey, baseUrl) {
 }
 
 // src/cli.ts
-var VERSION = "0.1.2";
+var VERSION = "0.4.0";
 function usage() {
   console.log(`
 @cognitum/sdk CLI v${VERSION}
@@ -507,6 +509,8 @@ function parseArgs(argv) {
       flags.baseUrl = argv[++i] || "";
     } else if (arg === "--json") {
       flags.json = true;
+    } else if (arg === "--version" || arg === "-v") {
+      flags.version = true;
     } else if (arg === "--help" || arg === "-h") {
       flags.help = true;
     } else if (!arg.startsWith("-")) {
@@ -522,6 +526,10 @@ function parseArgs(argv) {
 }
 async function main() {
   const { command, args, flags } = parseArgs(process.argv.slice(2));
+  if (flags.version) {
+    console.log(VERSION);
+    return;
+  }
   if (flags.help || !command) {
     usage();
     process.exit(command ? 0 : 1);

@@ -1,4 +1,5 @@
 import { defineConfig } from "tsup";
+import packageJson from "./package.json" with { type: "json" };
 
 export default defineConfig([
   {
@@ -135,6 +136,7 @@ export default defineConfig([
     dts: false,
     sourcemap: false,
     target: "es2022",
+    define: { __SDK_VERSION__: JSON.stringify(packageJson.version) },
     outDir: "dist",
   },
 ]);

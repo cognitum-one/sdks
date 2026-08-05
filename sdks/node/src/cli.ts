@@ -3,7 +3,9 @@ import { McpResource } from "./mcp.js";
 import { CatalogResource } from "./catalog.js";
 import { startStdioServer } from "./mcp-stdio.js";
 
-const VERSION = "0.1.2";
+declare const __SDK_VERSION__: string;
+
+const VERSION = __SDK_VERSION__;
 
 function usage(): void {
   console.log(`
@@ -50,6 +52,8 @@ function parseArgs(argv: string[]): { command: string; args: string[]; flags: Re
       flags.baseUrl = argv[++i] || "";
     } else if (arg === "--json") {
       flags.json = true;
+    } else if (arg === "--version" || arg === "-v") {
+      flags.version = true;
     } else if (arg === "--help" || arg === "-h") {
       flags.help = true;
     } else if (!arg.startsWith("-")) {
@@ -67,6 +71,11 @@ function parseArgs(argv: string[]): { command: string; args: string[]; flags: Re
 
 async function main(): Promise<void> {
   const { command, args, flags } = parseArgs(process.argv.slice(2));
+
+  if (flags.version) {
+    console.log(VERSION);
+    return;
+  }
 
   if (flags.help || !command) {
     usage();

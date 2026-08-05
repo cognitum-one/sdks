@@ -31,14 +31,6 @@ const { MetaLlmClient } = require("@cognitum-one/sdk/meta-llm");
 const baseUrl = process.env.COGNITUM_API_BASE_URL ?? "https://api.cognitum.one";
 const apiKey = process.env.COGNITUM_API_KEY;
 
-// Operations the SDK models that the live gateway does NOT serve today.
-// Listed rather than skipped silently: each entry is a live-vs-SDK contract
-// gap, and this check fails if one ever starts working -- at which point the
-// gap is closed and the entry should be deleted, not left to rot.
-const KNOWN_ABSENT = [
-  { name: "whoami", call: (client) => client.whoami(), issue: "https://github.com/cognitum-one/sdks/issues/135" },
-];
-
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
@@ -91,6 +83,11 @@ async function main() {
     }
   }));
 
+  failures.push(await check("whoami returns authenticated identity", async () => {
+    const { data } = await client.whoami();
+    assert(data && typeof data === "object", `identity response is empty: ${JSON.stringify(data)}`);
+  }));
+
   failures.push(await check("chat.completions returns real content", async () => {
     const { data } = await client.chat.completions({
       model: "cognitum-low",
@@ -118,18 +115,6 @@ async function main() {
     assert(typeof data?.totals?.totalTokens === "number", `usage totals missing totalTokens: ${JSON.stringify(data?.totals)}`);
     assert(data.totals.requests > 0, "usage reports zero requests in the month we just made requests in");
   }));
-
-  for (const absent of KNOWN_ABSENT) {
-    failures.push(await check(`${absent.name} is still absent (tracked: ${absent.issue})`, async () => {
-      try {
-        await absent.call(client);
-      } catch (error) {
-        assert(error.status === 404, `expected 404, got ${error.status} (${error.kind})`);
-        return;
-      }
-      throw new Error(`${absent.name} now works -- the gap is closed; delete it from KNOWN_ABSENT and see ${absent.issue}`);
-    }));
-  }
 
   const real = failures.filter(Boolean);
   if (real.length > 0) {

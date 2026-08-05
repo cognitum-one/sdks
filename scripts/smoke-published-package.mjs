@@ -85,7 +85,11 @@ async function main() {
   for (const bin of bins) {
     const binPath = join(process.cwd(), "node_modules", ".bin", bin);
     try {
-      const { stdout, stderr } = await execFileAsync(process.execPath, [binPath, "--version"], { timeout: 30_000 });
+      const command = process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : process.execPath;
+      const args = process.platform === "win32"
+        ? ["/d", "/s", "/c", `"${binPath}.cmd" --version`]
+        : [binPath, "--version"];
+      const { stdout, stderr } = await execFileAsync(command, args, { timeout: 30_000 });
       const output = `${stdout}${stderr}`.trim();
       if (!output) throw new Error("produced no output");
       console.log(`ok   ${bin} --version -> ${output.split("\n")[0].slice(0, 60)}`);
