@@ -196,7 +196,11 @@ export function parseTraceState(header: string): TraceStateMember[] | null {
     // W3C tracestate OWS is space/HTAB only (RFC 7230 OWS), not arbitrary
     // Unicode whitespace -- match Rust's `trim_matches(' ' | '\t')` exactly
     // rather than `String.prototype.trim()`'s broader definition.
-    const member = rawMember.replace(/^[ \t]+|[ \t]+$/g, "");
+    let start = 0;
+    let end = rawMember.length;
+    while (start < end && (rawMember[start] === " " || rawMember[start] === "\t")) start++;
+    while (end > start && (rawMember[end - 1] === " " || rawMember[end - 1] === "\t")) end--;
+    const member = rawMember.slice(start, end);
     if (member.length === 0) {
       return null;
     }

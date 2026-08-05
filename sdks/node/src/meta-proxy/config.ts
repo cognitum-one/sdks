@@ -196,7 +196,9 @@ export function resolveMetaProxyClientConfig(
   if (!rawOrigin) {
     throw new TypeError("MetaProxyClientConfig.origin must not be empty when provided");
   }
-  const trimmed = rawOrigin.replace(/\/+$/, "");
+  let end = rawOrigin.length;
+  while (end > 0 && rawOrigin.charCodeAt(end - 1) === 47) end--;
+  const trimmed = rawOrigin.slice(0, end);
   if (!/^https?:\/\//i.test(trimmed)) {
     throw new TypeError(
       `MetaProxyClientConfig.origin must be an http(s) URL; got "${config.origin}"`,
