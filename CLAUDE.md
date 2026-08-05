@@ -108,10 +108,12 @@ claiming `stable` in the manifest must cite executable conformance tests in all 
 languages, plus security and artifact evidence.
 
 **`live-smoke`** (daily, after a successful release, on demand) — installs the
-**published** SDK from npm into a clean directory and drives it against live
-`api.cognitum.one`. Every other suite runs against mocks, so this is the only check
-that would notice the gateway changing a route or a response shape. Assertions are on
-**semantics, not status codes**: a 200 carrying an empty completion is a failure.
+**published** SDKs from npm, PyPI, and crates.io into clean consumer environments
+at one exact version, then drives all three in independent jobs against live
+`api.cognitum.one` so one unavailable registry cannot suppress the others' evidence.
+Every other suite runs against mocks, so this is the only check that would notice
+the gateway changing a route or a response shape. Assertions are on **semantics,
+not status codes**: a 200 carrying an empty completion is a failure.
 
 **`release`** — tag-triggered, see `.github/RELEASE-SETUP.md`.
 

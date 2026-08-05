@@ -28,7 +28,7 @@ cross-language release gate. The implementation has since advanced as follows:
 | Cross-language | Receipt canonicalization, error mapping/`Retry-After`, and request-body wire corpora under `sdks/fixtures/`, driven by all three languages |
 | CI | `.github/workflows/ci.yml` aggregates language, security, feature, manifest, and coverage jobs into required `GA gate (maturity + evidence)`; `.github/workflows/security.yml` remains a separate reusable scan |
 | Release | `.github/workflows/release.yml` builds once, validates immutable artifacts, supports non-publishing rehearsal, publishes sequentially with digest-safe resume, and verifies registry artifacts; release tags are immutable |
-| Deployed seam | `.github/workflows/live-smoke.yml` installs the published npm artifact and checks semantic behavior against `api.cognitum.one`; Python/Rust parity remains open in issue #143 |
+| Deployed seam | `.github/workflows/live-smoke.yml` resolves one version, then independently installs the published npm, PyPI, and crates.io artifacts in parallel jobs and checks semantic behavior against `api.cognitum.one` in all three languages (issue #143) |
 
 Representative package/test baselines are `sdks/node/package.json`,
 `sdks/python/pyproject.toml`, and `sdks/rust/Cargo.toml`. The authoritative

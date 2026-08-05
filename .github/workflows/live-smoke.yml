@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Published version to smoke (default: latest on npm)'
+        description: 'Published version to smoke in all registries (default: manifest registryVersion)'
         required: false
         type: string
   schedule:
@@ -34,11 +34,13 @@ permissions:
   contents: read
 
 jobs:
-  smoke:
-    name: published SDK against api.cognitum.one
+  resolve_version:
+    name: resolve one published version
     # On a release trigger, only bother if the release actually succeeded.
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -46,7 +48,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
-      - name: Install the published SDK from npm
+      - name: Resolve the published version
+        id: version
         # Both values go through `env`, never into the script body. A `${{ }}`
         # expression is substituted before bash parses the line, so a dispatch
         # input of `"; id; echo "` would be executed as shell -- and the
@@ -66,15 +69,111 @@ jobs:
           if [ -z "${VERSION}" ] && [ -n "${RELEASE_TAG:-}" ]; then
             VERSION="${RELEASE_TAG#v}"
           fi
-          SPEC="@cognitum-one/sdk@${VERSION:-latest}"
+          if [ -z "${VERSION}" ]; then
+            VERSION="$(node -e '
+              const manifest = require("./capabilities/sdk-release.v1.json");
+              const versions = Object.values(manifest.languages).map((language) => language.registryVersion);
+              if (new Set(versions).size !== 1) {
+                throw new Error("registryVersion mismatch: " + versions.join(", "));
+              }
+              process.stdout.write(versions[0]);
+            ')"
+          fi
+          if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "invalid release version: ${VERSION}" >&2
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "smoking published version ${VERSION} in all registries"
+
+  node:
+    name: published Node SDK against api.cognitum.one
+    needs: resolve_version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: Install the published SDK from npm
+        env:
+          VERSION: ${{ needs.resolve_version.outputs.version }}
+        run: |
+          set -euo pipefail
+          SPEC="@cognitum-one/sdk@${VERSION}"
           echo "installing ${SPEC}"
-          mkdir -p live && cd live
+          mkdir -p live/node && cd live/node
           npm init -y >/dev/null
           npm install --save-exact "${SPEC}"
           node -e "console.log('smoking @cognitum-one/sdk@' + require('./node_modules/@cognitum-one/sdk/package.json').version)"
-      - name: Smoke the live gateway
-        working-directory: live
+      - name: Smoke the live gateway with Node
+        working-directory: live/node
         env:
           COGNITUM_API_KEY: ${{ secrets.COGNITUM_LIVE_SMOKE_KEY }}
           COGNITUM_API_BASE_URL: https://api.cognitum.one
         run: node "${GITHUB_WORKSPACE}/scripts/live-smoke.mjs"
+
+  python:
+    name: published Python SDK against api.cognitum.one
+    needs: resolve_version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install the published SDK from PyPI
+        env:
+          VERSION: ${{ needs.resolve_version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python -m venv live/python
+          SPEC="cognitum-sdk${VERSION:+==${VERSION}}"
+          echo "installing ${SPEC}"
+          live/python/bin/pip install --disable-pip-version-check "${SPEC}"
+          live/python/bin/python -c "import cognitum; print('smoking cognitum-sdk@' + cognitum.__version__)"
+      - name: Smoke the live gateway with Python
+        env:
+          COGNITUM_API_KEY: ${{ secrets.COGNITUM_LIVE_SMOKE_KEY }}
+          COGNITUM_API_BASE_URL: https://api.cognitum.one
+        run: live/python/bin/python scripts/live_smoke.py
+
+  rust:
+    name: published Rust SDK against api.cognitum.one
+    needs: resolve_version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - name: Install the published SDK from crates.io
+        env:
+          VERSION: ${{ needs.resolve_version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p live/rust/src
+          cp scripts/live-smoke.rs live/rust/src/main.rs
+          cat > live/rust/Cargo.toml <<EOF
+          [package]
+          name = "cognitum-live-smoke"
+          version = "0.0.0"
+          edition = "2021"
+
+          [dependencies]
+          cognitum-one = { version = "=${VERSION}", features = ["meta-llm"] }
+          tokio = { version = "1", features = ["macros", "rt"] }
+          EOF
+          # Generate and then enforce a consumer lockfile. `cargo metadata
+          # --no-deps` does not create one, so `cargo run --locked` would fail
+          # before compiling the published SDK.
+          cargo generate-lockfile --manifest-path live/rust/Cargo.toml
+      - name: Smoke the live gateway with Rust
+        env:
+          COGNITUM_API_KEY: ${{ secrets.COGNITUM_LIVE_SMOKE_KEY }}
+          COGNITUM_API_BASE_URL: https://api.cognitum.one
+        run: cargo run --locked --manifest-path live/rust/Cargo.toml
