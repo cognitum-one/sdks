@@ -28,3 +28,4 @@ Maintainers will acknowledge a complete report within three business days, triag
 - Authentication, tenant attribution, consent, billing, and redaction fail closed.
 - Release artifacts are built once, tested in clean environments, digest-bound, and published through protected workflows.
 - A green source test suite is not proof that a registry artifact or deployed service works; published-artifact and live-seam checks are separate gates.
+- Secret-scan exceptions must match an exact synthetic fixture in `.gitleaks.toml`; path-wide or provider-prefix exceptions are not accepted.

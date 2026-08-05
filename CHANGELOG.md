@@ -18,6 +18,8 @@ For per-SDK detail, see:
   adding an explicit patent grant for users and contributors.
 - Added the public security, support, contribution, conduct, ownership, issue,
   and pull-request policies required before repository visibility changes.
+- Added narrow exact-fixture Gitleaks exceptions so full-history scanning can
+  block real findings without treating synthetic test canaries as credentials.
 - Distinguished prepared source version `0.4.0` from registry version `0.3.0`.
 
 

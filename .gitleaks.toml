@@ -1,0 +1,23 @@
+[extend]
+useDefault = true
+
+# These values are deliberate synthetic fixtures. Keep allowlisting scoped to
+# exact canary shapes; never allow an entire test path or a provider prefix.
+[[allowlists]]
+description = "Synthetic SDK credential canaries"
+regexTarget = "secret"
+regexes = [
+  '''sk-test-canary-1234''',
+  '''cog_test_canary_1234''',
+  '''test-api-key-1234''',
+  '''mh1.env-canary''',
+  '''mh1.explicit-canary''',
+]
+
+[[allowlists]]
+description = "Synthetic high-entropy redaction fixtures"
+regexTarget = "secret"
+regexes = [
+  '''eee65f53e9421ce50211670eae679f02''',
+  '''a4c123b1612dd272d1371c17149d439536b3216fdaeeb975729fae923d5a4fd1''',
+]
