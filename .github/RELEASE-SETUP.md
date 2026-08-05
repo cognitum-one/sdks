@@ -6,20 +6,25 @@ The `release.yml` workflow publishes only tags shaped like `v1.2.3` or
 compares registry digests with the workflow-built artifacts before installing
 each exact version.
 
-## One-time owner setup (Ruv)
+## One-time owner setup
 
 1. In GitHub repository settings, create an environment named `release`. Add
-   Ruv (or the release-maintainers team) as a required reviewer, prevent
-   self-review where the plan supports it, restrict deployment branches/tags to
-   protected tags, and do not allow administrators to bypass the protection.
+   the release-maintainers team as required reviewers, prevent
+   self-review where the plan supports it, restrict deployments to the `main`
+   branch and protected `v*` tags, and do not allow administrators to bypass
+   the protection. The `main` policy is required for the dispatch-only npm
+   staging rehearsal; the tag policy is required for real releases.
 2. Add an active tag ruleset for `refs/tags/v*` that restricts tag creation,
    update, and deletion to release maintainers. Releases must point to a commit
    already merged into protected `main`.
 3. On npm, configure a trusted publisher for `@cognitum-one/sdk`:
    organization/repository `cognitum-one/sdks`, workflow `release.yml`,
-   environment `release`. Remove legacy write tokens after one successful OIDC
-   release. npm trusted publishing requires a GitHub-hosted runner; this
-   workflow uses Node 24 and a current npm CLI.
+   environment `release`. Allow both `npm publish` and `npm stage publish`.
+   Confirm the binding with `npm trust list @cognitum-one/sdk`; npm's public
+   package metadata does not expose it. Remove legacy write tokens only after
+   one successful OIDC operation. npm trusted publishing requires a
+   GitHub-hosted runner; this workflow uses Node 24 and pins npm 11.18.0 for
+   staged publishing.
 4. On PyPI, configure a GitHub trusted publisher for `cognitum-sdk`: owner
    `cognitum-one`, repository `sdks`, workflow `release.yml`, environment
    `release`. Remove the old PyPI upload token after one successful OIDC
@@ -41,16 +46,36 @@ at the last version actually observed in each registry until publication.
 
 Run the `release` workflow via **workflow_dispatch** with the version you are
 about to ship. It runs every gate and builds every artifact, then stops before
-the three publish jobs. It is free, repeatable, and publishes nothing.
+the three publish jobs when `npm_action` is `rehearse-only`. It is free,
+repeatable, and publishes nothing.
+
+### Proving the npm trusted publisher
+
+OIDC authentication cannot be proved by `npm whoami`, `npm publish --dry-run`,
+or public registry metadata: npm exchanges the GitHub token only during a
+publish or stage operation. For the first npm rehearsal:
+
+1. Prepare and merge a coordinated prerelease version such as `0.4.1-rc.1` in
+   every source-version location and changelog required by the preflight.
+2. Dispatch `release.yml` from that exact `main` commit with the matching
+   version, `npm_action=stage-prerelease`, and confirmation
+   `@cognitum-one/sdk@0.4.1-rc.1`.
+3. Review and approve the `release` environment deployment. The job refuses a
+   stable version, a mismatched confirmation, an already-public version, or an
+   ambiguous registry response. It supplies no npm token.
+4. On npm, inspect the staged package and its source/provenance binding, then
+   **reject the stage**. Do not promote it during a rehearsal.
+
+`npm stage publish` is recoverable and does not make the version public. Stage
+approval/rejection requires an interactive registry-owner session and is
+deliberately outside GitHub Actions. A later tag-triggered release continues to
+use ordinary `npm publish`, with prereleases assigned to dist-tag `next`.
 
 Do this before every release. It is the only safe rehearsal available:
 
-- A **prerelease tag is not a rehearsal.** `release-preflight.mjs` requires the
-  tag version to equal every source literal, so `v0.4.0-rc.1` fails against a
-  0.4.0 source tree. Bumping the source to `0.4.0-rc.1` does not fix it
-  either: PEP 440 normalises that to `0.4.0rc1`, so the built wheel is named
-  for a version `verify-release-artifacts.mjs` will not find on PyPI. Proper
-  prerelease support is tracked separately.
+- A **prerelease tag is not a rehearsal.** A tag invokes the public,
+  irreversible three-registry chain. Use dispatch plus npm staging to test the
+  npm binding without involving deferred PyPI or crates.io publication.
 - A **failed tag cannot be retried.** The `release tags` ruleset blocks
   deletion, update and force-push on `refs/tags/v*` with no bypass actors, by
   design -- a published release tag must be immutable. The consequence is that
