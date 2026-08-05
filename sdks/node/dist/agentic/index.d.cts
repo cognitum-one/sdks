@@ -24,14 +24,70 @@ interface CapabilitySet {
  * here; concrete HTTP mapping lands with each product client.
  */
 /** Agentic extension of the ADR-0004 base error kind enumeration (ADR-0023 §D1). */
-type AgenticErrorKind = "configuration" | "authentication" | "permission_denied" | "not_found" | "validation" | "conflict" | "rate_limited" | "budget_exceeded" | "safety_blocked" | "consent_required" | "unsupported_capability" | "protocol" | "integrity" | "isolation_unavailable" | "transport" | "deadline_exceeded" | "cancelled" | "process_failed" | "operation_failed" | "unknown";
+type AgenticErrorKind = "configuration" | "authentication" | "permission_denied" | "not_found" | "validation" | "conflict" | "rate_limited" | "budget_exceeded"
+/**
+ * The caller's plan does not include what they asked for — a *scope*
+ * shortfall, not a spend one (ADR-0023 §D1, added 2026-07-31).
+ *
+ * Distinct from `budget_exceeded` because the remedy is different and a
+ * caller cannot act on the wrong one: `budget_exceeded` means "you have
+ * spent what you allocated", and sends a user to look at usage;
+ * `upgrade_required` means "you never bought this tier", and sends them
+ * to their plan. Both arrive as HTTP 402, so status alone cannot separate
+ * them — the server's `code` field does. See `upgrade` on `AgenticError`
+ * for the affordance describing what to buy.
+ */
+ | "upgrade_required" | "safety_blocked" | "consent_required" | "unsupported_capability" | "protocol" | "integrity" | "isolation_unavailable" | "transport" | "deadline_exceeded" | "cancelled" | "process_failed" | "operation_failed" | "unknown";
+/**
+ * What the server says would make the rejected call succeed, carried on a
+ * `upgrade_required` error (ADR-0023 §D1).
+ *
+ * Every field is optional on purpose: this is a server-supplied affordance,
+ * and a caller that hard-requires any one of them would break the moment the
+ * gateway omits it. Render what is present; never infer what is not.
+ */
+interface UpgradeAffordance {
+    /** Tier that would satisfy the request, e.g. `"mid"`. */
+    readonly requiredTier?: string;
+    /** Tier the credential currently holds, e.g. `"low"`. */
+    readonly heldTier?: string;
+    /** Scope that was missing, e.g. `"completions:mid"`. */
+    readonly requiredScope?: string;
+    /** Where a human goes to change their plan. */
+    readonly upgradeUrl?: string;
+    /**
+     * Present only when the server can offer an in-scope retry (auto mode with
+     * `fail_fast`); an explicitly over-scope model alias omits it. Absence
+     * means "there is no way to retry this as asked" — it is not an error.
+     *
+     * This SDK never acts on it automatically. `upgrade_required` is
+     * non-retryable, and silently downgrading someone's request to a cheaper
+     * tier is a decision only the caller can make.
+     */
+    readonly retryWith?: UpgradeRetryHint;
+}
+/**
+ * Server hint describing a retry that would be in scope.
+ *
+ * Deliberately narrow. An earlier draft preserved every unrecognised
+ * `retry_with` key verbatim for forward compatibility, which put unbounded,
+ * server-controlled JSON onto an error object that callers routinely log.
+ * ADR-0028 §D10 forbids capturing credentials, cookies and pre-signed URLs at
+ * all, and nothing downstream redacts this field. A key no version of this
+ * SDK understands is also a key no caller can act on, so the trade bought
+ * nothing and cost a leak path. Add fields here as the server ships them.
+ */
+interface UpgradeRetryHint {
+    /** e.g. `"best_effort"`. */
+    readonly fallbackPolicy?: string;
+}
 /** Operation retry classification (ADR-0023 §D3). A status code alone is never sufficient. */
 type OperationRetryClass = "safe_read" | "idempotent_mutation" | "idempotent_with_key" | "non_idempotent" | "streaming" | "local_process";
 /**
  * Common failure shape shared by every agentic product (ADR-0023 §D1).
  *
- * `message`, `details`, and `cause` MUST be redacted by the caller before
- * this type is constructed for exposure — this base class does not perform
+ * `message`, `details`, `cause`, and `upgrade` MUST be redacted by the caller
+ * before this type is constructed for exposure — this base class does not perform
  * redaction itself (see `SecretRedactor` in `./credentials.js` for that
  * contract).
  */
@@ -47,6 +103,19 @@ declare class AgenticError extends Error {
     readonly retryable: boolean;
     readonly retryAfterMs?: number;
     readonly attemptCount?: number;
+    /**
+     * Server-supplied upgrade affordance. Set only for `upgrade_required`.
+     *
+     * Kept on the base shape rather than a subclass so the three SDKs expose
+     * one field name apiece — Rust has no subclassing, and a caller reading
+     * `error.upgrade` in Node, Python and Rust alike is the point.
+     *
+     * SUBJECT TO THE SAME REDACTION OBLIGATION as `message`/`details`/`cause`:
+     * every value here is server-supplied. `upgradeUrl` in particular may carry
+     * a tenant-scoped or pre-signed link, which ADR-0028 §D10 classes as never
+     * capturable. Redact before logging or forwarding.
+     */
+    readonly upgrade?: UpgradeAffordance;
     readonly details?: unknown;
     /**
      * Underlying cause of this error, wired through to the native ES2022
@@ -204,6 +273,71 @@ interface TimeBudget {
     cancelGraceMs?: number;
     retrySleepBudgetMs?: number;
 }
+
+/**
+ * `Retry-After` parsing (RFC 9110 §10.2.3).
+ *
+ * The header has TWO legal forms and a server may send either:
+ *
+ *   Retry-After: 120                              (delta-seconds)
+ *   Retry-After: Wed, 21 Oct 2015 07:28:00 GMT    (HTTP-date)
+ *
+ * All three SDKs previously handled only the first, each wrongly and each
+ * differently: Node produced `NaN` (which makes a backoff fire immediately),
+ * Python raised `ValueError` from `float()` and crashed while mapping an
+ * error, and Rust ignored the header entirely and retried as if the server
+ * had said nothing. A rate-limited gateway therefore got hammered hardest by
+ * whichever SDK you happened to be using. Found by the cross-language
+ * conformance corpus (issue #75).
+ *
+ * Returns `undefined` for anything it cannot parse. An unusable hint means
+ * "fall back to the local retry policy", never "retry now".
+ */
+/**
+ * @param value Raw header value, or null/undefined when absent.
+ * @param nowMs Current epoch ms — injectable so the HTTP-date branch is
+ *   testable without a virtual clock (ADR-0030a §D5 requires deterministic,
+ *   non-wall-clock conformance runs).
+ */
+declare function parseRetryAfterMs(value: string | null | undefined, nowMs?: number): number | undefined;
+
+/**
+ * Parsing for the server's 402 upgrade affordance (ADR-0023 §D1).
+ *
+ * The gateway returns 402 for two unrelated situations and distinguishes them
+ * with `code`:
+ *
+ *   {"code": "upgrade_required", "required_tier": "mid", "held_tier": "low",
+ *    "required_scope": "completions:mid", "upgrade_url": "...",
+ *    "retry_with": {"fallback_policy": "best_effort"}}
+ *
+ * versus a budget 402, which carries no such affordance. Status alone cannot
+ * tell them apart, and the message text must never be used to try — it is
+ * prose, it is localisable, and it is redacted before callers see it.
+ *
+ * On the Responses and Anthropic Messages surfaces these keys ride at the top
+ * level beside `error`, so one parser serves every surface.
+ */
+
+/** The `code` value that marks a 402 as a scope shortfall rather than a spend one. */
+declare const UPGRADE_REQUIRED_CODE = "upgrade_required";
+/**
+ * Parse an error body that may or may not be JSON.
+ *
+ * Returns `undefined` rather than throwing: a 402 can arrive from a proxy or
+ * WAF as HTML, and an error mapper that throws while mapping an error
+ * replaces a useful failure with a confusing one.
+ */
+declare function parseErrorBody(bodyText: string): Record<string, unknown> | undefined;
+/**
+ * Extract the upgrade affordance from a parsed error body.
+ *
+ * Returns `undefined` when the server sent none of the fields, so a caller can
+ * treat "no affordance" and "no useful affordance" identically.
+ */
+declare function parseUpgradeAffordance(body: Record<string, unknown> | undefined): UpgradeAffordance | undefined;
+/** Is this 402 body a scope shortfall (as opposed to a budget one)? */
+declare function isUpgradeRequired(body: Record<string, unknown> | undefined): boolean;
 
 /**
  * Credential-provider contract and secret redaction (ADR-0022 §D1, §D10).
@@ -756,9 +890,17 @@ interface RequestContext {
 
 /**
  * OperationHandle / OperationState and transport-neutral pagination /
- * event-stream primitives (ADR-0019 §D5, ADR-0023 §D9). Type-only
- * scaffolding — issue #52 / M1. No polling loop or event-stream
- * implementation ships in this pass.
+ * event-stream primitives (ADR-0019 §D5, ADR-0023 §D9), plus a shared
+ * `waitForOperation` polling-loop helper (ADR-0023 §D8/§D9, issue #55).
+ *
+ * The event-stream resumption behavior described in ADR-0023 §D6
+ * (boundary-event dedup, gap/regression detection, `Last-Event-ID` replay)
+ * deliberately does NOT ship here — every durable-operation client that
+ * would consume it (HarnessaaS async jobs, Meta-LLM batches, Meta-Proxy
+ * sponsor ops) is still blocked on its own upstream contract landing
+ * (issues #59, #62, #68). Designing that resumption logic without a real
+ * consumer to validate it against risks freezing the wrong contract —
+ * see the M1 cross-language consistency review's fail-closed philosophy.
  */
 
 /** Native lifecycle states for a durable remote operation (ADR-0023 §D9). */
@@ -824,6 +966,52 @@ interface Page<T> {
     nextCursor?: string;
     hasMore: boolean;
 }
+/** Options controlling {@link waitForOperation}, beyond the {@link WaitOptions} passed to it. */
+interface WaitForOperationOptions extends WaitOptions {
+    /** Retry/backoff shape for the poll cadence (ADR-0023 §D4). Defaults to {@link DEFAULT_RETRY_POLICY}. */
+    retryPolicy?: RetryPolicy;
+    /** Local-only cancellation (ADR-0023 §D7) — never sends a remote cancel. */
+    cancellation?: {
+        readonly isCancelled: boolean;
+    };
+    /**
+     * Injectable clock, milliseconds. Defaults to the monotonic
+     * `performance.now()` (available in Node, browsers, Deno, and Bun via
+     * the standard Performance API) rather than `Date.now()`, since a wall
+     * clock can jump backward or forward (NTP step, VM suspend/resume)
+     * mid-wait and corrupt the elapsed-time comparison against
+     * `waitDeadlineMs`.
+     */
+    now?: () => number;
+    /** Injectable sleep, for deterministic tests. Defaults to a real `setTimeout`. */
+    sleep?: (ms: number) => Promise<void>;
+    /** Injectable jitter per attempt (ADR-0023 §D4's caller-injected jitter for fixed-seed conformance fixtures). Defaults to 0. */
+    jitterMs?: (attempt: number) => number;
+}
+/**
+ * Product-agnostic polling loop implementing {@link OperationHandle.wait}'s
+ * shared semantics (ADR-0023 §D8/§D9): bounded equal-jitter backoff (the
+ * exact algorithm ADR-0005/ADR-0023 already freeze — see
+ * `equalJitterDelayMs`), a `waitDeadlineMs` ceiling that raises
+ * `deadline_exceeded` with the latest snapshot attached (never marks the
+ * remote operation itself failed or cancelled), and early return on any
+ * terminal state (including `approval_required`, per D9). Poll iterations
+ * are bounded only by the wait deadline, not `retryPolicy.maxAttempts` —
+ * that field governs a single HTTP request's retry budget, a distinct
+ * concern from "keep checking a long-running job" (D9: "not counted as
+ * retrying the operation itself").
+ *
+ * A concrete `OperationHandle` implementation's own `wait()` method is
+ * expected to delegate to this helper rather than re-implementing backoff
+ * by hand — this is the "same bounded jitter policy" D9 requires every
+ * product client to share.
+ *
+ * Not implemented here: D9's "state regression, identity change, or a
+ * second different terminal state is a ProtocolError" — detecting that
+ * requires a real durable-operation client to observe actual regression
+ * behavior against, same rationale as this module's D6 deferral above.
+ */
+declare function waitForOperation<TResult>(handle: Pick<OperationHandle<TResult>, "get">, options?: WaitForOperationOptions): Promise<OperationSnapshot<TResult>>;
 
 /**
  * ExecutionReceipt / LineageReference type-only stubs (ADR-0028 §D7, §D9).
@@ -1374,4 +1562,4 @@ interface LineageChainVerification {
  */
 declare function verifyLineageChain(chain: LineageReference[], opts: VerifyLineageChainOptions): LineageChainVerification;
 
-export { ALL_METRIC_INSTRUMENT_KINDS, ATTR_CACHE_RESULT, ATTR_CONTRACT_VERSION, ATTR_ERROR_KIND, ATTR_MODEL_ALIAS, ATTR_OPERATION, ATTR_OPERATION_STATE, ATTR_PRODUCT, ATTR_PROTOCOL, ATTR_REQUEST_ID, ATTR_RETRY_COUNT, ATTR_ROUTING_PLANE, ATTR_ROUTING_REASON, ATTR_TENANT_HASH, ATTR_TIER, AgenticError, type AgenticErrorKind, type BudgetPolicy, type BuildExecutionReceiptInput, type CancellationReason, type CancellationToken, type CapabilitySet, type CapabilitySource, type ConsentGrant, type ConsentGrantKind, ConsentRequiredError, type CostFinality, type CostObservation, type Credential, type CredentialAuthority, type CredentialProvider, type CredentialRequest, D10_RELEVANT_CATEGORIES, type D12Category, DEFAULT_API_KEY_ENV_VAR, DEFAULT_RETRY_POLICY, DEFAULT_TRACE_FLAGS, type DiagnosticBundle, type DiagnosticManifest, type DiagnosticPolicy, type DiagnosticSink, EVENT_ARTIFACT_VERIFIED, EVENT_BUDGET_COMMITTED, EVENT_BUDGET_RELEASED, EVENT_BUDGET_RESERVED, EVENT_CAPABILITIES_LOADED, EVENT_CONSENT_REQUIRED, EVENT_EVIDENCE_VERIFIED, EVENT_OPERATION_STATE_CHANGED, EVENT_OPERATION_WAIT_ENDED, EVENT_PROCESS_ENDED, EVENT_PROCESS_STARTED, EVENT_REQUEST_END, EVENT_REQUEST_RETRY_SCHEDULED, EVENT_REQUEST_START, EVENT_STREAM_END, EVENT_STREAM_FIRST_EVENT, EVENT_TELEMETRY_DROPPED, type EventStreamOptions, type ExecutionReceipt, type IdempotencyBindingV1, type LineageChainVerification, type LineageReference, MAX_TRACESTATE_MEMBERS, MEASUREMENT_KIND_BY_INSTRUMENT, METRIC_CACHE_TOKEN_COUNT, METRIC_CANCELLATION_COUNT, METRIC_COST_COMMITTED, METRIC_COST_RECONCILED, METRIC_COST_RELEASED, METRIC_COST_RESERVED, METRIC_ERROR_COUNT, METRIC_FIRST_EVENT_LATENCY, METRIC_INPUT_TOKEN_COUNT, METRIC_OPERATION_STATE_TRANSITION_COUNT, METRIC_OUTPUT_TOKEN_COUNT, METRIC_PROCESS_EXIT_COUNT, METRIC_PROCESS_FORCED_TERMINATION_COUNT, METRIC_REQUEST_COUNT, METRIC_REQUEST_DURATION, METRIC_RETRY_COUNT, METRIC_SAFETY_TOKEN_COUNT, METRIC_STREAM_DURATION, METRIC_VERIFICATION_RESULT_COUNT, type MeasurementKind, type MetricInstrumentKind, NEVER_CAPTURABLE_CATEGORIES, NoopTelemetrySink, OAuthTokenCredentialProvider, type OAuthTokenCredentialProviderOptions, type OAuthTokenSource, type OAuthTokenSourceResult, type OnUnknownEstimate, type OperationEvent, type OperationHandle, type OperationRetryClass, type OperationSnapshot, type OperationState, type Page, type PageRequest, PermissionDeniedError, RedactedSecret, type RedactionReport, type RequestContext, type RetentionPolicy, type RetryPolicy, type SecretClassification, type SecretRedactor, SentinelSecretRedactor, StaticApiKeyCredentialProvider, type StaticApiKeyCredentialProviderOptions, TRACE_VERSION, type TelemetryEvent, type TelemetrySeverity, type TelemetrySink, type TenantContext, type TimeBudget, type TraceContext, type TraceStateMember, UnsupportedCapabilityError, UnsupportedRuntimeError, type VerificationLevel, type VerificationResult, type VerifyLineageChainOptions, type VerifyReceiptOptions, type WaitOptions, assertScopeGranted, buildExecutionReceipt, canonicalJson, equalJitterDelayMs, formatTraceState, generateTraceParent, harnessaasSpanName, isNeverCapturable, joinOrGenerateTraceContext, measurementKindOf, metaLlmSpanName, metaProxySpanName, metaharnessSpanName, parseTraceParent, parseTraceState, previewDiagnosticManifest, sha256Hex, shapeCheckExecutionReceipt, shapeCheckLineageReference, verifyExecutionReceipt, verifyLineageChain };
+export { ALL_METRIC_INSTRUMENT_KINDS, ATTR_CACHE_RESULT, ATTR_CONTRACT_VERSION, ATTR_ERROR_KIND, ATTR_MODEL_ALIAS, ATTR_OPERATION, ATTR_OPERATION_STATE, ATTR_PRODUCT, ATTR_PROTOCOL, ATTR_REQUEST_ID, ATTR_RETRY_COUNT, ATTR_ROUTING_PLANE, ATTR_ROUTING_REASON, ATTR_TENANT_HASH, ATTR_TIER, AgenticError, type AgenticErrorKind, type BudgetPolicy, type BuildExecutionReceiptInput, type CancellationReason, type CancellationToken, type CapabilitySet, type CapabilitySource, type ConsentGrant, type ConsentGrantKind, ConsentRequiredError, type CostFinality, type CostObservation, type Credential, type CredentialAuthority, type CredentialProvider, type CredentialRequest, D10_RELEVANT_CATEGORIES, type D12Category, DEFAULT_API_KEY_ENV_VAR, DEFAULT_RETRY_POLICY, DEFAULT_TRACE_FLAGS, type DiagnosticBundle, type DiagnosticManifest, type DiagnosticPolicy, type DiagnosticSink, EVENT_ARTIFACT_VERIFIED, EVENT_BUDGET_COMMITTED, EVENT_BUDGET_RELEASED, EVENT_BUDGET_RESERVED, EVENT_CAPABILITIES_LOADED, EVENT_CONSENT_REQUIRED, EVENT_EVIDENCE_VERIFIED, EVENT_OPERATION_STATE_CHANGED, EVENT_OPERATION_WAIT_ENDED, EVENT_PROCESS_ENDED, EVENT_PROCESS_STARTED, EVENT_REQUEST_END, EVENT_REQUEST_RETRY_SCHEDULED, EVENT_REQUEST_START, EVENT_STREAM_END, EVENT_STREAM_FIRST_EVENT, EVENT_TELEMETRY_DROPPED, type EventStreamOptions, type ExecutionReceipt, type IdempotencyBindingV1, type LineageChainVerification, type LineageReference, MAX_TRACESTATE_MEMBERS, MEASUREMENT_KIND_BY_INSTRUMENT, METRIC_CACHE_TOKEN_COUNT, METRIC_CANCELLATION_COUNT, METRIC_COST_COMMITTED, METRIC_COST_RECONCILED, METRIC_COST_RELEASED, METRIC_COST_RESERVED, METRIC_ERROR_COUNT, METRIC_FIRST_EVENT_LATENCY, METRIC_INPUT_TOKEN_COUNT, METRIC_OPERATION_STATE_TRANSITION_COUNT, METRIC_OUTPUT_TOKEN_COUNT, METRIC_PROCESS_EXIT_COUNT, METRIC_PROCESS_FORCED_TERMINATION_COUNT, METRIC_REQUEST_COUNT, METRIC_REQUEST_DURATION, METRIC_RETRY_COUNT, METRIC_SAFETY_TOKEN_COUNT, METRIC_STREAM_DURATION, METRIC_VERIFICATION_RESULT_COUNT, type MeasurementKind, type MetricInstrumentKind, NEVER_CAPTURABLE_CATEGORIES, NoopTelemetrySink, OAuthTokenCredentialProvider, type OAuthTokenCredentialProviderOptions, type OAuthTokenSource, type OAuthTokenSourceResult, type OnUnknownEstimate, type OperationEvent, type OperationHandle, type OperationRetryClass, type OperationSnapshot, type OperationState, type Page, type PageRequest, PermissionDeniedError, RedactedSecret, type RedactionReport, type RequestContext, type RetentionPolicy, type RetryPolicy, type SecretClassification, type SecretRedactor, SentinelSecretRedactor, StaticApiKeyCredentialProvider, type StaticApiKeyCredentialProviderOptions, TRACE_VERSION, type TelemetryEvent, type TelemetrySeverity, type TelemetrySink, type TenantContext, type TimeBudget, type TraceContext, type TraceStateMember, UPGRADE_REQUIRED_CODE, UnsupportedCapabilityError, UnsupportedRuntimeError, type UpgradeAffordance, type UpgradeRetryHint, type VerificationLevel, type VerificationResult, type VerifyLineageChainOptions, type VerifyReceiptOptions, type WaitForOperationOptions, type WaitOptions, assertScopeGranted, buildExecutionReceipt, canonicalJson, equalJitterDelayMs, formatTraceState, generateTraceParent, harnessaasSpanName, isNeverCapturable, isUpgradeRequired, joinOrGenerateTraceContext, measurementKindOf, metaLlmSpanName, metaProxySpanName, metaharnessSpanName, parseErrorBody, parseRetryAfterMs, parseTraceParent, parseTraceState, parseUpgradeAffordance, previewDiagnosticManifest, sha256Hex, shapeCheckExecutionReceipt, shapeCheckLineageReference, verifyExecutionReceipt, verifyLineageChain, waitForOperation };

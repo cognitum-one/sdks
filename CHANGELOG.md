@@ -23,7 +23,7 @@ For per-SDK detail, see:
 - Distinguished prepared source version `0.4.0` from registry version `0.3.0`.
 
 
-## [0.4.0] — 2026-07-31
+## [0.4.0-rc.1] — 2026-08-05
 
 Fixes a defect that made the published Python and Rust SDKs unusable against
 `api.cognitum.one`, and lands the error-taxonomy and `Retry-After` work that

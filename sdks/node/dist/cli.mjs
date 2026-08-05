@@ -60,7 +60,10 @@ var HttpClient = class {
   constructor(config) {
     const resolved = resolveApiKey(config.apiKey);
     this.apiKey = resolved;
-    this.baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+    const rawBaseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
+    let end = rawBaseUrl.length;
+    while (end > 0 && rawBaseUrl.charCodeAt(end - 1) === 47) end--;
+    this.baseUrl = rawBaseUrl.slice(0, end);
     this.timeout = config.timeout ?? DEFAULT_TIMEOUT;
     this.retries = config.retries ?? DEFAULT_RETRIES;
     this.rateLimitRetry = config.rateLimitRetry ?? true;
@@ -465,7 +468,7 @@ async function startStdioServer(apiKey, baseUrl) {
 }
 
 // src/cli.ts
-var VERSION = "0.4.0";
+var VERSION = "0.4.0-rc.1";
 function usage() {
   console.log(`
 @cognitum/sdk CLI v${VERSION}

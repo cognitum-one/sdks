@@ -9,7 +9,7 @@ This package follows [Semantic Versioning](https://semver.org/).
 
 - License changed from MIT to Apache-2.0.
 
-## [0.4.0] — 2026-07-31
+## [0.4.0-rc.1] — 2026-08-05
 
 Fixes a defect that made the published Python and Rust SDKs unusable against
 `api.cognitum.one`, and lands the error-taxonomy and `Retry-After` work that

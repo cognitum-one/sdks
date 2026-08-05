@@ -2,7 +2,8 @@
 
 - **Status:** Accepted — Partially Implemented
 - **Date:** 2026-07-18
-- **Updated:** 2026-08-05 — reconciled the plan after the `0.3.0` publication and implemented `0.4.0` release preparation. Baseline remediation, the shared agentic core, selected remote product clients, coverage gates, release tooling, and npm published-artifact smoke are implemented. Source is `0.4.0` while all registries still serve `0.3.0`; public docs now state both. Public conversion and Apache-2.0 are accepted but remain gated by history/privacy/IP review, public documentation, repository hardening, and artifact proof. PyPI/crates publication is deferred. `/v1/whoami` was deployed by `cognitum-one/api#96` and production-verified on 2026-08-05; live smoke now treats it as a required positive contract.
+- **Updated:** 2026-08-05 — npm trusted publishing is configured and read back for `cognitum-one/sdks`, `release.yml`, environment `release`, with both publish and staged-publish permissions. The authorized coordinated `0.4.0` release is entering a recoverable `0.4.0-rc.1` npm staging rehearsal; Python and Rust published `0.3.0` defects remain the user-facing reason to complete the stable release. Independent published-artifact smoke is implemented for all three languages. `/v1/whoami` remains a required positive contract.
+- **Updated:** 2026-08-05 — reconciled the plan after the `0.3.0` publication and implemented `0.4.0` release preparation. Baseline remediation, the shared agentic core, selected remote product clients, coverage gates, release tooling, and npm published-artifact smoke are implemented. Source is `0.4.0` while all registries still serve `0.3.0`; public docs now state both. Public conversion and Apache-2.0 are accepted but remain gated by history/privacy/IP review, public documentation, repository hardening, and artifact proof. PyPI/crates publication was deferred at that point. `/v1/whoami` was deployed by `cognitum-one/api#96` and production-verified on 2026-08-05; live smoke now treats it as a required positive contract.
 - **Deciders:** Cognitum SDK Working Group, Product API Owners, Release Engineering, Security, Developer Experience
 - **Scope:** cross-cutting (`sdks/node`, `sdks/python`, `sdks/rust`, migration, compatibility, registries and release operations)
 
@@ -31,8 +32,10 @@ now historical. The live state is:
 - npm, PyPI, and crates.io serve `0.3.0`;
 - source manifests and release preflight are prepared at `0.4.0`;
 - the release workflow and registry-safe resume logic are implemented;
-- npm trusted publishing is available for the next authorized release, while
-  PyPI and crates.io owner setup remains deferred;
+- npm trusted publishing is configured for both staging and publication;
+- the coordinated Python and crates.io release is now authorized, with the
+  PyPI trusted-publisher binding and crates.io environment credential still
+  requiring proof during the stable workflow;
 - public repository conversion is accepted with Apache-2.0, but visibility
   waits for the public-readiness gates;
 - operation maturity remains independent from package version: MetaHarness is

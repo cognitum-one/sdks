@@ -11,6 +11,19 @@ var AgenticError = class extends Error {
   retryable;
   retryAfterMs;
   attemptCount;
+  /**
+   * Server-supplied upgrade affordance. Set only for `upgrade_required`.
+   *
+   * Kept on the base shape rather than a subclass so the three SDKs expose
+   * one field name apiece — Rust has no subclassing, and a caller reading
+   * `error.upgrade` in Node, Python and Rust alike is the point.
+   *
+   * SUBJECT TO THE SAME REDACTION OBLIGATION as `message`/`details`/`cause`:
+   * every value here is server-supplied. `upgradeUrl` in particular may carry
+   * a tenant-scoped or pre-signed link, which ADR-0028 §D10 classes as never
+   * capturable. Redact before logging or forwarding.
+   */
+  upgrade;
   details;
   constructor(kind, message, fields) {
     super(message, { cause: fields?.cause });
@@ -26,6 +39,7 @@ var AgenticError = class extends Error {
     this.retryable = fields?.retryable ?? false;
     this.retryAfterMs = fields?.retryAfterMs;
     this.attemptCount = fields?.attemptCount;
+    this.upgrade = fields?.upgrade;
     this.details = fields?.details;
     Object.setPrototypeOf(this, new.target.prototype);
   }
@@ -96,6 +110,85 @@ function equalJitterDelayMs(attempt, policy = DEFAULT_RETRY_POLICY, serverHintMs
   const computed = expo + clampedJitter;
   const floor = Math.max(serverHintMs, computed);
   return Math.min(policy.capMs, floor);
+}
+
+// src/agentic/retry-after.ts
+var MAX_RETRY_AFTER_MS = 24 * 60 * 60 * 1e3;
+function parseRetryAfterMs(value, nowMs = Date.now()) {
+  if (value === null || value === void 0) return void 0;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return void 0;
+  if (/^\d+$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    if (!Number.isFinite(seconds)) return void 0;
+    return clamp(seconds * 1e3);
+  }
+  const targetMs = parseImfFixdateMs(trimmed);
+  if (targetMs === void 0) return void 0;
+  return clamp(Math.max(0, targetMs - nowMs));
+}
+var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+var IMF_FIXDATE = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), (\d{2}) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d{4}) (\d{2}):(\d{2}):(\d{2}) GMT$/;
+function parseImfFixdateMs(value) {
+  const match = IMF_FIXDATE.exec(value);
+  if (!match) return void 0;
+  const [, dd, mon, yyyy, hh, mm, ss] = match;
+  const day = Number(dd);
+  const month = MONTHS.indexOf(mon) + 1;
+  const year = Number(yyyy);
+  const hour = Number(hh);
+  const minute = Number(mm);
+  const second = Number(ss);
+  if (hour > 23 || minute > 59 || second > 59) return void 0;
+  if (day < 1 || day > daysInMonth(year, month)) return void 0;
+  return Date.UTC(year, month - 1, day, hour, minute, second);
+}
+function daysInMonth(year, month) {
+  if (month === 2) {
+    const leap = year % 4 === 0 && year % 100 !== 0 || year % 400 === 0;
+    return leap ? 29 : 28;
+  }
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
+}
+function clamp(ms) {
+  return Math.min(Math.round(ms), MAX_RETRY_AFTER_MS);
+}
+
+// src/agentic/upgrade.ts
+var UPGRADE_REQUIRED_CODE = "upgrade_required";
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function stringOrUndefined(value) {
+  return typeof value === "string" && value.length > 0 ? value : void 0;
+}
+function parseErrorBody(bodyText) {
+  if (!bodyText) return void 0;
+  try {
+    const parsed = JSON.parse(bodyText);
+    return isRecord(parsed) ? parsed : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function parseRetryHint(value) {
+  if (!isRecord(value)) return void 0;
+  const fallbackPolicy = stringOrUndefined(value.fallback_policy);
+  return fallbackPolicy === void 0 ? void 0 : { fallbackPolicy };
+}
+function parseUpgradeAffordance(body) {
+  if (!body) return void 0;
+  const affordance = {
+    requiredTier: stringOrUndefined(body.required_tier),
+    heldTier: stringOrUndefined(body.held_tier),
+    requiredScope: stringOrUndefined(body.required_scope),
+    upgradeUrl: stringOrUndefined(body.upgrade_url),
+    retryWith: parseRetryHint(body.retry_with)
+  };
+  return Object.values(affordance).some((field) => field !== void 0) ? affordance : void 0;
+}
+function isUpgradeRequired(body) {
+  return body?.code === UPGRADE_REQUIRED_CODE;
 }
 
 // src/agentic/credentials.ts
@@ -574,6 +667,58 @@ function previewDiagnosticManifest(policy) {
   return { wouldCapture, blockedByPolicy };
 }
 
+// src/agentic/operations.ts
+var WAIT_TERMINAL_STATES = /* @__PURE__ */ new Set([
+  "completed",
+  "failed",
+  "cancelled",
+  "approval_required"
+]);
+function defaultSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function defaultNow() {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+async function waitForOperation(handle, options) {
+  const policy = options?.retryPolicy ?? DEFAULT_RETRY_POLICY;
+  const now = options?.now ?? defaultNow;
+  const sleep = options?.sleep ?? defaultSleep;
+  const jitterMs = options?.jitterMs ?? (() => 0);
+  const waitDeadlineMs = options?.waitDeadlineMs;
+  const pollIntervalPolicy = options?.pollIntervalMs !== void 0 ? { ...policy, baseMs: options.pollIntervalMs } : policy;
+  const startedAt = now();
+  let attempt = 0;
+  let lastSnapshot;
+  for (; ; ) {
+    if (options?.cancellation?.isCancelled) {
+      throw new AgenticError("cancelled", "waitForOperation cancelled locally", {
+        retryable: false,
+        details: lastSnapshot ? { snapshot: lastSnapshot } : void 0
+      });
+    }
+    let snapshot;
+    try {
+      snapshot = await handle.get();
+    } catch (cause) {
+      if (!(cause instanceof AgenticError) || !cause.retryable) throw cause;
+      snapshot = lastSnapshot ?? { id: "", state: "pending", updatedAt: new Date(now()).toISOString() };
+    }
+    lastSnapshot = snapshot;
+    if (WAIT_TERMINAL_STATES.has(snapshot.state)) return snapshot;
+    if (waitDeadlineMs !== void 0 && now() - startedAt >= waitDeadlineMs) {
+      throw new AgenticError(
+        "deadline_exceeded",
+        `waitForOperation exceeded waitDeadlineMs=${waitDeadlineMs} without reaching a terminal state`,
+        { retryable: false, details: { snapshot: lastSnapshot } }
+      );
+    }
+    const delayMs = equalJitterDelayMs(attempt, pollIntervalPolicy, 0, jitterMs(attempt));
+    await sleep(delayMs);
+    attempt += 1;
+  }
+}
+
 // src/agentic/telemetry.ts
 var NoopTelemetrySink = class {
   async emit(_event) {
@@ -768,7 +913,11 @@ function parseTraceState(header) {
   }
   const members = [];
   for (const rawMember of header.split(",")) {
-    const member = rawMember.replace(/^[ \t]+|[ \t]+$/g, "");
+    let start = 0;
+    let end = rawMember.length;
+    while (start < end && (rawMember[start] === " " || rawMember[start] === "	")) start++;
+    while (end > start && (rawMember[end - 1] === " " || rawMember[end - 1] === "	")) end--;
+    const member = rawMember.slice(start, end);
     if (member.length === 0) {
       return null;
     }
@@ -1147,6 +1296,7 @@ export {
   SentinelSecretRedactor,
   StaticApiKeyCredentialProvider,
   TRACE_VERSION,
+  UPGRADE_REQUIRED_CODE,
   UnsupportedCapabilityError,
   UnsupportedRuntimeError,
   assertScopeGranted,
@@ -1157,18 +1307,23 @@ export {
   generateTraceParent,
   harnessaasSpanName,
   isNeverCapturable,
+  isUpgradeRequired,
   joinOrGenerateTraceContext,
   measurementKindOf,
   metaLlmSpanName,
   metaProxySpanName,
   metaharnessSpanName,
+  parseErrorBody,
+  parseRetryAfterMs,
   parseTraceParent,
   parseTraceState,
+  parseUpgradeAffordance,
   previewDiagnosticManifest,
   sha256Hex,
   shapeCheckExecutionReceipt,
   shapeCheckLineageReference,
   verifyExecutionReceipt,
-  verifyLineageChain
+  verifyLineageChain,
+  waitForOperation
 };
 //# sourceMappingURL=index.js.map

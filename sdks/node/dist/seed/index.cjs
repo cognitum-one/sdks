@@ -986,7 +986,9 @@ function normalise(peerUrl) {
   try {
     return normaliseBaseUrl2(peerUrl);
   } catch {
-    return peerUrl.replace(/\/+$/, "");
+    let end = peerUrl.length;
+    while (end > 0 && peerUrl.charCodeAt(end - 1) === 47) end--;
+    return peerUrl.slice(0, end);
   }
 }
 async function pairAll(peers, clientName, pair, book) {

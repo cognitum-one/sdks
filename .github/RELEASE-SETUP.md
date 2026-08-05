@@ -55,11 +55,11 @@ OIDC authentication cannot be proved by `npm whoami`, `npm publish --dry-run`,
 or public registry metadata: npm exchanges the GitHub token only during a
 publish or stage operation. For the first npm rehearsal:
 
-1. Prepare and merge a coordinated prerelease version such as `0.4.1-rc.1` in
+1. Prepare and merge a coordinated prerelease version such as `0.4.0-rc.1` in
    every source-version location and changelog required by the preflight.
 2. Dispatch `release.yml` from that exact `main` commit with the matching
    version, `npm_action=stage-prerelease`, and confirmation
-   `@cognitum-one/sdk@0.4.1-rc.1`.
+   `@cognitum-one/sdk@0.4.0-rc.1`.
 3. Review and approve the `release` environment deployment. The job refuses a
    stable version, a mismatched confirmation, an already-public version, or an
    ambiguous registry response. It supplies no npm token.

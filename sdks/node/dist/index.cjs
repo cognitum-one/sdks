@@ -97,7 +97,10 @@ var HttpClient = class {
   constructor(config) {
     const resolved = resolveApiKey(config.apiKey);
     this.apiKey = resolved;
-    this.baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+    const rawBaseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
+    let end = rawBaseUrl.length;
+    while (end > 0 && rawBaseUrl.charCodeAt(end - 1) === 47) end--;
+    this.baseUrl = rawBaseUrl.slice(0, end);
     this.timeout = config.timeout ?? DEFAULT_TIMEOUT;
     this.retries = config.retries ?? DEFAULT_RETRIES;
     this.rateLimitRetry = config.rateLimitRetry ?? true;
@@ -320,6 +323,7 @@ var CatalogResource = class {
   constructor(client) {
     this.client = client;
   }
+  client;
   /** Browse available products, optionally filtered by category. */
   async browse(options) {
     const params = new URLSearchParams();
@@ -337,6 +341,7 @@ var OrdersResource = class {
   constructor(client) {
     this.client = client;
   }
+  client;
   /** Look up the status of an existing order by email. */
   async status(email) {
     const params = new URLSearchParams({ email });
@@ -357,6 +362,7 @@ var LeadsResource = class {
   constructor(client) {
     this.client = client;
   }
+  client;
   /** Subscribe an email to the notify-me / waitlist list. */
   async subscribe(params) {
     await this.client.request("POST", "/saveNotifyLead", params);
@@ -368,6 +374,7 @@ var ContactResource = class {
   constructor(client) {
     this.client = client;
   }
+  client;
   /** Send a contact message. Triggers an email to the Cognitum team. */
   async send(params) {
     await this.client.request("POST", "/sendContactEmail", params);
@@ -379,6 +386,7 @@ var DevicesResource = class {
   constructor(client) {
     this.client = client;
   }
+  client;
   /** Register a new device with its Ed25519 public key. */
   async register(params) {
     await this.client.request("POST", "/seedRegisterDevice", params);
@@ -402,6 +410,7 @@ var McpResource = class {
   constructor(client) {
     this.client = client;
   }
+  client;
   /** List all available MCP tools. */
   async listTools() {
     return this.client.request("GET", "/apiMcpTools");
@@ -439,6 +448,7 @@ var BrainResource = class {
   constructor(client) {
     this.client = client;
   }
+  client;
   /** Share a new memory / knowledge entry. */
   async share(params) {
     return this.client.request("POST", "/brain/share", params);

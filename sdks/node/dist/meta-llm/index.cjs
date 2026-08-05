@@ -62,7 +62,9 @@ function resolveMetaLlmClientConfig(config) {
   if (!config.baseUrl) {
     throw new TypeError("MetaLlmClientConfig.baseUrl is required");
   }
-  const trimmed = config.baseUrl.replace(/\/+$/, "");
+  let end = config.baseUrl.length;
+  while (end > 0 && config.baseUrl.charCodeAt(end - 1) === 47) end--;
+  const trimmed = config.baseUrl.slice(0, end);
   const isHttps = /^https:\/\//i.test(trimmed);
   if (!isHttps) {
     if (!config.allowInsecureHttp) {
@@ -447,6 +449,19 @@ var AgenticError = class extends Error {
   retryable;
   retryAfterMs;
   attemptCount;
+  /**
+   * Server-supplied upgrade affordance. Set only for `upgrade_required`.
+   *
+   * Kept on the base shape rather than a subclass so the three SDKs expose
+   * one field name apiece — Rust has no subclassing, and a caller reading
+   * `error.upgrade` in Node, Python and Rust alike is the point.
+   *
+   * SUBJECT TO THE SAME REDACTION OBLIGATION as `message`/`details`/`cause`:
+   * every value here is server-supplied. `upgradeUrl` in particular may carry
+   * a tenant-scoped or pre-signed link, which ADR-0028 §D10 classes as never
+   * capturable. Redact before logging or forwarding.
+   */
+  upgrade;
   details;
   constructor(kind, message, fields) {
     super(message, { cause: fields?.cause });
@@ -462,6 +477,7 @@ var AgenticError = class extends Error {
     this.retryable = fields?.retryable ?? false;
     this.retryAfterMs = fields?.retryAfterMs;
     this.attemptCount = fields?.attemptCount;
+    this.upgrade = fields?.upgrade;
     this.details = fields?.details;
     Object.setPrototypeOf(this, new.target.prototype);
   }
@@ -493,6 +509,85 @@ function equalJitterDelayMs(attempt, policy = DEFAULT_RETRY_POLICY, serverHintMs
   const computed = expo + clampedJitter;
   const floor = Math.max(serverHintMs, computed);
   return Math.min(policy.capMs, floor);
+}
+
+// src/agentic/retry-after.ts
+var MAX_RETRY_AFTER_MS = 24 * 60 * 60 * 1e3;
+function parseRetryAfterMs(value, nowMs = Date.now()) {
+  if (value === null || value === void 0) return void 0;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return void 0;
+  if (/^\d+$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    if (!Number.isFinite(seconds)) return void 0;
+    return clamp(seconds * 1e3);
+  }
+  const targetMs = parseImfFixdateMs(trimmed);
+  if (targetMs === void 0) return void 0;
+  return clamp(Math.max(0, targetMs - nowMs));
+}
+var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+var IMF_FIXDATE = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), (\d{2}) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d{4}) (\d{2}):(\d{2}):(\d{2}) GMT$/;
+function parseImfFixdateMs(value) {
+  const match = IMF_FIXDATE.exec(value);
+  if (!match) return void 0;
+  const [, dd, mon, yyyy, hh, mm, ss] = match;
+  const day = Number(dd);
+  const month = MONTHS.indexOf(mon) + 1;
+  const year = Number(yyyy);
+  const hour = Number(hh);
+  const minute = Number(mm);
+  const second = Number(ss);
+  if (hour > 23 || minute > 59 || second > 59) return void 0;
+  if (day < 1 || day > daysInMonth(year, month)) return void 0;
+  return Date.UTC(year, month - 1, day, hour, minute, second);
+}
+function daysInMonth(year, month) {
+  if (month === 2) {
+    const leap = year % 4 === 0 && year % 100 !== 0 || year % 400 === 0;
+    return leap ? 29 : 28;
+  }
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
+}
+function clamp(ms) {
+  return Math.min(Math.round(ms), MAX_RETRY_AFTER_MS);
+}
+
+// src/agentic/upgrade.ts
+var UPGRADE_REQUIRED_CODE = "upgrade_required";
+function isRecord4(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function stringOrUndefined(value) {
+  return typeof value === "string" && value.length > 0 ? value : void 0;
+}
+function parseErrorBody(bodyText) {
+  if (!bodyText) return void 0;
+  try {
+    const parsed = JSON.parse(bodyText);
+    return isRecord4(parsed) ? parsed : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function parseRetryHint(value) {
+  if (!isRecord4(value)) return void 0;
+  const fallbackPolicy = stringOrUndefined(value.fallback_policy);
+  return fallbackPolicy === void 0 ? void 0 : { fallbackPolicy };
+}
+function parseUpgradeAffordance(body) {
+  if (!body) return void 0;
+  const affordance = {
+    requiredTier: stringOrUndefined(body.required_tier),
+    heldTier: stringOrUndefined(body.held_tier),
+    requiredScope: stringOrUndefined(body.required_scope),
+    upgradeUrl: stringOrUndefined(body.upgrade_url),
+    retryWith: parseRetryHint(body.retry_with)
+  };
+  return Object.values(affordance).some((field) => field !== void 0) ? affordance : void 0;
+}
+function isUpgradeRequired(body) {
+  return body?.code === UPGRADE_REQUIRED_CODE;
 }
 
 // src/agentic/credentials.ts
@@ -636,12 +731,25 @@ async function mapMetaLlmHttpError(response, operation, requestId) {
         nonEmpty(bodyText, "state conflict or idempotency mismatch"),
         { ...fields, retryable: false }
       );
-    case 402:
+    case 402: {
+      const body = parseErrorBody(bodyText);
+      const code = typeof body?.code === "string" ? body.code : void 0;
+      if (isUpgradeRequired(body)) {
+        return new AgenticError("upgrade_required", nonEmpty(bodyText, "upgrade required"), {
+          ...fields,
+          code,
+          upgrade: parseUpgradeAffordance(body),
+          // Still never retried: only a plan change makes this succeed, and
+          // the `retry_with` hint is for the caller to decide on, not us.
+          retryable: false
+        });
+      }
       return new AgenticError(
         "budget_exceeded",
         nonEmpty(bodyText, "budget or upgrade required"),
-        { ...fields, retryable: false }
+        { ...fields, code, retryable: false }
       );
+    }
     case 422:
       return new AgenticError(
         "safety_blocked",
@@ -653,8 +761,7 @@ async function mapMetaLlmHttpError(response, operation, requestId) {
     // is what actually gates this; `retryable: true` here only reflects
     // the status's own classification.
     case 429: {
-      const retryAfterHeader = response.headers.get("retry-after");
-      const retryAfterMs = retryAfterHeader ? Number(retryAfterHeader) * 1e3 : void 0;
+      const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
       return new AgenticError("rate_limited", nonEmpty(bodyText, "rate limited"), {
         ...fields,
         retryable: true,
@@ -783,8 +890,7 @@ async function sendPostOnce(deps, path, operation, body, credential, idempotency
     });
   }
   const durationMs = Date.now() - startedAt;
-  const retryAfterHeader = response.headers.get("retry-after");
-  const retryAfterMs = retryAfterHeader ? Number(retryAfterHeader) * 1e3 : void 0;
+  const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
   const idempotentReplayHeader = response.headers.get("x-cognitum-idempotent-replay");
   const idempotentReplay = idempotentReplayHeader !== null ? idempotentReplayHeader.toLowerCase() === "true" : void 0;
   deps.telemetry?.onRequestEnd?.({
@@ -1097,7 +1203,7 @@ var KNOWN_TOP_LEVEL_KEYS = /* @__PURE__ */ new Set([
   "system_fingerprint",
   "error"
 ]);
-function isRecord4(value) {
+function isRecord5(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function decodeOpenAiSseEvent(raw) {
@@ -1111,11 +1217,11 @@ function decodeOpenAiSseEvent(raw) {
   } catch {
     return { events: [{ type: "unknown", raw: raw.data }] };
   }
-  if (!isRecord4(parsed)) {
+  if (!isRecord5(parsed)) {
     return { events: [{ type: "unknown", raw: parsed }] };
   }
   const events = [];
-  if (isRecord4(parsed.error)) {
+  if (isRecord5(parsed.error)) {
     const e = parsed.error;
     events.push({
       type: "error",
@@ -1129,9 +1235,9 @@ function decodeOpenAiSseEvent(raw) {
   }
   if (Array.isArray(parsed.choices)) {
     for (const choiceRaw of parsed.choices) {
-      if (!isRecord4(choiceRaw)) continue;
+      if (!isRecord5(choiceRaw)) continue;
       const index = typeof choiceRaw.index === "number" ? choiceRaw.index : 0;
-      const delta = isRecord4(choiceRaw.delta) ? choiceRaw.delta : {};
+      const delta = isRecord5(choiceRaw.delta) ? choiceRaw.delta : {};
       if (typeof delta.role === "string") {
         events.push({ type: "role", index, role: delta.role });
       }
@@ -1140,8 +1246,8 @@ function decodeOpenAiSseEvent(raw) {
       }
       if (Array.isArray(delta.tool_calls)) {
         for (const toolCallRaw of delta.tool_calls) {
-          if (!isRecord4(toolCallRaw)) continue;
-          const fn = isRecord4(toolCallRaw.function) ? toolCallRaw.function : {};
+          if (!isRecord5(toolCallRaw)) continue;
+          const fn = isRecord5(toolCallRaw.function) ? toolCallRaw.function : {};
           events.push({
             type: "tool_call_delta",
             index,
@@ -1157,7 +1263,7 @@ function decodeOpenAiSseEvent(raw) {
       }
     }
   }
-  if (isRecord4(parsed.usage)) {
+  if (isRecord5(parsed.usage)) {
     const u = parsed.usage;
     events.push({
       type: "usage",
@@ -1415,11 +1521,11 @@ async function* readSseBody(body, requestId, timeBudget, cancellation, abortCont
 }
 
 // src/meta-llm/stream/anthropic-events.ts
-function isRecord5(value) {
+function isRecord6(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function decodeContentBlock(raw) {
-  if (!isRecord5(raw)) return void 0;
+  if (!isRecord6(raw)) return void 0;
   if (raw.type === "text") {
     return { type: "text", text: typeof raw.text === "string" ? raw.text : "" };
   }
@@ -1428,14 +1534,14 @@ function decodeContentBlock(raw) {
       type: "tool_use",
       id: typeof raw.id === "string" ? raw.id : "",
       name: typeof raw.name === "string" ? raw.name : "",
-      input: isRecord5(raw.input) ? raw.input : {}
+      input: isRecord6(raw.input) ? raw.input : {}
     };
   }
   return void 0;
 }
 function decodeMessageStart(raw) {
-  if (!isRecord5(raw)) return void 0;
-  const usageRaw = isRecord5(raw.usage) ? raw.usage : {};
+  if (!isRecord6(raw)) return void 0;
+  const usageRaw = isRecord6(raw.usage) ? raw.usage : {};
   const stopReasonRaw = raw.stop_reason ?? raw.stopReason;
   const stopSequenceRaw = raw.stop_sequence ?? raw.stopSequence;
   return {
@@ -1458,7 +1564,7 @@ function decodeContentBlockAsMessageBlock(raw) {
   return block;
 }
 function decodeDelta(raw) {
-  if (!isRecord5(raw)) return void 0;
+  if (!isRecord6(raw)) return void 0;
   if (raw.type === "text_delta") {
     return { type: "text_delta", text: typeof raw.text === "string" ? raw.text : "" };
   }
@@ -1485,7 +1591,7 @@ function decodeAnthropicSseEvent(raw) {
   } catch {
     return { events: [{ type: "unknown", raw: raw.data }] };
   }
-  if (!isRecord5(parsed)) {
+  if (!isRecord6(parsed)) {
     return { events: [{ type: "unknown", raw: parsed }] };
   }
   const events = [];
@@ -1522,10 +1628,10 @@ function decodeAnthropicSseEvent(raw) {
       events.push({ type: "content_block_stop", index: typeof parsed.index === "number" ? parsed.index : 0 });
       break;
     case "message_delta": {
-      const deltaRaw = isRecord5(parsed.delta) ? parsed.delta : {};
+      const deltaRaw = isRecord6(parsed.delta) ? parsed.delta : {};
       const stopReasonRaw = deltaRaw.stop_reason ?? deltaRaw.stopReason;
       const stopSequenceRaw = deltaRaw.stop_sequence ?? deltaRaw.stopSequence;
-      const usageRaw = isRecord5(parsed.usage) ? parsed.usage : void 0;
+      const usageRaw = isRecord6(parsed.usage) ? parsed.usage : void 0;
       events.push({
         type: "message_delta",
         delta: {
@@ -1543,7 +1649,7 @@ function decodeAnthropicSseEvent(raw) {
       events.push({ type: "ping" });
       break;
     case "error": {
-      const errorRaw = isRecord5(parsed.error) ? parsed.error : {};
+      const errorRaw = isRecord6(parsed.error) ? parsed.error : {};
       events.push({
         type: "error",
         error: {
