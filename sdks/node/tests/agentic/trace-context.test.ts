@@ -186,7 +186,7 @@ describe("joinOrGenerateTraceContext", () => {
   it("attaches a fresh child traceparent to outgoing headers", () => {
     const headers: Record<string, string> = {};
     applyTraceContext(headers, { traceparent: VALID_TRACEPARENT, tracestate: "congo=t61rcWkgMzE" });
-    expect(headers.traceparent).toMatch(/^00-4bf92f3577b34da6a3ce929d0e0e4736-[0-9a-f]{16}-00$/);
+    expect(headers.traceparent).toMatch(new RegExp(`^00-4bf92f3577b34da6a3ce929d0e0e4736-[0-9a-f]{16}-${DEFAULT_TRACE_FLAGS}$`));
     expect(headers.tracestate).toBe("congo=t61rcWkgMzE");
   });
 });
