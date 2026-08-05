@@ -39,7 +39,11 @@ export function validatePack(pack) {
 }
 
 async function run(command, args, options = {}) {
-  const result = await exec(command, args, { maxBuffer: 20 * 1024 * 1024, ...options });
+  const result = await exec(command, args, {
+    maxBuffer: 20 * 1024 * 1024,
+    shell: process.platform === "win32",
+    ...options,
+  });
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
   return result;
@@ -53,6 +57,7 @@ async function main() {
     const { stdout } = await exec(npmCommand, ["pack", "--json", "--pack-destination", packDir], {
       cwd: packageDir,
       maxBuffer: 20 * 1024 * 1024,
+      shell: process.platform === "win32",
     });
     const [pack] = JSON.parse(stdout);
     if (!pack) throw new Error("npm pack returned no package metadata");
