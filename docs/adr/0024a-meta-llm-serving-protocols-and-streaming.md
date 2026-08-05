@@ -2,7 +2,7 @@
 
 - **Status:** Implemented (Preview maturity)
 - **Date:** 2026-07-18
-- **Updated:** 2026-07-19 — `MetaLlmClient` construction, wire types, and health/whoami/models are implemented (PR #85); non-streaming chat.completions/messages.create (PR #86) and completions/responses/embeddings/countTokens (PR #87) are implemented with full D6 error mapping, D7 idempotency, and bounded retry; SSE streaming for chat.completions (D5) is implemented (PR #88, required a post-merge fix for a timeout-enforcement gap found by independent review). Anthropic Messages streaming and Responses streaming are deferred, reusing the same generic SSE parser landed in PR #88. GA gates (D9) are not yet exercised — this remains Preview maturity per the ADR's own D2/D9.
+- **Updated:** 2026-08-05 — `MetaLlmClient` construction, wire types, health/whoami/models, non-streaming serving protocols, error mapping, idempotency, bounded retry, and chat-completions SSE are implemented. API issue #96 deployed `/v1/whoami` through the public gateway and verified the production routing boundary; the SDK live smoke now requires an authenticated identity response. Anthropic Messages streaming and Responses streaming remain deferred, so this remains Preview maturity per D2/D9.
 
 ## Context
 

@@ -2,7 +2,7 @@
 
 - **Status:** Accepted — Partially Implemented
 - **Date:** 2026-07-18
-- **Updated:** 2026-08-05 — reconciled the plan after the `0.3.0` publication and implemented `0.4.0` release preparation. Baseline remediation, the shared agentic core, selected remote product clients, coverage gates, release tooling, and npm published-artifact smoke are implemented. Source is `0.4.0` while all registries still serve `0.3.0`; public docs now state both. Public conversion and Apache-2.0 are accepted but remain gated by history/privacy/IP review, public documentation, repository hardening, and artifact proof. PyPI/crates publication is deferred. `/v1/whoami` deployment is owned by `cognitum-one/api#96`.
+- **Updated:** 2026-08-05 — reconciled the plan after the `0.3.0` publication and implemented `0.4.0` release preparation. Baseline remediation, the shared agentic core, selected remote product clients, coverage gates, release tooling, and npm published-artifact smoke are implemented. Source is `0.4.0` while all registries still serve `0.3.0`; public docs now state both. Public conversion and Apache-2.0 are accepted but remain gated by history/privacy/IP review, public documentation, repository hardening, and artifact proof. PyPI/crates publication is deferred. `/v1/whoami` was deployed by `cognitum-one/api#96` and production-verified on 2026-08-05; live smoke now treats it as a required positive contract.
 - **Deciders:** Cognitum SDK Working Group, Product API Owners, Release Engineering, Security, Developer Experience
 - **Scope:** cross-cutting (`sdks/node`, `sdks/python`, `sdks/rust`, migration, compatibility, registries and release operations)
 
@@ -36,8 +36,8 @@ now historical. The live state is:
 - public repository conversion is accepted with Apache-2.0, but visibility
   waits for the public-readiness gates;
 - operation maturity remains independent from package version: MetaHarness is
-  a fail-closed contract preview and `whoami` is not live at the public gateway
-  until `cognitum-one/api#96` is deployed and verified.
+  a fail-closed contract preview. `whoami` is live at the public gateway after
+  `cognitum-one/api#96` and is a required live-smoke assertion.
 
 Where this reconciliation conflicts with obsolete `0.3.0` future-tense wording
 below, this section and the current capability manifest govern. Older phase and

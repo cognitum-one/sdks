@@ -45,6 +45,25 @@ jobs:
       - run: npm run lint
       - run: npm audit --audit-level=high
 
+  npm-tarball:
+    name: npm tarball / Node ${{ matrix.node }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [18, 20, 22]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: sdks/node/package-lock.json
+      - run: npm ci
+        working-directory: sdks/node
+      - run: node scripts/verify-npm-tarball.mjs
+
   python:
     name: python / ${{ matrix.os }} (pytest, ruff, mypy)
     runs-on: ${{ matrix.os }}
@@ -231,7 +250,7 @@ jobs:
     # demotes it to advisory. `rust-feature-matrix` and `capability-manifest`
     # were previously missing, which meant a red per-feature build or a red
     # registry-drift check blocked neither a merge nor a release.
-    needs: [security, node, python, rust, rust-feature-matrix, capability-manifest, coverage]
+    needs: [security, node, npm-tarball, python, rust, rust-feature-matrix, capability-manifest, coverage]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
