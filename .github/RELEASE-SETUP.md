@@ -8,12 +8,15 @@ each exact version.
 
 ## One-time owner setup
 
-1. In GitHub repository settings, create an environment named `release`. Add
-   the release-maintainers team as required reviewers, prevent
-   self-review where the plan supports it, restrict deployments to the `main`
-   branch and protected `v*` tags, and do not allow administrators to bypass
-   the protection. The `main` policy is required for the dispatch-only npm
-   staging rehearsal; the tag policy is required for real releases.
+1. In GitHub repository settings, create an environment named `release`.
+   Require an active release maintainer as reviewer. The current fallback is
+   `proffesor-for-testing`, with self-review enabled because the previously
+   configured reviewer is unavailable; replace this with a maintainer team and
+   restore `prevent_self_review` when a second active reviewer is available.
+   Restrict deployments to the `main` branch and protected `v*` tags, and do
+   not allow administrators to bypass the protection. The `main` policy is
+   required for the dispatch-only npm staging rehearsal; the tag policy is
+   required for real releases.
 2. Add an active tag ruleset for `refs/tags/v*` that restricts tag creation,
    update, and deletion to release maintainers. Releases must point to a commit
    already merged into protected `main`.
@@ -28,7 +31,8 @@ each exact version.
 4. On PyPI, configure a GitHub trusted publisher for `cognitum-sdk`: owner
    `cognitum-one`, repository `sdks`, workflow `release.yml`, environment
    `release`. Remove the old PyPI upload token after one successful OIDC
-   release.
+   release. This binding is the remaining gate for the coordinated stable
+   release; do not substitute an untracked token merely to bypass the proof.
 5. crates.io does not currently expose the same GitHub trusted-publisher flow.
    Create a least-privilege token scoped to the `cognitum-one` crate and store
    it as the `CARGO_REGISTRY_TOKEN` secret on the GitHub `release` environment.
@@ -65,6 +69,11 @@ publish or stage operation. For the first npm rehearsal:
    ambiguous registry response. It supplies no npm token.
 4. On npm, inspect the staged package and its source/provenance binding, then
    **reject the stage**. Do not promote it during a rehearsal.
+
+The `0.4.0-rc.1` rehearsal completed this way on 2026-08-05: stage
+`8d8c8f44-29e7-425f-aeb0-e7bf0056ce26` was inspected, confirmed absent from the
+public registry, and rejected with registry-owner 2FA. No npm prerelease was
+promoted.
 
 `npm stage publish` is recoverable and does not make the version public. Stage
 approval/rejection requires an interactive registry-owner session and is
