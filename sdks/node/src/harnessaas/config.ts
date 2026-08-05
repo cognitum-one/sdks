@@ -133,7 +133,9 @@ export function resolveHarnessaaSClientConfig(
   if (!config.baseUrl) {
     throw new TypeError("HarnessaaSClientConfig.baseUrl is required");
   }
-  const trimmed = config.baseUrl.replace(/\/+$/, "");
+  let end = config.baseUrl.length;
+  while (end > 0 && config.baseUrl.charCodeAt(end - 1) === 47) end--;
+  const trimmed = config.baseUrl.slice(0, end);
   const isHttps = /^https:\/\//i.test(trimmed);
   if (!isHttps) {
     if (!config.allowInsecureHttp) {

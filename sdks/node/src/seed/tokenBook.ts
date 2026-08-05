@@ -135,7 +135,9 @@ function normalise(peerUrl: string): string {
   try {
     return normaliseBaseUrl(peerUrl);
   } catch {
-    return peerUrl.replace(/\/+$/, "");
+    let end = peerUrl.length;
+    while (end > 0 && peerUrl.charCodeAt(end - 1) === 47) end--;
+    return peerUrl.slice(0, end);
   }
 }
 

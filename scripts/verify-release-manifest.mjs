@@ -284,7 +284,7 @@ async function fetchJson(url, headers = {}) {
 }
 
 async function checkNode(lang) {
-  const data = await fetchJson(`https://registry.npmjs.org/${encodeURIComponent(lang.packageName).replace("%40", "@")}`);
+  const data = await fetchJson(`https://registry.npmjs.org/${encodeURIComponent(lang.packageName)}`);
   const latest = data["dist-tags"]?.latest;
   if (!latest) throw new Error("no dist-tags.latest in npm registry response");
   return latest;
