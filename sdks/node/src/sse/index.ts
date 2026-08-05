@@ -6,3 +6,5 @@
 
 export type { SseEvent, SseParserOptions, SseParserFinishResult } from "./parser.js";
 export { SseParser, SseParseError } from "./parser.js";
+export type { SseSequenceOptions } from "./sequence.js";
+export { SseEventSequence, SseSequenceError } from "./sequence.js";
