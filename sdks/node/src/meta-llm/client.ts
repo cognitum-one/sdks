@@ -72,6 +72,7 @@ import type {
   ResponsesResponse,
 } from "./types/openai.js";
 import { assertValidUsageQuery, parseUsageSummary, type UsageQuery, type UsageSummary } from "./types/usage.js";
+import { applyTraceContext } from "../agentic/trace-context.js";
 
 const DEFAULT_CAPABILITY_VERSION = "0.0.0";
 const PRODUCT = "meta-llm";
@@ -364,7 +365,9 @@ export class MetaLlmClient {
       baseUrl: this.config.baseUrl,
       transport: this.config.transport ?? fetch,
       credentialProvider: this.config.credentialProvider,
-      defaultRequestContext: tenant ? { tenant } : this.config.defaultRequestContext,
+      defaultRequestContext: options?.requestContext
+        ? { ...this.config.defaultRequestContext, ...options.requestContext, tenant }
+        : this.config.defaultRequestContext,
       telemetry: this.config.telemetry,
     };
   }
@@ -450,6 +453,7 @@ export class MetaLlmClient {
       Accept: "application/json",
       "X-Cognitum-Request-Id": requestId,
     };
+    applyTraceContext(headers, options?.requestContext?.tracingCarrier ?? this.config.defaultRequestContext?.tracingCarrier);
     this.applyAuth(headers, credential);
 
     const transport = this.config.transport ?? fetch;

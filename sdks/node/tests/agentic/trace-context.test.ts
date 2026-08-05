@@ -10,6 +10,7 @@ import {
   parseTraceState,
   formatTraceState,
   joinOrGenerateTraceContext,
+  applyTraceContext,
   metaLlmSpanName,
   metaProxySpanName,
   metaharnessSpanName,
@@ -180,6 +181,13 @@ describe("joinOrGenerateTraceContext", () => {
 
     const joinedInvalid = joinOrGenerateTraceContext(VALID_TRACEPARENT, "Not Valid");
     expect(joinedInvalid.traceState).toBeUndefined();
+  });
+
+  it("attaches a fresh child traceparent to outgoing headers", () => {
+    const headers: Record<string, string> = {};
+    applyTraceContext(headers, { traceparent: VALID_TRACEPARENT, tracestate: "congo=t61rcWkgMzE" });
+    expect(headers.traceparent).toMatch(new RegExp(`^00-4bf92f3577b34da6a3ce929d0e0e4736-[0-9a-f]{16}-${DEFAULT_TRACE_FLAGS}$`));
+    expect(headers.tracestate).toBe("congo=t61rcWkgMzE");
   });
 });
 

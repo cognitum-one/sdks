@@ -202,6 +202,7 @@ export {
   parseTraceState,
   formatTraceState,
   joinOrGenerateTraceContext,
+  applyTraceContext,
   metaLlmSpanName,
   metaProxySpanName,
   metaharnessSpanName,

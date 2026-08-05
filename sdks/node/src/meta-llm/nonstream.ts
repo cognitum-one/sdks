@@ -39,6 +39,7 @@ import { mapMetaLlmHttpError } from "./http-errors.js";
 import { buildIdempotencyBinding, canonicalRequestSha256 } from "./idempotency.js";
 import { parseMetaLlmReceipt } from "./types/receipt.js";
 import { assertSendableRoutingControls, type MetaLlmRoutingControls } from "./types/routing.js";
+import { applyTraceContext } from "../agentic/trace-context.js";
 
 const PRODUCT = "meta-llm";
 /**
@@ -172,6 +173,8 @@ async function sendPostOnce<T>(
     // stable across every retry of one logical call.
     "Idempotency-Key": idempotencyKey,
   };
+  const carrier = deps.defaultRequestContext?.tracingCarrier;
+  if (carrier) applyTraceContext(headers, carrier);
   applyAuth(headers, credential);
 
   const url = `${deps.baseUrl}${path}`;
