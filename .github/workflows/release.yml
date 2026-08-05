@@ -21,6 +21,18 @@ on:
         description: "Version to rehearse, e.g. 0.4.0 (must match the source tree)"
         required: true
         type: string
+      npm_action:
+        description: "npm action (staging is recoverable and publishes nothing publicly)"
+        required: true
+        default: rehearse-only
+        type: choice
+        options:
+          - rehearse-only
+          - stage-prerelease
+      npm_confirmation:
+        description: "For staging only: enter @cognitum-one/sdk@<version>"
+        required: false
+        type: string
 
 concurrency:
   group: release-${{ github.ref_name }}
@@ -86,10 +98,17 @@ jobs:
           #   ahead / diverged -> it is not on main; refuse to release it
           STATUS="$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${GITHUB_SHA}" --jq '.status')"
           echo "commit ${GITHUB_SHA} is '${STATUS}' relative to main"
-          case "${STATUS}" in
-            identical|behind) ;;
-            *) echo "refusing to release a commit that is not on main (${STATUS})" >&2; exit 1 ;;
-          esac
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            test "${STATUS}" = "identical" || {
+              echo "a dispatch rehearsal must run at the current main tip (${STATUS})" >&2
+              exit 1
+            }
+          else
+            case "${STATUS}" in
+              identical|behind) ;;
+              *) echo "refusing to release a commit that is not on main (${STATUS})" >&2; exit 1 ;;
+            esac
+          fi
           # Match on the producing app as well as the name. A check run is just
           # a name plus a conclusion, and any GitHub App installed on this org
           # with `checks:write` can create one -- several are. Without the
@@ -155,6 +174,10 @@ jobs:
           node-version: "24"
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
+      - name: Pin an npm CLI with trusted publishing support
+        run: |
+          npm install --global npm@11.18.0
+          test "$(npm --version)" = "11.18.0"
       - name: Publish npm artifact
         shell: bash
         run: |
@@ -186,6 +209,67 @@ jobs:
           else
             npm publish release-bundle/npm/*.tgz --access public
           fi
+
+  stage-npm-prerelease:
+    # This is the only non-tag path that receives an OIDC token. `npm stage
+    # publish` proves the trusted-publisher binding without creating a public,
+    # immutable package version. A registry owner must reject the staged item
+    # after inspecting its provenance; promotion is intentionally not part of
+    # this workflow.
+    if: github.event_name == 'workflow_dispatch' && inputs.npm_action == 'stage-prerelease'
+    name: stage npm prerelease (not public)
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-bundle-${{ needs.build.outputs.version }}
+          path: release-bundle
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Require an unpublished prerelease and explicit confirmation
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          CONFIRMATION: ${{ inputs.npm_confirmation }}
+        run: |
+          set -euo pipefail
+          [[ "${VERSION}" == *-* ]] || {
+            echo "npm staging is restricted to a SemVer prerelease" >&2
+            exit 1
+          }
+          test "${CONFIRMATION}" = "@cognitum-one/sdk@${VERSION}" || {
+            echo "confirmation must exactly match @cognitum-one/sdk@${VERSION}" >&2
+            exit 1
+          }
+          set +e
+          bash scripts/registry-has-version.sh npm "${VERSION}"
+          PUBLISHED=$?
+          set -e
+          test "${PUBLISHED}" -eq 10 || {
+            echo "refusing to stage a version that exists publicly or could not be checked" >&2
+            exit 1
+          }
+      - name: Pin an npm CLI with trusted staging support
+        run: |
+          npm install --global npm@11.18.0
+          test "$(npm --version)" = "11.18.0"
+      - name: Stage npm artifact through OIDC
+        env:
+          # An inherited token would turn this into a token-auth rehearsal and
+          # prove nothing about the trusted-publisher binding.
+          NODE_AUTH_TOKEN: ""
+          NPM_TOKEN: ""
+        run: npm stage publish release-bundle/npm/*.tgz --access public --tag next
 
   publish-pypi:
     # Never on a rehearsal: a dispatch run proves the gates and the artifacts,
