@@ -65,6 +65,19 @@ var AgenticError = class extends Error {
   retryable;
   retryAfterMs;
   attemptCount;
+  /**
+   * Server-supplied upgrade affordance. Set only for `upgrade_required`.
+   *
+   * Kept on the base shape rather than a subclass so the three SDKs expose
+   * one field name apiece — Rust has no subclassing, and a caller reading
+   * `error.upgrade` in Node, Python and Rust alike is the point.
+   *
+   * SUBJECT TO THE SAME REDACTION OBLIGATION as `message`/`details`/`cause`:
+   * every value here is server-supplied. `upgradeUrl` in particular may carry
+   * a tenant-scoped or pre-signed link, which ADR-0028 §D10 classes as never
+   * capturable. Redact before logging or forwarding.
+   */
+  upgrade;
   details;
   constructor(kind, message, fields) {
     super(message, { cause: fields?.cause });
@@ -80,6 +93,7 @@ var AgenticError = class extends Error {
     this.retryable = fields?.retryable ?? false;
     this.retryAfterMs = fields?.retryAfterMs;
     this.attemptCount = fields?.attemptCount;
+    this.upgrade = fields?.upgrade;
     this.details = fields?.details;
     Object.setPrototypeOf(this, new.target.prototype);
   }
@@ -110,6 +124,9 @@ var UnsupportedRuntimeError = class extends AgenticError {
     Object.setPrototypeOf(this, new.target.prototype);
   }
 };
+
+// src/agentic/retry-after.ts
+var MAX_RETRY_AFTER_MS = 24 * 60 * 60 * 1e3;
 
 // src/agentic/credentials.ts
 var REDACT_INSPECT = /* @__PURE__ */ Symbol.for("nodejs.util.inspect.custom");
