@@ -109,11 +109,11 @@ async function main() {
     assert(typeof text === "string" && text.trim().length > 0, `empty message content: ${JSON.stringify(data?.content)}`);
   }));
 
-  failures.push(await check("usage accounts for the calls just made", async () => {
+  failures.push(await check("usage returns non-empty monthly accounting", async () => {
     const month = currentMonth();
     const { data } = await client.usage({ from: month, to: month });
-    assert(typeof data?.totals?.totalTokens === "number", `usage totals missing totalTokens: ${JSON.stringify(data?.totals)}`);
-    assert(data.totals.requests > 0, "usage reports zero requests in the month we just made requests in");
+    assert(data?.totals?.totalTokens > 0, `usage reports zero or missing totalTokens: ${JSON.stringify(data?.totals)}`);
+    assert(data.totals.requests > 0, "usage reports zero monthly requests");
   }));
 
   const real = failures.filter(Boolean);
