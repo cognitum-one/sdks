@@ -14,7 +14,7 @@ Security fixes are provided for the latest version published to each registry. D
 
 Do not report vulnerabilities in a public issue, discussion, pull request, or chat channel.
 
-After this repository becomes public, use GitHub's **Report a vulnerability** form under the repository Security tab. Until then, organization members should open a private draft security advisory and contact the repository maintainers.
+Use GitHub's **Report a vulnerability** form under the repository Security tab. Do not report vulnerabilities in public issues, discussions, pull requests, or chat channels.
 
 Include the affected package/version/environment, the smallest safe reproduction, expected and observed behavior, security impact and trust boundary, and whether credentials, tenants, billing, signing, or production services are involved.
 
