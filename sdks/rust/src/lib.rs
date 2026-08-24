@@ -22,6 +22,19 @@
 //! }
 //! ```
 
+// `agentic::errors::AgenticError` is deliberately a flat, type-only struct
+// shared across every product client (ADR-0023 §D1) rather than a boxed or
+// per-product error type — see that struct's own doc comment, which
+// explicitly rejects boxing `cause` so the three language SDKs (Node,
+// Python, Rust) can expose one consistent field name apiece. That intentional
+// shape puts it over clippy's default 128-byte Err threshold at every
+// `Result<T, AgenticError>` call site (10, as of 2026-08-24). Boxing the
+// return type instead would be a breaking public-API change to a released
+// SDK crate for a lint, not a bug -- not something to do in passing. Allowed
+// crate-wide rather than per-site so a future new endpoint doesn't silently
+// need the same allow copied again.
+#![allow(clippy::result_large_err)]
+
 pub mod agentic;
 pub mod brain;
 pub mod catalog;
