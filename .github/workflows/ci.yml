@@ -15,7 +15,7 @@ jobs:
   security:
     # Pin the required GA security gate so its semantics cannot change
     # underneath a reviewed SDK commit.
-    uses: cognitum-one/.github/.github/workflows/security-scan.yml@5eb92ac7c8a8b72814663ab58d9241dd8e0510ae
+    uses: cognitum-one/.github/.github/workflows/security-scan.yml@0f90efc5230237b406aee2d2f823219a57be4fce # cognitum-one/.github main 2026-09-10 (#101)
 
   node:
     name: node / ${{ matrix.os }} (build, test, typecheck, lint, audit)

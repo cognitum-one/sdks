@@ -24,4 +24,4 @@ jobs:
       - run: node scripts/verify-supply-chain.mjs
 
   scan:
-    uses: cognitum-one/.github/.github/workflows/security-scan.yml@28fc1abd35b26695f00fe8cde354a72337e7fcda
+    uses: cognitum-one/.github/.github/workflows/security-scan.yml@0f90efc5230237b406aee2d2f823219a57be4fce # cognitum-one/.github main 2026-09-10 (#101)
