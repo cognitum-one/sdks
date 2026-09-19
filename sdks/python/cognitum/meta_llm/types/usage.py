@@ -114,6 +114,37 @@ def assert_valid_usage_query(query: UsageQuery) -> None:
         )
 
 
+def _snake_to_camel(key: str) -> str:
+    head, *rest = key.split("_")
+    return head + "".join(part[:1].upper() + part[1:] for part in rest)
+
+
+def _field(raw: dict[str, Any], key: str, *aliases: str) -> Any:
+    """Read a response field under snake_case or camelCase.
+
+    ``/v1/usage`` answers in camelCase (``totalTokens``, ``costUsd``,
+    ``escalationRate``), while this parser was written against snake_case, so
+    every numeric field decoded to ``None`` -- silently, because
+    ``parse_usage_summary`` never raises and an empty total is a legitimate
+    answer. Only ``requests`` survived, being spelled the same either way.
+    Node has always read both (``raw.prompt_tokens ?? raw.promptTokens``); this
+    brings Python to the same tolerance rather than betting on one spelling.
+    """
+    for candidate in (key, _snake_to_camel(key), *aliases):
+        if candidate in raw:
+            return raw[candidate]
+    return None
+
+
+def _known(*keys: str) -> set[str]:
+    """Every accepted spelling of the keys a parser consumes, for `raw` remainder."""
+    out: set[str] = set()
+    for key in keys:
+        out.add(key)
+        out.add(_snake_to_camel(key))
+    return out
+
+
 def _num_or_none(value: Any) -> float | None:
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
@@ -121,10 +152,10 @@ def _num_or_none(value: Any) -> float | None:
 def _parse_cache_stats(raw: Any) -> CacheStats | None:
     if not isinstance(raw, dict):
         return None
-    known = {"hit_rate", "savings"}
+    known = _known("hit_rate", "savings")
     return CacheStats(
-        hit_rate=_num_or_none(raw.get("hit_rate")),
-        savings=parse_money(raw.get("savings")),
+        hit_rate=_num_or_none(_field(raw, "hit_rate")),
+        savings=parse_money(_field(raw, "savings")),
         raw={k: v for k, v in raw.items() if k not in known} or None,
     )
 
@@ -132,10 +163,10 @@ def _parse_cache_stats(raw: Any) -> CacheStats | None:
 def _parse_usage_totals(raw: Any) -> UsageTotals:
     if not isinstance(raw, dict):
         return UsageTotals()
-    known = {"requests", "prompt_tokens", "completion_tokens", "total_tokens", "cost"}
+    known = _known("requests", "prompt_tokens", "completion_tokens", "total_tokens", "cost")
 
     def _int(key: str) -> int | None:
-        value = raw.get(key)
+        value = _field(raw, key)
         return value if isinstance(value, int) and not isinstance(value, bool) else None
 
     return UsageTotals(
@@ -143,7 +174,7 @@ def _parse_usage_totals(raw: Any) -> UsageTotals:
         prompt_tokens=_int("prompt_tokens"),
         completion_tokens=_int("completion_tokens"),
         total_tokens=_int("total_tokens"),
-        cost=parse_money(raw.get("cost")),
+        cost=parse_money(_field(raw, "cost")),
         raw={k: v for k, v in raw.items() if k not in known} or None,
     )
 
@@ -200,7 +231,7 @@ def _parse_period_entries(raw: Any) -> list[UsagePeriodEntry] | None:
     return out
 
 
-_KNOWN_USAGE_KEYS = {
+_KNOWN_USAGE_KEYS = _known(
     "totals",
     "tier_mix",
     "escalation_rate",
@@ -211,7 +242,7 @@ _KNOWN_USAGE_KEYS = {
     "by_provider",
     "by_period",
     "budget",
-}
+)
 
 
 def parse_usage_summary(raw: Any) -> UsageSummary:
@@ -225,19 +256,19 @@ def parse_usage_summary(raw: Any) -> UsageSummary:
     if not isinstance(raw, dict):
         return UsageSummary(totals=UsageTotals())
 
-    tier_mix = raw.get("tier_mix")
+    tier_mix = _field(raw, "tier_mix")
     raw_remainder = {k: v for k, v in raw.items() if k not in _KNOWN_USAGE_KEYS}
 
     return UsageSummary(
-        totals=_parse_usage_totals(raw.get("totals")),
+        totals=_parse_usage_totals(_field(raw, "totals")),
         tier_mix=tier_mix if isinstance(tier_mix, dict) else None,
-        escalation_rate=_num_or_none(raw.get("escalation_rate")),
-        cache=_parse_cache_stats(raw.get("cache")),
-        fallback_rate=_num_or_none(raw.get("fallback_rate")),
-        empty_billed_rate=_num_or_none(raw.get("empty_billed_rate")),
-        by_model=_parse_breakdown_map(raw.get("by_model")),
-        by_provider=_parse_breakdown_map(raw.get("by_provider")),
-        by_period=_parse_period_entries(raw.get("by_period")),
+        escalation_rate=_num_or_none(_field(raw, "escalation_rate")),
+        cache=_parse_cache_stats(_field(raw, "cache")),
+        fallback_rate=_num_or_none(_field(raw, "fallback_rate")),
+        empty_billed_rate=_num_or_none(_field(raw, "empty_billed_rate")),
+        by_model=_parse_breakdown_map(_field(raw, "by_model")),
+        by_provider=_parse_breakdown_map(_field(raw, "by_provider")),
+        by_period=_parse_period_entries(_field(raw, "by_period")),
         budget=_parse_budget_view(raw.get("budget")),
         raw=raw_remainder or None,
     )

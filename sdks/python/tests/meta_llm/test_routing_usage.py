@@ -413,3 +413,81 @@ async def test_routing_controls_never_mutated_across_a_401_refresh() -> None:
     assert respx.calls[0].request.headers.get("x-api-key") == "sk-v1"
     assert respx.calls[1].request.headers.get("x-api-key") == "sk-v2"
     await client.aclose()
+
+
+def test_usage_totals_decode_from_the_camelcase_body_production_actually_returns() -> None:
+    """`/v1/usage` answers in camelCase; this parser read only snake_case.
+
+    The key SPELLINGS below are captured verbatim from a live
+    `https://api.cognitum.one/v1/usage` response on 2026-09-19; the values are
+    synthetic, because this repository is public and the real ones are an
+    internal account's spend.
+    Every numeric field decoded to ``None`` except ``requests``, which is
+    spelled the same either way -- and because ``parse_usage_summary`` never
+    raises and an empty total is a legitimate answer, it surfaced as a
+    confident zero rather than an error. The published Python SDK failed the
+    nightly live smoke on exactly this for eight days running, while the Node
+    SDK passed the same assertion against the same key, because Node has
+    always read both spellings.
+    """
+    from cognitum.meta_llm.types.usage import parse_usage_summary
+
+    wire = {
+        "accountId": "acct-redacted",
+        "periodStart": "2026-09-01",
+        "periodEnd": "2026-09-30",
+        "totals": {
+            "requests": 12,
+            "promptTokens": 3000,
+            "completionTokens": 500,
+            "totalTokens": 3500,
+            "costUsd": 1.25,
+        },
+        "cache": {"hitRate": 0.5, "hits": 6, "savingsUsd": 0.01},
+        "escalationRate": 0.25,
+        "fallbackRate": 0.0,
+        "emptyBilledRate": 0.0,
+        "tierMix": {"balanced": 12},
+    }
+
+    summary = parse_usage_summary(wire)
+
+    assert summary.totals.total_tokens == 3500
+    assert summary.totals.prompt_tokens == 3000
+    assert summary.totals.completion_tokens == 500
+    assert summary.totals.requests == 12
+    assert summary.escalation_rate == 0.25
+    assert summary.fallback_rate == 0.0
+    assert summary.empty_billed_rate == 0.0
+    assert summary.tier_mix == {"balanced": 12}
+    assert summary.cache is not None and summary.cache.hit_rate == 0.5
+
+    # `costUsd` is a bare float with the currency in the key; `cost` is a
+    # {amount, currency} object. Node maps neither, and parse_money returns
+    # None rather than fabricating one, so it stays visible under `raw`.
+    assert summary.totals.cost is None
+    assert summary.totals.raw == {"costUsd": 1.25}
+
+
+def test_usage_totals_still_decode_from_a_snake_case_body() -> None:
+    """The tolerance is additive: the old spelling must keep working.
+
+    Without this, 'accept camelCase' could have been implemented as 'accept
+    only camelCase' and every test above would still pass.
+    """
+    from cognitum.meta_llm.types.usage import parse_usage_summary
+
+    summary = parse_usage_summary(
+        {
+            "totals": {"requests": 2, "prompt_tokens": 10, "total_tokens": 30},
+            "escalation_rate": 0.5,
+            "cache": {"hit_rate": 0.25},
+        }
+    )
+
+    assert summary.totals.total_tokens == 30
+    assert summary.totals.prompt_tokens == 10
+    assert summary.totals.requests == 2
+    assert summary.escalation_rate == 0.5
+    assert summary.cache is not None and summary.cache.hit_rate == 0.25
+    assert summary.totals.raw is None, "a fully understood body leaves no remainder"
