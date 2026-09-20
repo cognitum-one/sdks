@@ -491,3 +491,57 @@ def test_usage_totals_still_decode_from_a_snake_case_body() -> None:
     assert summary.escalation_rate == 0.5
     assert summary.cache is not None and summary.cache.hit_rate == 0.25
     assert summary.totals.raw is None, "a fully understood body leaves no remainder"
+
+
+def test_budget_view_decodes_from_the_camelcase_body_too() -> None:
+    """`budget` carried the same defect the rest of this parser was just fixed for.
+
+    `_parse_budget_view` kept reading `hard_limit` and `resets_at` only, so a
+    camelCase body left both `None` while every other field on the summary now
+    decoded correctly -- the same silent partial answer, one level down. Node
+    has always read both spellings here (`raw.hard_limit ?? raw.hardLimit`), so
+    this is the tolerance the rest of the file already claims, applied where it
+    was missed rather than a new decision.
+    """
+    from cognitum.meta_llm.types.usage import parse_usage_summary
+
+    summary = parse_usage_summary(
+        {
+            "budget": {
+                "serving": {"amount": 10.0, "currency": "USD"},
+                "hardLimit": {"amount": 50.0, "currency": "USD"},
+                "headroom": {"amount": 40.0, "currency": "USD"},
+                "status": "ok",
+                "resetsAt": "2026-10-01T00:00:00Z",
+            }
+        }
+    )
+
+    assert summary.budget is not None
+    assert summary.budget.hard_limit is not None and summary.budget.hard_limit.amount == 50.0
+    assert summary.budget.serving is not None and summary.budget.serving.amount == 10.0
+    assert summary.budget.headroom is not None and summary.budget.headroom.amount == 40.0
+    assert summary.budget.status == "ok"
+    assert summary.budget.resets_at == "2026-10-01T00:00:00Z"
+    assert summary.budget.raw is None, "both spellings must be consumed, not left as remainder"
+
+
+def test_budget_view_still_decodes_from_a_snake_case_body() -> None:
+    """The budget tolerance is additive too, for the same reason as above."""
+    from cognitum.meta_llm.types.usage import parse_usage_summary
+
+    summary = parse_usage_summary(
+        {
+            "budget": {
+                "hard_limit": {"amount": 50.0, "currency": "USD"},
+                "status": "ok",
+                "resets_at": "2026-10-01T00:00:00Z",
+            }
+        }
+    )
+
+    assert summary.budget is not None
+    assert summary.budget.hard_limit is not None and summary.budget.hard_limit.amount == 50.0
+    assert summary.budget.status == "ok"
+    assert summary.budget.resets_at == "2026-10-01T00:00:00Z"
+    assert summary.budget.raw is None

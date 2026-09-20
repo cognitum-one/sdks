@@ -182,15 +182,17 @@ def _parse_usage_totals(raw: Any) -> UsageTotals:
 def _parse_budget_view(raw: Any) -> BudgetView | None:
     if not isinstance(raw, dict):
         return None
-    known = {"serving", "hard_limit", "committed", "reserved", "headroom", "status", "resets_at"}
-    status = raw.get("status")
-    resets_at = raw.get("resets_at")
+    known = _known(
+        "serving", "hard_limit", "committed", "reserved", "headroom", "status", "resets_at"
+    )
+    status = _field(raw, "status")
+    resets_at = _field(raw, "resets_at")
     return BudgetView(
-        serving=parse_money(raw.get("serving")),
-        hard_limit=parse_money(raw.get("hard_limit")),
-        committed=parse_money(raw.get("committed")),
-        reserved=parse_money(raw.get("reserved")),
-        headroom=parse_money(raw.get("headroom")),
+        serving=parse_money(_field(raw, "serving")),
+        hard_limit=parse_money(_field(raw, "hard_limit")),
+        committed=parse_money(_field(raw, "committed")),
+        reserved=parse_money(_field(raw, "reserved")),
+        headroom=parse_money(_field(raw, "headroom")),
         status=status if isinstance(status, str) else None,
         resets_at=resets_at if isinstance(resets_at, str) else None,
         raw={k: v for k, v in raw.items() if k not in known} or None,
