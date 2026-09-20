@@ -5,11 +5,7 @@ This crate follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Changed
-
-- License changed from MIT to Apache-2.0.
-
-## [0.4.0-rc.1] — 2026-08-05
+## [0.4.0] — 2026-09-20
 
 Fixes a defect that made the published Python and Rust SDKs unusable against
 `api.cognitum.one`, and lands the error-taxonomy and `Retry-After` work that
@@ -75,6 +71,17 @@ observable to a caller, and one widens a TypeScript union.
   status mapping apart from a structured service error will see a value where
   they saw none.
 
+### Fixed
+
+- **`rustls` 0.23.37 → 0.23.45**, clearing RUSTSEC-2026-0285 (TLS 1.3
+  handshake messages incorrectly accepted across encryption-level
+  boundaries) before this crate is published (#170).
+
+### Changed
+
+- License changed from MIT to Apache-2.0.
+- Pinned the toolchain in `rust-toolchain.toml` rather than tracking
+  `stable`, which had started failing clippy on untouched code (#170).
 
 ## [0.3.0] — 2026-07-19
 

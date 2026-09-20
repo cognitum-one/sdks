@@ -12,18 +12,7 @@ For per-SDK detail, see:
 
 ## [Unreleased]
 
-### Changed
-
-- Relicensed the repository and all three SDK packages from MIT to Apache-2.0,
-  adding an explicit patent grant for users and contributors.
-- Added the public security, support, contribution, conduct, ownership, issue,
-  and pull-request policies required before repository visibility changes.
-- Added narrow exact-fixture Gitleaks exceptions so full-history scanning can
-  block real findings without treating synthetic test canaries as credentials.
-- Distinguished prepared source version `0.4.0` from registry version `0.3.0`.
-
-
-## [0.4.0-rc.1] — 2026-08-05
+## [0.4.0] — 2026-09-20
 
 Fixes a defect that made the published Python and Rust SDKs unusable against
 `api.cognitum.one`, and lands the error-taxonomy and `Retry-After` work that
@@ -87,6 +76,42 @@ observable to a caller, and one widens a TypeScript union.
   status mapping apart from a structured service error will see a value where
   they saw none.
 
+### Fixed
+
+- **Python decoded `/v1/usage` totals, rates and cache stats to `None` against
+  production.** `/v1/usage` answers in camelCase (`totalTokens`, `costUsd`,
+  `escalationRate`) and the Python parser read only snake_case. Because
+  `parse_usage_summary` never raises and an empty total is a legitimate answer,
+  every number surfaced as a confident zero rather than an error -- so an SDK
+  that chatted correctly then reported no usage. Node had always read both
+  spellings; Python now does too, including the budget view (#168).
+- **`rustls` 0.23.37 → 0.23.45**, clearing RUSTSEC-2026-0285 -- TLS 1.3
+  handshake messages incorrectly accepted across encryption-level boundaries --
+  before this crate is published. The advisory is MEDIUM, so the dependency
+  gate's own `fail on High+ fixable` rule would have passed it through even had
+  the gate been running (#170).
+- `nanoid` 3.3.19 in the Node lockfile, clearing GHSA-2v37-7h3g-55p8. A
+  dev-only transitive of `postcss`; the published artifact is unaffected (#170).
+
+### Changed
+
+- Relicensed the repository and all three SDK packages from MIT to Apache-2.0,
+  adding an explicit patent grant for users and contributors.
+- Added the public security, support, contribution, conduct, ownership, issue,
+  and pull-request policies required before repository visibility changes.
+- Added narrow exact-fixture Gitleaks exceptions so full-history scanning can
+  block real findings without treating synthetic test canaries as credentials.
+- Pinned the Rust toolchain in `rust-toolchain.toml`. `ci.yml` pinned every
+  action to a SHA and then asked `dtolnay/rust-toolchain` for `stable`, so
+  clippy 1.98.0 began firing `result_large_err` at ten sites on untouched code
+  and reddened every open PR in the repository (#170).
+- Re-pinned the organisation security-scan caller so the scan jobs target a
+  runner this public repository can reach. The previous pin asked for
+  `[self-hosted, gcp-bypass]`, and every runner group in the organisation sets
+  `allows_public_repositories=false` by design -- a job GitHub silently refuses
+  to schedule until a 24h queue timeout, with nothing naming the cause. 34 days
+  with no secret scan and no dependency scan on a public repository, while
+  `supply-chain pins` passed green in the same runs (#171).
 
 ## [0.3.0] — 2026-07-19
 

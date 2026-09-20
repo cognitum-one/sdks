@@ -175,8 +175,21 @@ manifest's `sourceVersion`s together, merge, then push a `v*.*.*` tag from that 
 verifies registry digests against the artifacts it built.
 
 Registry uploads are **immutable** and there is no atomic three-registry commit. Never
-retag or reuse a version. Rehearse on a prerelease tag (`v0.3.1-rc.1` → npm dist-tag
-`next`) before a real one.
+retag or reuse a version.
+
+**A prerelease tag is NOT a rehearsal — it publishes.** `release.yml` triggers on
+`v*.*.*` *and* `v*.*.*-*`, and all three publish jobs gate only on
+`github.event_name == 'push'`. A tag push is a push, so `v0.4.0-rc.1` publishes to
+npm, PyPI and crates.io permanently — and the `release tags` ruleset has no bypass
+actors, so a burnt tag name cannot be retried. This line previously advised exactly
+that and would have caused an irreversible publish.
+
+The rehearsal is **`workflow_dispatch`** with the version you are about to ship and
+`npm_action: rehearse-only`: it runs every gate and builds every artifact, then stops
+before the publish jobs. Free and repeatable. To prove the npm trusted-publisher
+binding specifically, use `npm_action: stage-prerelease`, which is recoverable and
+stays out of the public registry. See `.github/RELEASE-SETUP.md`, which is
+authoritative.
 
 ## Critical rules
 
