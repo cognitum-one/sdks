@@ -1,0 +1,14 @@
+# Pinned deliberately. `ci.yml` asks dtolnay/rust-toolchain for "stable", which
+# floats: clippy 1.98.0 began firing `result_large_err` at ten sites on code
+# that had not changed, turning every PR in this repo red and holding the
+# v0.4.0 release — the one that unbreaks the published Python and Rust SDKs
+# against production — for 50 days.
+#
+# A release pipeline must not change underneath itself. Everything else in
+# ci.yml is pinned to a SHA; the toolchain was the one thing that was not.
+#
+# Raising this is a deliberate act: bump it, run clippy, fix or justify what
+# the new toolchain finds, in a change that does nothing else.
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]

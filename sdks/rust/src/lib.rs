@@ -22,6 +22,21 @@
 //! }
 //! ```
 
+// `AgenticError` is ~376 bytes and every fallible call returns it, so clippy's
+// `result_large_err` fires across the crate. Boxing it is the lint's own
+// suggested fix and it is NOT available here: every field is `pub` and the flat
+// shape is a deliberate cross-SDK contract -- errors.rs says so in the `upgrade`
+// doc comment, "a caller reading `error.upgrade` in Node, Python and Rust alike
+// is the point". Changing it breaks every Rust caller, which is the opposite of
+// what the v0.4.0 release exists to do.
+//
+// Accepted crate-wide rather than at each of the ten sites, which is what the
+// scattered `#[allow(clippy::result_large_err)]` in `harnessaas/` already did
+// piecemeal before the toolchain bump widened the lint.
+//
+// The real fix is `Box<AgenticError>` and it belongs in a major version.
+#![allow(clippy::result_large_err)]
+
 pub mod agentic;
 pub mod brain;
 pub mod catalog;
