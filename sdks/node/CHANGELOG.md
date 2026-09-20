@@ -5,11 +5,7 @@ This package follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Changed
-
-- License changed from MIT to Apache-2.0.
-
-## [0.4.0-rc.1] — 2026-08-05
+## [0.4.0] — 2026-09-20
 
 Fixes a defect that made the published Python and Rust SDKs unusable against
 `api.cognitum.one`, and lands the error-taxonomy and `Retry-After` work that
@@ -75,6 +71,14 @@ observable to a caller, and one widens a TypeScript union.
   status mapping apart from a structured service error will see a value where
   they saw none.
 
+### Fixed
+
+- `nanoid` 3.3.19 in the lockfile, clearing GHSA-2v37-7h3g-55p8. A dev-only
+  transitive of `postcss`; the published package is unaffected (#170).
+
+### Changed
+
+- License changed from MIT to Apache-2.0.
 
 ## [0.3.0] — 2026-07-19
 
