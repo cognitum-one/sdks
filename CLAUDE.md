@@ -177,6 +177,16 @@ verifies registry digests against the artifacts it built.
 Registry uploads are **immutable** and there is no atomic three-registry commit. Never
 retag or reuse a version.
 
+**Each publish job pauses for its own approval.** npm, PyPI and crates.io are three
+separate deployments to the `release` environment, so one approval does not release the
+chain — the run returns to `waiting` between each. A run sitting in `waiting` after npm
+succeeded is a *half-published release*. Stay with it to the end.
+
+**The PyPI trusted publisher cannot be verified from this repo.** No token is passed, and
+`rehearse-only` never reaches that job, so the first thing that tests it is a real publish
+— after npm is already public. Have a PyPI project owner confirm it before tagging. This
+is what left v0.4.0 half-published on 2026-09-20.
+
 **A prerelease tag is NOT a rehearsal — it publishes.** `release.yml` triggers on
 `v*.*.*` *and* `v*.*.*-*`, and all three publish jobs gate only on
 `github.event_name == 'push'`. A tag push is a push, so `v0.4.0-rc.1` publishes to
