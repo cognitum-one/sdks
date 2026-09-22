@@ -15,8 +15,8 @@
       "registry": "npm",
       "registryUrl": "https://www.npmjs.com/package/@cognitum-one/sdk",
       "sourceVersion": "0.4.0",
-      "registryVersion": "0.3.0",
-      "verifiedAt": "2026-07-19T19:40:00Z",
+      "registryVersion": "0.4.0",
+      "verifiedAt": "2026-09-22T00:34:11Z",
       "minRuntime": "Node.js >=18",
       "installCommand": "npm install @cognitum-one/sdk"
     },
