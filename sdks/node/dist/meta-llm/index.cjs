@@ -673,6 +673,127 @@ var MEASUREMENT_KIND_BY_INSTRUMENT = {
 
 // src/agentic/trace-context.ts
 var import_node_crypto3 = require("crypto");
+var TRACE_VERSION = "00";
+var DEFAULT_TRACE_FLAGS = "01";
+var MAX_TRACESTATE_MEMBERS = 32;
+function isLowercaseHex(s, expectedLen) {
+  return s.length === expectedLen && /^[0-9a-f]+$/.test(s);
+}
+function isAllZero(s) {
+  return /^0+$/.test(s);
+}
+function parseTraceParentComponents(header) {
+  const parts = header.split("-");
+  if (parts.length !== 4) {
+    return null;
+  }
+  const [version, traceId, parentId, traceFlags] = parts;
+  if (version !== TRACE_VERSION) {
+    return null;
+  }
+  if (!isLowercaseHex(traceId, 32) || isAllZero(traceId)) {
+    return null;
+  }
+  if (!isLowercaseHex(parentId, 16) || isAllZero(parentId)) {
+    return null;
+  }
+  if (!isLowercaseHex(traceFlags, 2)) {
+    return null;
+  }
+  return { traceId, parentId, traceFlags };
+}
+function randomHexNonzero(byteLen) {
+  for (; ; ) {
+    const bytes = (0, import_node_crypto3.randomBytes)(byteLen);
+    if (bytes.some((b) => b !== 0)) {
+      return bytes.toString("hex");
+    }
+  }
+}
+function generateTraceParent() {
+  const traceId = randomHexNonzero(16);
+  const parentId = randomHexNonzero(8);
+  return {
+    traceParent: `${TRACE_VERSION}-${traceId}-${parentId}-${DEFAULT_TRACE_FLAGS}`
+  };
+}
+function isValidTraceStateKeyCharset(s) {
+  return s.length > 0 && s.length <= 256 && /^[a-z0-9][a-z0-9\-*_/]*$/.test(s);
+}
+function isValidTraceStateKey(key) {
+  const atIndex = key.indexOf("@");
+  if (atIndex === -1) {
+    return isValidTraceStateKeyCharset(key);
+  }
+  if (key.indexOf("@", atIndex + 1) !== -1) {
+    return false;
+  }
+  const tenant = key.slice(0, atIndex);
+  const vendor = key.slice(atIndex + 1);
+  return tenant.length > 0 && vendor.length > 0 && isValidTraceStateKeyCharset(tenant) && isValidTraceStateKeyCharset(vendor);
+}
+function isValidTraceStateValue(value) {
+  if (value.length === 0 || value.length > 256) {
+    return false;
+  }
+  if (value.startsWith(" ") || value.endsWith(" ")) {
+    return false;
+  }
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    const ch = value[i];
+    if (code < 32 || code > 126 || ch === "," || ch === "=") {
+      return false;
+    }
+  }
+  return true;
+}
+function parseTraceState(header) {
+  if (header.trim().length === 0) {
+    return null;
+  }
+  const members = [];
+  for (const rawMember of header.split(",")) {
+    let start = 0;
+    let end = rawMember.length;
+    while (start < end && (rawMember[start] === " " || rawMember[start] === "	")) start++;
+    while (end > start && (rawMember[end - 1] === " " || rawMember[end - 1] === "	")) end--;
+    const member = rawMember.slice(start, end);
+    if (member.length === 0) {
+      return null;
+    }
+    const eqIndex = member.indexOf("=");
+    if (eqIndex === -1) {
+      return null;
+    }
+    const key = member.slice(0, eqIndex);
+    const value = member.slice(eqIndex + 1);
+    if (!isValidTraceStateKey(key) || !isValidTraceStateValue(value)) {
+      return null;
+    }
+    members.push({ key, value });
+  }
+  if (members.length === 0 || members.length > MAX_TRACESTATE_MEMBERS) {
+    return null;
+  }
+  return members;
+}
+function formatTraceState(members) {
+  return members.map((m) => `${m.key}=${m.value}`).join(",");
+}
+function joinOrGenerateTraceContext(incomingTraceparentHeader, incomingTracestateHeader) {
+  const parsedTraceState = incomingTracestateHeader ? parseTraceState(incomingTracestateHeader) : null;
+  const traceState = parsedTraceState ? formatTraceState(parsedTraceState) : void 0;
+  const components = incomingTraceparentHeader ? parseTraceParentComponents(incomingTraceparentHeader) : null;
+  const traceParent = components ? `${TRACE_VERSION}-${components.traceId}-${randomHexNonzero(8)}-${DEFAULT_TRACE_FLAGS}` : generateTraceParent().traceParent;
+  return traceState !== void 0 ? { traceParent, traceState } : { traceParent };
+}
+function applyTraceContext(headers, carrier) {
+  const context = joinOrGenerateTraceContext(carrier?.traceparent, carrier?.tracestate);
+  headers.traceparent = context.traceParent ?? generateTraceParent().traceParent;
+  const traceState = context.traceState;
+  if (traceState !== void 0) headers.tracestate = traceState;
+}
 
 // src/agentic/receipt-verification.ts
 var import_node_crypto4 = require("crypto");
@@ -870,6 +991,8 @@ async function sendPostOnce(deps, path, operation, body, credential, idempotency
     // stable across every retry of one logical call.
     "Idempotency-Key": idempotencyKey
   };
+  const carrier = deps.defaultRequestContext?.tracingCarrier;
+  if (carrier) applyTraceContext(headers, carrier);
   applyAuth(headers, credential);
   const url = `${deps.baseUrl}${path}`;
   let response;
@@ -2128,7 +2251,7 @@ var MetaLlmClient = class {
       baseUrl: this.config.baseUrl,
       transport: this.config.transport ?? fetch,
       credentialProvider: this.config.credentialProvider,
-      defaultRequestContext: tenant ? { tenant } : this.config.defaultRequestContext,
+      defaultRequestContext: options?.requestContext ? { ...this.config.defaultRequestContext, ...options.requestContext, tenant } : this.config.defaultRequestContext,
       telemetry: this.config.telemetry
     };
   }
@@ -2180,6 +2303,7 @@ var MetaLlmClient = class {
       Accept: "application/json",
       "X-Cognitum-Request-Id": requestId
     };
+    applyTraceContext(headers, options?.requestContext?.tracingCarrier ?? this.config.defaultRequestContext?.tracingCarrier);
     this.applyAuth(headers, credential);
     const transport = this.config.transport ?? fetch;
     const url = `${this.config.baseUrl}${path}`;

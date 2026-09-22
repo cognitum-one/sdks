@@ -947,6 +947,12 @@ function joinOrGenerateTraceContext(incomingTraceparentHeader, incomingTracestat
   const traceParent = components ? `${TRACE_VERSION}-${components.traceId}-${randomHexNonzero(8)}-${DEFAULT_TRACE_FLAGS}` : generateTraceParent().traceParent;
   return traceState !== void 0 ? { traceParent, traceState } : { traceParent };
 }
+function applyTraceContext(headers, carrier) {
+  const context = joinOrGenerateTraceContext(carrier?.traceparent, carrier?.tracestate);
+  headers.traceparent = context.traceParent ?? generateTraceParent().traceParent;
+  const traceState = context.traceState;
+  if (traceState !== void 0) headers.tracestate = traceState;
+}
 function metaLlmSpanName(operation) {
   return `cognitum.meta_llm.${operation}`;
 }
@@ -1299,6 +1305,7 @@ export {
   UPGRADE_REQUIRED_CODE,
   UnsupportedCapabilityError,
   UnsupportedRuntimeError,
+  applyTraceContext,
   assertScopeGranted,
   buildExecutionReceipt,
   canonicalJson,
