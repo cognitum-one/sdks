@@ -309,6 +309,7 @@ impl Client {
         body: Option<&B>,
     ) -> Result<T, Error> {
         let url = format!("{}{}", self.base_url, path);
+        let idempotent = method != reqwest::Method::POST;
         let mut attempts = 0u32;
 
         loop {
@@ -346,7 +347,7 @@ impl Client {
             let headers = response.headers().clone();
             let body_text = response.text().await.unwrap_or_default();
 
-            if Self::is_retryable(status) && attempts <= self.config.max_retries {
+            if Self::is_retryable(status, idempotent) && attempts <= self.config.max_retries {
                 let delay = self.backoff_duration(status, attempts, &headers, &body_text);
                 tokio::time::sleep(delay).await;
                 continue;
@@ -356,18 +357,27 @@ impl Client {
         }
     }
 
-    fn is_retryable(status: StatusCode) -> bool {
-        matches!(
-            status,
-            StatusCode::TOO_MANY_REQUESTS
-                | StatusCode::INTERNAL_SERVER_ERROR
-                | StatusCode::SERVICE_UNAVAILABLE
-        )
+    /// ADR-0005 retriable outcomes and idempotency rule.
+    ///
+    /// 429 means the server refused the request without acting on it, so it
+    /// is retried for every method. 500/502/503/504 are retried only for
+    /// idempotent methods: a POST that reached the server may already have
+    /// committed (an order, an email, a device registration), and sending it
+    /// again would execute it twice. Node and Python never resend a POST on 5xx.
+    fn is_retryable(status: StatusCode, idempotent: bool) -> bool {
+        match status {
+            StatusCode::TOO_MANY_REQUESTS => true,
+            StatusCode::INTERNAL_SERVER_ERROR
+            | StatusCode::BAD_GATEWAY
+            | StatusCode::SERVICE_UNAVAILABLE
+            | StatusCode::GATEWAY_TIMEOUT => idempotent,
+            _ => false,
+        }
     }
 
     /// Per-attempt backoff (ADR-0005 §"Backoff formula").
     ///
-    /// For 429 we first consult the parsed server hint. For 500/503 (or
+    /// For 429 we first consult the parsed server hint. For 5xx (or
     /// 429 without a hint) we fall back to equal-jitter exponential
     /// backoff: `min(cap, base * 2^attempt + uniform[0, base))`.
     fn backoff_duration(
@@ -387,7 +397,7 @@ impl Client {
 
     fn map_error(status: StatusCode, headers: &HeaderMap, body: String) -> Error {
         match status {
-            StatusCode::UNAUTHORIZED => Error::Auth(body),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Error::Auth(body),
             StatusCode::TOO_MANY_REQUESTS => {
                 // Populate the retry hint with whatever we parsed. If
                 // nothing was advertised, fall back to ADR-0005 equal
