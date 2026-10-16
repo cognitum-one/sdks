@@ -53,6 +53,7 @@ from cognitum.agentic import (
     UnsupportedCapabilityError,
     equal_jitter_delay_ms,
 )
+from cognitum.agentic.retry_after import parse_retry_after_ms
 from cognitum.harnessaas.config import HarnessaaSClientConfig
 from cognitum.harnessaas.discovery import HarnessaaSHealth, parse_harnessaas_health
 from cognitum.harnessaas.envelope import HarnessaaSResponseMeta, HarnessaaSResult
@@ -393,7 +394,7 @@ class HarnessaaSClient:
 
         duration_ms = (time.monotonic() - started_at) * 1000
         retry_after_header = response.headers.get("retry-after")
-        retry_after_ms = int(float(retry_after_header) * 1000) if retry_after_header else None
+        retry_after_ms = parse_retry_after_ms(retry_after_header)
         if telemetry is not None:
             from cognitum.harnessaas.config import HarnessaaSTelemetryEvent
 
@@ -453,7 +454,7 @@ class HarnessaaSClient:
 
         duration_ms = (time.monotonic() - started_at) * 1000
         retry_after_header = response.headers.get("retry-after")
-        retry_after_ms = int(float(retry_after_header) * 1000) if retry_after_header else None
+        retry_after_ms = parse_retry_after_ms(retry_after_header)
         if telemetry is not None:
             from cognitum.harnessaas.config import HarnessaaSTelemetryEvent
 

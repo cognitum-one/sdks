@@ -53,6 +53,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from cognitum.agentic import AgenticError, UnsupportedCapabilityError
+from cognitum.agentic.retry_after import parse_retry_after_ms
 from cognitum.agentic.wire import request_body
 from cognitum.meta_proxy.config import MetaProxyClientConfig
 from cognitum.meta_proxy.consent import assert_consent_for_routing_intent
@@ -505,13 +506,13 @@ class MetaProxyClient:
             raise map_meta_proxy_http_error(response, operation, request_id)
 
         payload: dict[str, Any] = response.json()
-        retry_after_header = response.headers.get("retry-after")
+        retry_after_ms = parse_retry_after_ms(response.headers.get("retry-after"))
         meta = MetaProxyResponseMeta(
             request_id=response.headers.get("x-cognitum-request-id", request_id),
             http_status=response.status_code,
             product_version=response.headers.get("x-cognitum-product-version"),
             protocol_version=response.headers.get("x-cognitum-protocol-version"),
-            retry_after=float(retry_after_header) if retry_after_header else None,
+            retry_after=retry_after_ms / 1000 if retry_after_ms is not None else None,
             unknown_headers=collect_unknown_headers(response.headers),
         )
         return payload, meta

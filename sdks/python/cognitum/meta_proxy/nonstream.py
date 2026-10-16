@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from cognitum.agentic import AgenticError
+from cognitum.agentic.retry_after import parse_retry_after_ms
 from cognitum.meta_proxy.envelope import MetaProxyResponseMeta, collect_unknown_headers
 from cognitum.meta_proxy.http_errors import map_meta_proxy_http_error
 from cognitum.meta_proxy.status import MetaProxyRoutingReceipt
@@ -218,7 +219,7 @@ async def _send_once(
 
     duration_ms = (time.monotonic() - started_at) * 1000
     retry_after_header = response.headers.get("retry-after")
-    retry_after_ms = int(float(retry_after_header) * 1000) if retry_after_header else None
+    retry_after_ms = parse_retry_after_ms(retry_after_header)
 
     if telemetry is not None:
         from cognitum.meta_proxy.config import MetaProxyTelemetryEvent
@@ -265,7 +266,7 @@ async def _send_once(
         http_status=response.status_code,
         product_version=response.headers.get("x-cognitum-product-version"),
         protocol_version=response.headers.get("x-cognitum-protocol-version"),
-        retry_after=float(retry_after_header) if retry_after_header else None,
+        retry_after=retry_after_ms / 1000 if retry_after_ms is not None else None,
         routing_receipt=routing_receipt,
         upstream_receipt=upstream_receipt,
         unknown_headers=collect_unknown_headers(response.headers),

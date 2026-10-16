@@ -62,6 +62,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from cognitum.agentic import AgenticError
+from cognitum.agentic.retry_after import parse_retry_after_ms
 from cognitum.meta_llm.stream.envelope import MetaLlmStreamEnvelope
 from cognitum.meta_llm.stream.openai_events import OpenAiStreamEvent, decode_openai_sse_event
 from cognitum.meta_proxy.consent import assert_consent_for_routing_intent
@@ -216,8 +217,8 @@ async def _open_stream_with_pre_byte_retry(
 
             err = map_meta_proxy_http_error(response, _OPERATION, request_id)
             retry_after_header = response.headers.get("retry-after")
-            if err.retry_after_ms is None and retry_after_header:
-                err.retry_after_ms = int(float(retry_after_header) * 1000)
+            if err.retry_after_ms is None:
+                err.retry_after_ms = parse_retry_after_ms(retry_after_header)
         finally:
             await cm.__aexit__(None, None, None)
 

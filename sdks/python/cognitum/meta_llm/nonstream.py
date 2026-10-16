@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 import httpx
 
 from cognitum.agentic import DEFAULT_RETRY_POLICY, AgenticError, equal_jitter_delay_ms
+from cognitum.agentic.retry_after import parse_retry_after_ms
 from cognitum.agentic.scope_preflight import assert_scope_granted
 from cognitum.meta_llm.envelope import MetaLlmResponseMeta
 from cognitum.meta_llm.http_errors import map_meta_llm_http_error
@@ -198,7 +199,7 @@ async def _send_post_once(
 
     duration_ms = (time.monotonic() - started_at) * 1000
     retry_after_header = response.headers.get("retry-after")
-    retry_after_ms = int(float(retry_after_header) * 1000) if retry_after_header else None
+    retry_after_ms = parse_retry_after_ms(retry_after_header)
     idempotent_replay_header = response.headers.get("x-cognitum-idempotent-replay")
     idempotent_replay = (
         idempotent_replay_header.lower() == "true" if idempotent_replay_header is not None else None
