@@ -62,6 +62,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from cognitum.agentic import AgenticError
+from cognitum.agentic._transport import describe_transport_error
 from cognitum.meta_llm.stream.envelope import MetaLlmStreamEnvelope
 from cognitum.meta_llm.stream.openai_events import OpenAiStreamEvent, decode_openai_sse_event
 from cognitum.meta_proxy.consent import assert_consent_for_routing_intent
@@ -199,7 +200,7 @@ async def _open_stream_with_pre_byte_retry(
         except httpx.HTTPError as cause:
             raise AgenticError(
                 "transport",
-                f"{_OPERATION} request failed: {cause}",
+                f"{_OPERATION} request failed: {describe_transport_error(cause)}",
                 product=_PRODUCT,
                 operation=_OPERATION,
                 request_id=request_id,

@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 import httpx
 
 from cognitum.agentic import DEFAULT_RETRY_POLICY, AgenticError, equal_jitter_delay_ms
+from cognitum.agentic._transport import describe_transport_error
 from cognitum.agentic.scope_preflight import assert_scope_granted
 from cognitum.meta_llm.envelope import MetaLlmResponseMeta
 from cognitum.meta_llm.http_errors import map_meta_llm_http_error
@@ -188,7 +189,7 @@ async def _send_post_once(
     except httpx.HTTPError as cause:
         raise AgenticError(
             "transport",
-            f"{operation} request failed: {cause}",
+            f"{operation} request failed: {describe_transport_error(cause)}",
             product=_PRODUCT,
             operation=operation,
             request_id=request_id,

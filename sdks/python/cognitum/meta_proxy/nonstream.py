@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from cognitum.agentic import AgenticError
+from cognitum.agentic._transport import describe_transport_error
 from cognitum.meta_proxy.envelope import MetaProxyResponseMeta, collect_unknown_headers
 from cognitum.meta_proxy.http_errors import map_meta_proxy_http_error
 from cognitum.meta_proxy.status import MetaProxyRoutingReceipt
@@ -208,7 +209,7 @@ async def _send_once(
     except httpx.HTTPError as cause:
         raise AgenticError(
             "transport",
-            f"{operation} request failed: {cause}",
+            f"{operation} request failed: {describe_transport_error(cause)}",
             product=_PRODUCT,
             operation=operation,
             request_id=request_id,

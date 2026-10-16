@@ -53,6 +53,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from cognitum.agentic import AgenticError, UnsupportedCapabilityError
+from cognitum.agentic._transport import DEFAULT_HTTP_TIMEOUT, describe_transport_error
 from cognitum.agentic.wire import request_body
 from cognitum.meta_proxy.config import MetaProxyClientConfig
 from cognitum.meta_proxy.consent import assert_consent_for_routing_intent
@@ -315,9 +316,12 @@ class MetaProxyClient:
         # proxy env vars (``trust_env=False`` -- httpx honors HTTP_PROXY/
         # HTTPS_PROXY by default) and never follows redirects
         # (``follow_redirects=False``, pinned explicitly rather than relying
-        # on the library default silently staying safe).
+        # on the library default silently staying safe). Its timeout leaves
+        # reads unbounded so ``ProxyTimeBudget`` (ADR-0025a §D8: no overall
+        # timeout unless the caller sets one) is what bounds a call, not
+        # httpx's implicit 5 s.
         self._transport: httpx.AsyncClient = self._config.transport or httpx.AsyncClient(
-            trust_env=False, follow_redirects=False
+            trust_env=False, follow_redirects=False, timeout=DEFAULT_HTTP_TIMEOUT
         )
         self.chat = _ChatNamespace(self)
         self.preview = _PreviewNamespace()
@@ -480,7 +484,7 @@ class MetaProxyClient:
         except httpx.HTTPError as cause:
             raise AgenticError(
                 "transport",
-                f"{operation} request failed: {cause}",
+                f"{operation} request failed: {describe_transport_error(cause)}",
                 product=_PRODUCT,
                 operation=operation,
                 request_id=request_id,
