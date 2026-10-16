@@ -44,7 +44,7 @@ permissions:
 jobs:
   build:
     name: build and verify release artifacts
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       version: ${{ steps.version.outputs.version }}
     permissions:
@@ -156,7 +156,7 @@ jobs:
     if: github.event_name == 'push'
     name: publish npm
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     environment: release
     permissions:
       contents: read
@@ -219,7 +219,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.npm_action == 'stage-prerelease'
     name: stage npm prerelease (not public)
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     environment: release
     permissions:
       contents: read
@@ -277,7 +277,7 @@ jobs:
     if: github.event_name == 'push'
     name: publish PyPI
     needs: [build, publish-npm]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     environment: release
     permissions:
       contents: read
@@ -335,7 +335,7 @@ jobs:
     if: github.event_name == 'push'
     name: publish crates.io
     needs: [build, publish-pypi]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     environment: release
     permissions:
       contents: read
@@ -404,7 +404,7 @@ jobs:
     if: github.event_name == 'push'
     name: verify published artifacts and installs
     needs: [build, publish-crates]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
