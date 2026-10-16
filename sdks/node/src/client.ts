@@ -5,6 +5,7 @@ import {
   RateLimitError,
   ValidationError,
   NotFoundError,
+  ParseError,
 } from "./errors.js";
 
 const DEFAULT_BASE_URL = "https://api.cognitum.one";
@@ -97,10 +98,24 @@ export class HttpClient {
         clearTimeout(timer);
 
         if (response.ok) {
-          if (response.status === 204) {
+          // Several endpoints (contact, leads, device registration) answer a
+          // successful POST with an empty body. Read text first so an empty
+          // 2xx resolves instead of failing JSON.parse, and so a non-JSON
+          // 2xx surfaces as a ParseError rather than looking like a network
+          // failure: the server already accepted the request, and retrying
+          // would execute it again.
+          const text = await response.text();
+          if (response.status === 204 || text.trim() === "") {
             return undefined as T;
           }
-          return (await response.json()) as T;
+          try {
+            return JSON.parse(text) as T;
+          } catch {
+            throw new ParseError(
+              "JSON",
+              `Response body is not valid JSON (HTTP ${response.status})`,
+            );
+          }
         }
 
         // Map status codes to typed errors. We read the body once as text so
@@ -166,11 +181,13 @@ export class HttpClient {
       } catch (error) {
         clearTimeout(timer);
 
-        // Don't retry typed client errors
+        // Don't retry typed client errors, or a 2xx whose body we could
+        // not decode (the server already acted on the request).
         if (
           error instanceof AuthError ||
           error instanceof NotFoundError ||
-          error instanceof ValidationError
+          error instanceof ValidationError ||
+          error instanceof ParseError
         ) {
           throw error;
         }
