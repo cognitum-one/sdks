@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     defaults:
       run:
         working-directory: sdks/node
@@ -54,7 +54,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
         node: [18, 20, 22]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -73,7 +73,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     defaults:
       run:
         working-directory: sdks/python
@@ -105,7 +105,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     defaults:
       run:
         working-directory: sdks/rust
@@ -145,16 +145,16 @@ jobs:
         # Each remaining feature is then built individually on top of it.
         # `live-seed-tests` is excluded — see the comment on the `rust` job.
         include:
-          - { os: Linux, runner: ubuntu-latest, feature: default, args: "" }
-          - { os: Linux, runner: ubuntu-latest, feature: native-tls, args: "--features native-tls" }
-          - { os: Linux, runner: ubuntu-latest, feature: seed, args: "--features seed" }
-          - { os: Linux, runner: ubuntu-latest, feature: stream, args: "--features stream" }
-          - { os: Linux, runner: ubuntu-latest, feature: blocking, args: "--features blocking" }
-          - { os: Linux, runner: ubuntu-latest, feature: mdns, args: "--features mdns" }
-          - { os: Linux, runner: ubuntu-latest, feature: meta-llm, args: "--features meta-llm" }
-          - { os: Linux, runner: ubuntu-latest, feature: meta-proxy, args: "--features meta-proxy" }
-          - { os: Linux, runner: ubuntu-latest, feature: metaharness, args: "--features metaharness" }
-          - { os: Linux, runner: ubuntu-latest, feature: harnessaas, args: "--features harnessaas" }
+          - { os: Linux, runner: ubuntu-24.04, feature: default, args: "" }
+          - { os: Linux, runner: ubuntu-24.04, feature: native-tls, args: "--features native-tls" }
+          - { os: Linux, runner: ubuntu-24.04, feature: seed, args: "--features seed" }
+          - { os: Linux, runner: ubuntu-24.04, feature: stream, args: "--features stream" }
+          - { os: Linux, runner: ubuntu-24.04, feature: blocking, args: "--features blocking" }
+          - { os: Linux, runner: ubuntu-24.04, feature: mdns, args: "--features mdns" }
+          - { os: Linux, runner: ubuntu-24.04, feature: meta-llm, args: "--features meta-llm" }
+          - { os: Linux, runner: ubuntu-24.04, feature: meta-proxy, args: "--features meta-proxy" }
+          - { os: Linux, runner: ubuntu-24.04, feature: metaharness, args: "--features metaharness" }
+          - { os: Linux, runner: ubuntu-24.04, feature: harnessaas, args: "--features harnessaas" }
           - { os: macOS, runner: macos-latest, feature: native-tls, args: "--features native-tls" }
           - { os: macOS, runner: macos-latest, feature: mdns, args: "--features mdns" }
           - { os: Windows, runner: windows-latest, feature: native-tls, args: "--features native-tls" }
@@ -180,7 +180,7 @@ jobs:
 
   capability-manifest:
     name: capability manifest (schema + registry drift check)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -197,7 +197,7 @@ jobs:
 
   coverage:
     name: coverage thresholds (node, python, rust)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # One Linux job rather than per-OS: coverage measures which LINES the
     # suite reaches, which does not vary by runner, and an instrumented Rust
     # rebuild on three platforms would cost far more than it tells us. The
@@ -245,7 +245,7 @@ jobs:
 
   ga-gate:
     name: GA gate (maturity + evidence)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # This job's check-run name is the ONLY required status check on `main`
     # and the only CI result `release.yml` consults before publishing, so its
     # `needs` list is the de facto definition of "CI is green". Every job in

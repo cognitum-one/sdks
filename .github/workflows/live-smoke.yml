@@ -38,7 +38,7 @@ jobs:
     name: resolve one published version
     # On a release trigger, only bother if the release actually succeeded.
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -89,7 +89,7 @@ jobs:
   node:
     name: published Node SDK against api.cognitum.one
     needs: resolve_version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -118,7 +118,7 @@ jobs:
   python:
     name: published Python SDK against api.cognitum.one
     needs: resolve_version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -145,7 +145,7 @@ jobs:
   rust:
     name: published Rust SDK against api.cognitum.one
     needs: resolve_version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
