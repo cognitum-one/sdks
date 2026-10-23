@@ -33,6 +33,10 @@ async fn order_status_email_round_trips() {
     for email in [
         "alice+tag@example.com",
         "100%real@example.com",
+        // Valid escape sequences must stay literal text, not be decoded.
+        "alice%2Btag@example.com",
+        "50%25off@example.com",
+        "a%26b@example.com",
         "a&b=c@example.com",
         "zoë@example.com",
     ] {
@@ -54,19 +58,19 @@ async fn order_status_email_round_trips() {
 
 #[tokio::test]
 async fn catalog_category_round_trips() {
-    let category = "C++ & Rust 100%";
+    let category = "C++ & Rust 100% %2B%26";
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/listTemplates"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"templates": []})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"products": []})))
         .mount(&server)
         .await;
 
-    // The body shape is not under test; only the query the server saw is.
-    let _ = client(&server.uri())
+    client(&server.uri())
         .catalog()
         .browse_with_category(category)
-        .await;
+        .await
+        .unwrap();
     assert_eq!(
         decoded_query(&server).await,
         vec![("category".to_owned(), category.to_owned())]
