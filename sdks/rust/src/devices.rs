@@ -68,7 +68,7 @@ impl<'a> DevicesResource<'a> {
             device_id: device_id.to_owned(),
             current_version: current_version.to_owned(),
         };
-        self.client.post("/seedCheckUpdate", &body).await
+        self.client.post_idempotent("/seedCheckUpdate", &body).await
     }
 
     /// Send a heartbeat for a device.

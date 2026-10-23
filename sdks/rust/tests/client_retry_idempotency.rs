@@ -3,8 +3,10 @@
 //! A POST that reached the server may already have committed, so a 5xx on a
 //! POST is returned to the caller instead of being sent again. 429 is still
 //! retried for every method (the server refused without acting), and
-//! idempotent methods retry 500/502/503/504. Node and Python follow the same
-//! rule; these tests pin Rust to it.
+//! idempotent methods retry 500/502/503/504, as do read-only POSTs the
+//! resource attests (brain search, update check, docs search). Node never
+//! resends a POST on 5xx either; Python's cloud client is stricter and does
+//! not retry a POST on 429. These tests pin Rust to ADR-0005.
 
 use cognitum_one::{Client, ClientConfig, Error};
 use serde_json::json;
@@ -126,4 +128,28 @@ async fn forbidden_maps_to_auth_error() {
         matches!(err, Error::Auth(ref m) if m == "key not allowed"),
         "expected Auth, got: {err:?}"
     );
+}
+
+#[tokio::test]
+async fn read_only_post_is_retried_after_500() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/brainSearch"))
+        .respond_with(ResponseTemplate::new(500))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/brainSearch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"results": []})))
+        .mount(&server)
+        .await;
+
+    let resp = client(&server.uri(), 3)
+        .brain()
+        .search("retry", None, None)
+        .await
+        .unwrap();
+    assert!(resp.results.is_empty());
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
 }

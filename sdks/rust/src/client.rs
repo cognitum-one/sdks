@@ -290,7 +290,7 @@ impl Client {
     // -- internal HTTP helpers -----------------------------------------------
 
     pub(crate) async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
-        self.request(reqwest::Method::GET, path, Option::<&()>::None)
+        self.request(reqwest::Method::GET, path, Option::<&()>::None, true)
             .await
     }
 
@@ -299,7 +299,21 @@ impl Client {
         path: &str,
         body: &B,
     ) -> Result<T, Error> {
-        self.request(reqwest::Method::POST, path, Some(body)).await
+        self.request(reqwest::Method::POST, path, Some(body), false)
+            .await
+    }
+
+    /// POST to an endpoint the resource knows is a read with a body (a
+    /// search or a lookup), so a 5xx may be retried like a GET. ADR-0005
+    /// lets a resource attest this internally; never use it for a call
+    /// that changes state.
+    pub(crate) async fn post_idempotent<T: DeserializeOwned, B: Serialize>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T, Error> {
+        self.request(reqwest::Method::POST, path, Some(body), true)
+            .await
     }
 
     async fn request<T: DeserializeOwned, B: Serialize>(
@@ -307,9 +321,9 @@ impl Client {
         method: reqwest::Method,
         path: &str,
         body: Option<&B>,
+        idempotent: bool,
     ) -> Result<T, Error> {
         let url = format!("{}{}", self.base_url, path);
-        let idempotent = method != reqwest::Method::POST;
         let mut attempts = 0u32;
 
         loop {
