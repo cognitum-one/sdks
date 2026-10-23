@@ -356,11 +356,14 @@ class PinVerifier:
 def request_was_sent(exc: Exception) -> bool:
     """Whether a transport failure may have happened after the request left.
 
-    Connection and connect-timeout failures, and waiting for a pooled
-    connection, happen before any byte of the request is written, so only
-    those are safe to replay for a non-idempotent request (ADR-0005).
+    Connection and connect-timeout failures, a proxy refusing the tunnel,
+    and waiting for a pooled connection all happen before any byte of the
+    request is written, so only those are safe to replay for a
+    non-idempotent request (ADR-0005).
     """
-    return not isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
+    return not isinstance(
+        exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, httpx.ProxyError)
+    )
 
 
 __all__ = [

@@ -45,11 +45,16 @@ AMBIGUOUS = [
     pytest.param(httpx.Response(504), id="504"),
     pytest.param(httpx.ReadTimeout("slow"), id="read-timeout"),
     pytest.param(httpx.RemoteProtocolError("dropped"), id="connection-dropped"),
+    pytest.param(httpx.ReadError("reset"), id="read-error"),
+    pytest.param(httpx.WriteError("broken pipe"), id="write-error"),
+    pytest.param(httpx.WriteTimeout("slow upload"), id="write-timeout"),
 ]
 # Failures before the request left the process: safe to retry and fail over.
 PRE_SEND = [
     pytest.param(httpx.ConnectError("refused"), id="connect-error"),
     pytest.param(httpx.ConnectTimeout("connect"), id="connect-timeout"),
+    pytest.param(httpx.PoolTimeout("no connection"), id="pool-timeout"),
+    pytest.param(httpx.ProxyError("tunnel refused"), id="proxy-refused"),
 ]
 
 
@@ -199,4 +204,15 @@ async def test_async_idempotent_query_still_fails_over_after_500() -> None:
     b = respx.post(BASE_B + QUERY).mock(return_value=httpx.Response(200, json={"results": []}))
     async with _async([BASE_A, BASE_B]) as c:
         await c.store.query(vector=[0.1, 0.2, 0.3], k=1)
+    assert (a.call_count, b.call_count) == (1, 1)
+
+
+@respx.mock
+def test_repeat_safe_ota_check_still_fails_over_after_500() -> None:
+    a = respx.post(BASE_A + "/api/v1/ota/check-now").mock(return_value=httpx.Response(500))
+    b = respx.post(BASE_B + "/api/v1/ota/check-now").mock(
+        return_value=httpx.Response(200, json={"status": "checking"})
+    )
+    with _sync([BASE_A, BASE_B]) as c:
+        c.ota.check_now()
     assert (a.call_count, b.call_count) == (1, 1)

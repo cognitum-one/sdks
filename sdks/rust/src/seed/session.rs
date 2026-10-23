@@ -187,14 +187,15 @@ impl<'s, 'c> SessionOta<'s, 'c> {
             .await
     }
 
-    /// `POST /api/v1/ota/check-now`.
+    /// `POST /api/v1/ota/check-now`. Repeat-safe (the seed dedupes it), so
+    /// marked idempotent as in [`crate::seed::resources::OtaResource::check_now`].
     pub async fn check_now(&self) -> Result<OtaCheckNowAck, Error> {
         self.session
             .client
             .request_on_peer_post(
                 "/ota/check-now",
                 &serde_json::Value::Null,
-                false,
+                true,
                 Some(&self.session.pinned_peer),
             )
             .await

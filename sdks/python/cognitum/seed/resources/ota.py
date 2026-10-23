@@ -20,7 +20,9 @@ class OtaResource:
         self, *, options: CallOptions | None = None
     ) -> OtaCheckNowResponse:
         data = self._http.request(  # type: ignore[attr-defined]
-            "POST", "/api/v1/ota/check-now", json={}, options=options,
+            # Repeat-safe: the seed dedupes check-now internally.
+            "POST", "/api/v1/ota/check-now", json={}, idempotent=True,
+            options=options,
         )
         return OtaCheckNowResponse.from_wire(data or {})
 
@@ -41,6 +43,8 @@ class AsyncOtaResource:
         self, *, options: CallOptions | None = None
     ) -> OtaCheckNowResponse:
         data = await self._http.request(  # type: ignore[attr-defined]
-            "POST", "/api/v1/ota/check-now", json={}, options=options,
+            # Repeat-safe: the seed dedupes check-now internally.
+            "POST", "/api/v1/ota/check-now", json={}, idempotent=True,
+            options=options,
         )
         return OtaCheckNowResponse.from_wire(data or {})
