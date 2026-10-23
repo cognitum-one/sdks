@@ -160,8 +160,9 @@ lower one to make a build pass.
 
 Two things to know. The Python number is **not** comparable to a line-only figure —
 the same suite reads 89% without branch coverage; the branch number is the honest one.
-And vitest sets `all: true` deliberately: without it, v8 reports only files some test
-imported, so deleting the last test touching a module makes coverage go *up*.
+Vitest 4 removed `all`; the explicit `coverage.include: ["src/**/*.ts"]` keeps
+covered and uncovered source files in the denominator. Removing that include would
+make deleting the last test touching a module increase reported coverage.
 
 Thresholds live in each language's own config so a local run enforces the same bar CI
 does. They are checked once, on Linux — coverage measures which lines the tests reach,
