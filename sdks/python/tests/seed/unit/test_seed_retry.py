@@ -49,9 +49,22 @@ class TestIsRetriable:
             method="POST", status_code=429, body_sent=True, idempotent=False
         )
 
-    def test_post_on_503_always_retries(self) -> None:
+    def test_post_on_503_with_retry_after_retries(self) -> None:
+        # ADR-0005: a 503 that says when to come back is a refusal.
         assert is_retriable(
+            method="POST", status_code=503, body_sent=True, idempotent=False,
+            has_retry_after=True,
+        )
+
+    def test_post_on_503_without_retry_after_does_not_retry(self) -> None:
+        # Issue #190: without the hint the seed may have committed the POST.
+        assert not is_retriable(
             method="POST", status_code=503, body_sent=True, idempotent=False
+        )
+
+    def test_transport_error_after_send_on_post_does_not_retry(self) -> None:
+        assert not is_retriable(
+            method="POST", status_code=None, is_transport_error=True, body_sent=True
         )
 
     def test_transport_error_always_retries(self) -> None:

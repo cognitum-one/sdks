@@ -43,7 +43,7 @@ from cognitum.seed._retry import (
     parse_retry_after,
 )
 from cognitum.seed._token_book import InMemoryTokenBook, SecretString, TokenBook
-from cognitum.seed._transport import PinVerifier, build_async_client, safe_json
+from cognitum.seed._transport import PinVerifier, build_async_client, request_was_sent, safe_json
 from cognitum.seed.discovery._types import DiscoveryProvider
 from cognitum.seed.resources import (
     AsyncCustodyResource,
@@ -227,20 +227,22 @@ class _AsyncTransport:
                     cause=exc,
                 )
                 self._mark_failure(peer.endpoint.url, PeerErrorClass.TIMEOUT)
-                peers_tried += 1
-                nxt = self._next_peer(peer.endpoint.url)
-                if nxt is not None and peers_tried < total_peers:
-                    peer = nxt
-                    continue
+                # Check before failing over: replaying a request the seed
+                # may already have run on another peer duplicates it.
                 if not is_retriable(
                     method=method_u,
                     status_code=None,
                     is_timeout=True,
                     timeout_phase=phase,
-                    body_sent=False,
+                    body_sent=request_was_sent(exc),
                     idempotent=idem,
                 ):
                     raise last_exc
+                peers_tried += 1
+                nxt = self._next_peer(peer.endpoint.url)
+                if nxt is not None and peers_tried < total_peers:
+                    peer = nxt
+                    continue
             except httpx.TransportError as exc:
                 last_exc = NetworkError(
                     str(exc) or "transport error",
@@ -248,19 +250,22 @@ class _AsyncTransport:
                     correlation_id=correlation_id,
                 )
                 self._mark_failure(peer.endpoint.url, PeerErrorClass.NETWORK)
+                # A connection dropped after the request was written may
+                # follow a committed request; only a connect failure is
+                # known to be safe to replay.
+                if not is_retriable(
+                    method=method_u,
+                    status_code=None,
+                    is_transport_error=True,
+                    body_sent=request_was_sent(exc),
+                    idempotent=idem,
+                ):
+                    raise last_exc
                 peers_tried += 1
                 nxt = self._next_peer(peer.endpoint.url)
                 if nxt is not None and peers_tried < total_peers:
                     peer = nxt
                     continue
-                if not is_retriable(
-                    method=method_u,
-                    status_code=None,
-                    is_transport_error=True,
-                    body_sent=False,
-                    idempotent=idem,
-                ):
-                    raise last_exc
             else:
                 status = response.status_code
                 if status < 400:
@@ -295,7 +300,18 @@ class _AsyncTransport:
                 elif status in (500, 502, 504):
                     self._mark_failure(peer.endpoint.url, PeerErrorClass.SERVER_5XX)
 
+                retriable = last_exc.retriable and is_retriable(
+                    method=method_u,
+                    status_code=status,
+                    body_sent=True,
+                    idempotent=idem,
+                    has_retry_after="retry-after" in response.headers,
+                )
                 if status in _CYCLE_STATUS:
+                    # A non-idempotent POST that got a 5xx may have been
+                    # committed; failing over would run it a second time.
+                    if not retriable:
+                        raise last_exc
                     peers_tried += 1
                     nxt = self._next_peer(peer.endpoint.url)
                     if nxt is not None and peers_tried < total_peers:
@@ -306,12 +322,7 @@ class _AsyncTransport:
                 else:
                     raise last_exc
 
-                if not last_exc.retriable or not is_retriable(
-                    method=method_u,
-                    status_code=status,
-                    body_sent=True,
-                    idempotent=idem,
-                ):
+                if not retriable:
                     raise last_exc
 
             if attempt >= per_call_max_retries:

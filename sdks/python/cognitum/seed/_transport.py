@@ -353,11 +353,23 @@ class PinVerifier:
             self._verified.add(peer_url)
 
 
+def request_was_sent(exc: Exception) -> bool:
+    """Whether a transport failure may have happened after the request left.
+
+    Connection and connect-timeout failures, and waiting for a pooled
+    connection, happen before any byte of the request is written, so only
+    those are safe to replay for a non-idempotent request (ADR-0005).
+    """
+    return not isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
+
+
 __all__ = [
     "PinVerifier",
     "SeedPinnedVerifier",
     "build_async_client",
     "build_sync_client",
     "build_verify",
+    "request_was_sent",
     "safe_json",
 ]
+

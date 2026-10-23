@@ -54,7 +54,7 @@ from cognitum.seed._retry import (
     parse_retry_after,
 )
 from cognitum.seed._token_book import InMemoryTokenBook, SecretString, TokenBook
-from cognitum.seed._transport import PinVerifier, build_sync_client, safe_json
+from cognitum.seed._transport import PinVerifier, build_sync_client, request_was_sent, safe_json
 from cognitum.seed.discovery._types import DiscoveryProvider
 from cognitum.seed.resources import (
     CustodyResource,
@@ -328,21 +328,23 @@ class _SyncTransport:
                     cause=exc,
                 )
                 self._mark_failure(peer.endpoint.url, PeerErrorClass.TIMEOUT)
+                # Check before failing over: replaying a request the seed
+                # may already have run on another peer duplicates it.
+                if not is_retriable(
+                    method=method_u,
+                    status_code=None,
+                    is_timeout=True,
+                    timeout_phase=phase,
+                    body_sent=request_was_sent(exc),
+                    idempotent=idem,
+                ):
+                    raise last_exc
                 peers_tried += 1
                 nxt = self._next_peer(peer.endpoint.url)
                 if nxt is not None and peers_tried < total_peers:
                     peer = nxt
                     continue
                 # All peers tried — fall through to ADR-0005 retry.
-                if not is_retriable(
-                    method=method_u,
-                    status_code=None,
-                    is_timeout=True,
-                    timeout_phase=phase,
-                    body_sent=False,
-                    idempotent=idem,
-                ):
-                    raise last_exc
             except httpx.TransportError as exc:
                 last_exc = NetworkError(
                     str(exc) or "transport error",
@@ -350,19 +352,22 @@ class _SyncTransport:
                     correlation_id=correlation_id,
                 )
                 self._mark_failure(peer.endpoint.url, PeerErrorClass.NETWORK)
+                # A connection dropped after the request was written may
+                # follow a committed request; only a connect failure is
+                # known to be safe to replay.
+                if not is_retriable(
+                    method=method_u,
+                    status_code=None,
+                    is_transport_error=True,
+                    body_sent=request_was_sent(exc),
+                    idempotent=idem,
+                ):
+                    raise last_exc
                 peers_tried += 1
                 nxt = self._next_peer(peer.endpoint.url)
                 if nxt is not None and peers_tried < total_peers:
                     peer = nxt
                     continue
-                if not is_retriable(
-                    method=method_u,
-                    status_code=None,
-                    is_transport_error=True,
-                    body_sent=False,
-                    idempotent=idem,
-                ):
-                    raise last_exc
             else:
                 status = response.status_code
                 if status < 400:
@@ -404,7 +409,18 @@ class _SyncTransport:
                     self._mark_failure(peer.endpoint.url, PeerErrorClass.SERVER_5XX)
 
                 # Dispatch per §D3.
+                retriable = last_exc.retriable and is_retriable(
+                    method=method_u,
+                    status_code=status,
+                    body_sent=True,
+                    idempotent=idem,
+                    has_retry_after="retry-after" in response.headers,
+                )
                 if status in _CYCLE_STATUS:
+                    # A non-idempotent POST that got a 5xx may have been
+                    # committed; failing over would run it a second time.
+                    if not retriable:
+                        raise last_exc
                     peers_tried += 1
                     nxt = self._next_peer(peer.endpoint.url)
                     if nxt is not None and peers_tried < total_peers:
@@ -418,12 +434,7 @@ class _SyncTransport:
                     # 4xx (auth/validation/not-found) or 501 — surface.
                     raise last_exc
 
-                if not last_exc.retriable or not is_retriable(
-                    method=method_u,
-                    status_code=status,
-                    body_sent=True,
-                    idempotent=idem,
-                ):
+                if not retriable:
                     raise last_exc
 
             # ADR-0005 retry path (all peers exhausted for cyclables, or
