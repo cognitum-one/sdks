@@ -89,6 +89,15 @@ async function main() {
       const { stdout, stderr } = await execFileAsync(process.execPath, [binPath, "--version"], { timeout: 30_000 });
       const output = `${stdout}${stderr}`.trim();
       if (!output) throw new Error("produced no output");
+      // Unix npm bins are symlinks. Exercise that installed path as well as
+      // the real target: an entrypoint guard must not silently skip main().
+      if (process.platform !== "win32") {
+        const installedBin = join(process.cwd(), "node_modules", ".bin", bin);
+        const linked = await execFileAsync(process.execPath, [installedBin, "--version"], { timeout: 30_000 });
+        if (`${linked.stdout}${linked.stderr}`.trim() !== output) {
+          throw new Error("installed bin symlink did not match direct --version output");
+        }
+      }
       console.log(`ok   ${bin} --version -> ${output.split("\n")[0].slice(0, 60)}`);
     } catch (error) {
       failures.push(`bin ${bin}: ${error.message}`);
