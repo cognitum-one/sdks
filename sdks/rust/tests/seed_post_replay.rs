@@ -23,9 +23,13 @@ const INGEST: &str = "/api/v1/store/ingest";
 const QUERY: &str = "/api/v1/store/query";
 
 fn client(endpoints: &[String]) -> SeedClient {
+    // As in the defaults, connect < read: reqwest's request timeout (`read`)
+    // also runs during connection setup, so a shorter one would fire first on
+    // a slow connect (Windows retries a refused localhost connect for ~2 s)
+    // and the failure could not be told apart from a read timeout.
     let mut timeouts = Timeouts::default();
-    timeouts.connect = Duration::from_secs(2);
-    timeouts.read = Duration::from_millis(300);
+    timeouts.connect = Duration::from_millis(500);
+    timeouts.read = Duration::from_secs(1);
     timeouts.total = Duration::from_secs(20);
     SeedClient::builder()
         .endpoints(endpoints)
@@ -110,7 +114,7 @@ fn ambiguous_statuses() -> Vec<(&'static str, ResponseTemplate)> {
             "read timeout",
             ResponseTemplate::new(200)
                 .set_body_json(json!({}))
-                .set_delay(Duration::from_secs(2)),
+                .set_delay(Duration::from_secs(3)),
         ),
     ]
 }
