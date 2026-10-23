@@ -261,7 +261,7 @@ async def _read_sse_body(
             except httpx.HTTPError as cause:
                 raise AgenticError(
                     "transport",
-                    f"{_OPERATION} stream read failed: {cause}",
+                    f"{_OPERATION} stream read failed: {describe_transport_error(cause)}",
                     product=_PRODUCT,
                     operation=_OPERATION,
                     request_id=request_id,

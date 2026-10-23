@@ -318,8 +318,8 @@ class MetaProxyClient:
         # (``follow_redirects=False``, pinned explicitly rather than relying
         # on the library default silently staying safe). Its timeout leaves
         # reads unbounded so ``ProxyTimeBudget`` (ADR-0025a §D8: no overall
-        # timeout unless the caller sets one) is what bounds a call, not
-        # httpx's implicit 5 s.
+        # timeout unless the caller sets one; the connect budget still bounds
+        # the wait for headers) is what bounds a call, not httpx's implicit 5 s.
         self._transport: httpx.AsyncClient = self._config.transport or httpx.AsyncClient(
             trust_env=False, follow_redirects=False, timeout=DEFAULT_HTTP_TIMEOUT
         )

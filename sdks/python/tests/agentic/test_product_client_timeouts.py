@@ -17,7 +17,12 @@ import pytest
 
 from cognitum.agentic import AgenticError, StaticApiKeyCredentialProvider
 from cognitum.harnessaas import HarnessaaSClient, HarnessaaSClientConfig
-from cognitum.meta_llm import MetaLlmClient, MetaLlmClientConfig
+from cognitum.meta_llm import (
+    ChatCompletionRequest,
+    ChatMessage,
+    MetaLlmClient,
+    MetaLlmClientConfig,
+)
 from cognitum.meta_proxy import MetaProxyClient, MetaProxyClientConfig
 
 
@@ -95,3 +100,66 @@ async def test_caller_transport_timeout_applies_and_error_names_the_timeout() ->
 
     assert excinfo.value.kind == "transport"
     assert "ReadTimeout" in str(excinfo.value)
+
+
+def _llm_client(base_url: str, transport: httpx.AsyncClient) -> MetaLlmClient:
+    return MetaLlmClient(
+        MetaLlmClientConfig(
+            base_url=base_url,
+            allow_insecure_http=base_url.startswith("http://"),
+            credential_provider=StaticApiKeyCredentialProvider(
+                api_key="sk-test-canary-1234",
+                product="meta-llm",
+                normalized_origin=base_url,
+                audience=base_url,
+            ),
+            transport=transport,
+        )
+    )
+
+
+_CHAT = ChatCompletionRequest(
+    model="meta-llm-large", messages=[ChatMessage(role="user", content="hello")]
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.filterwarnings("ignore:MetaLlmClientConfig. HTTP")
+async def test_generation_post_names_the_timeout() -> None:
+    server, base_url = await _slow_server(delay_s=0.5)
+    transport = httpx.AsyncClient(timeout=0.1)
+    try:
+        with pytest.raises(AgenticError) as excinfo:
+            await _llm_client(base_url, transport).chat.completions(_CHAT)
+    finally:
+        await transport.aclose()
+        server.close()
+        await server.wait_closed()
+
+    assert excinfo.value.kind == "transport"
+    assert "chat.completions request failed: ReadTimeout" in str(excinfo.value)
+
+
+class _TimesOutAfterHeaders(httpx.AsyncByteStream):
+    async def __aiter__(self):  # type: ignore[override]
+        raise httpx.ReadTimeout("")
+        yield b""  # pragma: no cover - makes this an async generator
+
+
+@pytest.mark.asyncio
+async def test_stream_read_error_names_the_timeout() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, stream=_TimesOutAfterHeaders()
+        )
+
+    base_url = "https://meta-llm.test.cognitum.one"
+    transport = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(AgenticError) as excinfo:
+            async for _ in _llm_client(base_url, transport).chat.completions_stream(_CHAT):
+                pass
+    finally:
+        await transport.aclose()
+
+    assert "stream read failed: ReadTimeout" in str(excinfo.value)
