@@ -5,6 +5,16 @@ This package follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The cloud client no longer resends a POST after a read timeout** or any
+  other transport failure after the request left the process (ADR-0005).
+  `ConnectError`, `ConnectTimeout` and `PoolTimeout` are still retried for
+  every method; other transport errors only for idempotent requests.
+- A `Retry-After` HTTP-date (RFC 9110) no longer raises a bare `ValueError`
+  in the cloud client, meta-llm, Meta Proxy or HarnessaaS. Every
+  `Retry-After` is parsed with `parse_retry_after_ms`.
+
 ### Changed
 
 - **The meta-llm, HarnessaaS and Meta Proxy clients no longer inherit
@@ -18,6 +28,8 @@ This package follows [Semantic Versioning](https://semver.org/).
   that wait pass `transport=httpx.AsyncClient(timeout=...)`.
 - Transport and stream-read errors now name the exception type, for example
   `chat.completions request failed: ReadTimeout`.
+- The cloud client's retry wait honours `Retry-After` but never exceeds the
+  ADR-0005 30-second cap, whatever the server asks for.
 
 ## [0.4.0] — 2026-09-20
 

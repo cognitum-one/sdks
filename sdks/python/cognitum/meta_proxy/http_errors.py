@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 
 from cognitum.agentic import AgenticError
+from cognitum.agentic.retry_after import parse_retry_after_ms
 
 _PRODUCT = "meta-proxy"
 
@@ -49,7 +50,7 @@ def map_meta_proxy_http_error(
         return AgenticError("not_found", body_text or "not found", retryable=False, **common)
     if status == 429:
         retry_after_header = response.headers.get("retry-after")
-        retry_after_ms = int(float(retry_after_header) * 1000) if retry_after_header else None
+        retry_after_ms = parse_retry_after_ms(retry_after_header)
         return AgenticError(
             "rate_limited",
             body_text or "rate limited",

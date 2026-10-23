@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 
+from cognitum.agentic.retry_after import parse_retry_after_ms
 from cognitum.errors import (
     AuthError,
     CognitumError,
@@ -28,6 +29,28 @@ _RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
 _IDEMPOTENT_METHODS: frozenset[str] = frozenset(
     {"GET", "HEAD", "PUT", "DELETE", "OPTIONS"}
 )
+
+
+# Transport failures that happen before the request leaves this process, so
+# the server cannot have seen the body. Only these are safe to retry for a
+# non-idempotent method (ADR-0005 §Idempotency rule). A ReadTimeout, a
+# WriteError or a dropped connection mid-response may follow a request the
+# server already accepted, so a POST is not resent after one.
+_PRE_SEND_TRANSPORT_ERRORS: tuple[type[httpx.TransportError], ...] = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.PoolTimeout,
+)
+
+
+def _transport_error_retryable(exc: httpx.TransportError, is_idempotent: bool) -> bool:
+    return is_idempotent or isinstance(exc, _PRE_SEND_TRANSPORT_ERRORS)
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    """``Retry-After`` in seconds, accepting both RFC 9110 forms, or ``None``."""
+    retry_after_ms = parse_retry_after_ms(response.headers.get("Retry-After"))
+    return retry_after_ms / 1000 if retry_after_ms is not None else None
 
 
 def _resolve_idempotent(method: str, idempotent: bool | None) -> bool:
@@ -60,17 +83,21 @@ def _map_error(response: httpx.Response) -> CognitumError:
     if status in (400, 422):
         return ValidationError(str(message))
     if status == 429:
-        retry_after = response.headers.get("Retry-After")
         return RateLimitError(
             str(message),
-            retry_after_seconds=float(retry_after) if retry_after else None,
+            retry_after_seconds=_retry_after_seconds(response),
         )
     return CognitumError(str(message), code=f"http_{status}")
 
 
+# ADR-0005 delay cap. It also caps a server's Retry-After hint, which may be
+# an HTTP-date hours ahead.
+_MAX_DELAY_S = 30.0
+
+
 def _backoff_delay(attempt: int) -> float:
     """Exponential backoff: 0.5s, 1s, 2s, ..."""
-    return min(0.5 * (2**attempt), 30.0)
+    return min(0.5 * (2**attempt), _MAX_DELAY_S)
 
 
 class SyncHttpClient:
@@ -124,9 +151,11 @@ class SyncHttpClient:
                 )
             except httpx.TransportError as exc:
                 last_exc = exc
-                # Transport errors before the body is sent are always
-                # retriable (ADR-0005 §Retriable outcomes).
-                if attempt < self._max_retries:
+                # Pre-send failures are always retriable; anything later
+                # only for idempotent requests (ADR-0005).
+                if attempt < self._max_retries and _transport_error_retryable(
+                    exc, is_idempotent
+                ):
                     time.sleep(_backoff_delay(attempt))
                     continue
                 raise CognitumError(f"Transport error: {exc}") from exc
@@ -142,12 +171,9 @@ class SyncHttpClient:
                 and attempt < self._max_retries
             ):
                 delay = _backoff_delay(attempt)
-                retry_header = response.headers.get("Retry-After")
-                if retry_header:
-                    try:
-                        delay = max(delay, float(retry_header))
-                    except ValueError:
-                        pass
+                retry_after = _retry_after_seconds(response)
+                if retry_after is not None:
+                    delay = min(_MAX_DELAY_S, max(delay, retry_after))
                 time.sleep(delay)
                 last_exc = _map_error(response)
                 continue
@@ -225,7 +251,11 @@ class AsyncHttpClient:
                 )
             except httpx.TransportError as exc:
                 last_exc = exc
-                if attempt < self._max_retries:
+                # Pre-send failures are always retriable; anything later
+                # only for idempotent requests (ADR-0005).
+                if attempt < self._max_retries and _transport_error_retryable(
+                    exc, is_idempotent
+                ):
                     await asyncio.sleep(_backoff_delay(attempt))
                     continue
                 raise CognitumError(f"Transport error: {exc}") from exc
@@ -241,12 +271,9 @@ class AsyncHttpClient:
                 and attempt < self._max_retries
             ):
                 delay = _backoff_delay(attempt)
-                retry_header = response.headers.get("Retry-After")
-                if retry_header:
-                    try:
-                        delay = max(delay, float(retry_header))
-                    except ValueError:
-                        pass
+                retry_after = _retry_after_seconds(response)
+                if retry_after is not None:
+                    delay = min(_MAX_DELAY_S, max(delay, retry_after))
                 await asyncio.sleep(delay)
                 last_exc = _map_error(response)
                 continue
