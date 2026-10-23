@@ -191,3 +191,23 @@ test("passes when the advertised bin runs", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+
+test("fails when an entrypoint guard silently skips the installed bin symlink", { skip: process.platform === "win32" }, async () => {
+  const dir = await fixturePackage({
+    exportsField: { ".": { import: "./index.js", require: "./index.cjs" } },
+    files: {
+      "index.js": "export const a = 1;\n",
+      "index.cjs": "module.exports = { a: 1 };\n",
+      "cli.mjs": "import { fileURLToPath } from 'node:url';\nif (process.argv[1] === fileURLToPath(import.meta.url)) console.log('9.9.9');\n",
+    },
+    bin: { "fixture-cli": "./cli.mjs" },
+  });
+  try {
+    const { code, output } = await smoke(dir, "@fixture/pkg");
+    assert.equal(code, 1, "a successful target must not hide a silent installed command");
+    assert.match(output, /installed bin symlink did not match/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

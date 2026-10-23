@@ -1,3 +1,5 @@
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { HttpClient } from "./client.js";
 import { McpResource } from "./mcp.js";
 import { CatalogResource } from "./catalog.js";
@@ -69,8 +71,8 @@ function parseArgs(argv: string[]): { command: string; args: string[]; flags: Re
   };
 }
 
-async function main(): Promise<void> {
-  const { command, args, flags } = parseArgs(process.argv.slice(2));
+export async function main(argv = process.argv.slice(2)): Promise<void> {
+  const { command, args, flags } = parseArgs(argv);
 
   if (flags.version) {
     console.log(VERSION);
@@ -204,7 +206,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e) => {
-  console.error(`Fatal: ${e.message}`);
-  process.exit(1);
-});
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((e) => {
+    console.error(`Fatal: ${e.message}`);
+    process.exit(1);
+  });
+}
