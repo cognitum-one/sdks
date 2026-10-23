@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from cognitum.agentic import DEFAULT_RETRY_POLICY, AgenticError, equal_jitter_delay_ms
+from cognitum.agentic._transport import describe_transport_error
 from cognitum.agentic.wire import request_body
 from cognitum.meta_llm.http_errors import map_meta_llm_http_error
 from cognitum.meta_llm.nonstream import _apply_auth, _require_credential
@@ -106,7 +107,7 @@ async def _open_stream_with_pre_byte_retry(
         except httpx.HTTPError as cause:
             raise AgenticError(
                 "transport",
-                f"{_OPERATION} request failed: {cause}",
+                f"{_OPERATION} request failed: {describe_transport_error(cause)}",
                 product=_PRODUCT,
                 operation=_OPERATION,
                 request_id=request_id,
@@ -260,7 +261,7 @@ async def _read_sse_body(
             except httpx.HTTPError as cause:
                 raise AgenticError(
                     "transport",
-                    f"{_OPERATION} stream read failed: {cause}",
+                    f"{_OPERATION} stream read failed: {describe_transport_error(cause)}",
                     product=_PRODUCT,
                     operation=_OPERATION,
                     request_id=request_id,

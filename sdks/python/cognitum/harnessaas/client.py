@@ -53,6 +53,7 @@ from cognitum.agentic import (
     UnsupportedCapabilityError,
     equal_jitter_delay_ms,
 )
+from cognitum.agentic._transport import DEFAULT_HTTP_TIMEOUT, describe_transport_error
 from cognitum.harnessaas.config import HarnessaaSClientConfig
 from cognitum.harnessaas.discovery import HarnessaaSHealth, parse_harnessaas_health
 from cognitum.harnessaas.envelope import HarnessaaSResponseMeta, HarnessaaSResult
@@ -143,7 +144,9 @@ class HarnessaaSClient:
     def __init__(self, config: HarnessaaSClientConfig) -> None:
         self._config = config
         self._owns_transport = config.transport is None
-        self._transport: httpx.AsyncClient = config.transport or httpx.AsyncClient()
+        self._transport: httpx.AsyncClient = config.transport or httpx.AsyncClient(
+            timeout=DEFAULT_HTTP_TIMEOUT
+        )
 
     def capabilities(self) -> CapabilitySet:
         """Versioned behavior safe for this caller, from the static
@@ -383,7 +386,7 @@ class HarnessaaSClient:
         except httpx.HTTPError as cause:
             raise AgenticError(
                 "transport",
-                f"{operation} request failed: {cause}",
+                f"{operation} request failed: {describe_transport_error(cause)}",
                 product=_PRODUCT,
                 operation=operation,
                 request_id=request_id,
@@ -443,7 +446,7 @@ class HarnessaaSClient:
         except httpx.HTTPError as cause:
             raise AgenticError(
                 "transport",
-                f"{operation} request failed: {cause}",
+                f"{operation} request failed: {describe_transport_error(cause)}",
                 product=_PRODUCT,
                 operation=operation,
                 request_id=request_id,
