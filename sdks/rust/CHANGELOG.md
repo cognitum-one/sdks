@@ -5,6 +5,17 @@ This crate follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **A POST is no longer resent after a 500, 502, 503 or 504** (ADR-0005
+  idempotency rule). One 500 from `orders().create()` used to send the order
+  four times. 429 is still retried for every method. Read-only POSTs
+  (`brain().search()`, `devices().check_update()`, `mcp().search_docs()`)
+  keep retrying on 5xx.
+- 502 and 504 are now retried for GETs and the read-only POSTs above.
+- **403 now maps to `Error::Auth`**, as in Node and Python. Code that matched
+  `Error::Api { code: 403, .. }` must match `Error::Auth` instead.
+
 ## [0.4.0] — 2026-09-20
 
 Fixes a defect that made the published Python and Rust SDKs unusable against

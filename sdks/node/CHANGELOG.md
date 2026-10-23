@@ -5,6 +5,23 @@ This package follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A successful POST is no longer resent because of its body.** An empty
+  2xx body made `response.json()` throw, the failure was retried as a
+  network error, and one `contact.send()` sent the message four times. Once
+  a 2xx arrives the request is never retried.
+
+### Changed
+
+- An empty or whitespace-only 2xx body now resolves to `undefined`, as 204
+  already did, for every operation. Operations typed to return an object
+  (for example `health()`) resolve to `undefined` if the server sends an
+  empty body; they used to reject.
+- A non-JSON 2xx body raises `ParseError` (`PARSE_ERROR`), and a 2xx body
+  that cannot be read raises `NetworkError` (`NETWORK_ERROR`). Neither is
+  retried. Both classes are now exported from the package entry point.
+
 ## [0.4.0] — 2026-09-20
 
 Fixes a defect that made the published Python and Rust SDKs unusable against

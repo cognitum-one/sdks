@@ -21,7 +21,7 @@ impl<'a> OrdersResource<'a> {
     pub async fn status(&self, email: &str) -> Result<Vec<Order>, Error> {
         let path = format!(
             "/lookupOrderStatus?email={}",
-            crate::catalog::urlencoding_minimal(email)
+            crate::catalog::encode_query_value(email)
         );
         self.client.get(&path).await
     }

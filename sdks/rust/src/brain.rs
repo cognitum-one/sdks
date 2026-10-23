@@ -80,7 +80,7 @@ impl<'a> BrainResource<'a> {
             namespace: namespace.map(|s| s.to_owned()),
             limit,
         };
-        self.client.post("/brainSearch", &body).await
+        self.client.post_idempotent("/brainSearch", &body).await
     }
 
     /// Vote on a memory entry (positive = 1, negative = -1).

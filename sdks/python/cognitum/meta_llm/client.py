@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from cognitum.agentic import AgenticError, CapabilitySet
+from cognitum.agentic._transport import DEFAULT_HTTP_TIMEOUT, describe_transport_error
 from cognitum.agentic.scope_preflight import assert_scope_granted
 from cognitum.agentic.wire import request_body
 from cognitum.meta_llm.config import MetaLlmClientConfig
@@ -240,7 +241,9 @@ class MetaLlmClient:
     def __init__(self, config: MetaLlmClientConfig) -> None:
         self._config = config
         self._owns_transport = config.transport is None
-        self._transport: httpx.AsyncClient = config.transport or httpx.AsyncClient()
+        self._transport: httpx.AsyncClient = config.transport or httpx.AsyncClient(
+            timeout=DEFAULT_HTTP_TIMEOUT
+        )
         self.chat = _ChatNamespace(self)
         self.messages = _MessagesNamespace(self)
 
@@ -549,7 +552,7 @@ class MetaLlmClient:
         except httpx.HTTPError as cause:
             raise AgenticError(
                 "transport",
-                f"{operation} request failed: {cause}",
+                f"{operation} request failed: {describe_transport_error(cause)}",
                 product=_PRODUCT,
                 operation=operation,
                 request_id=request_id,

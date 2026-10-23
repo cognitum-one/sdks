@@ -5,7 +5,7 @@ use thiserror::Error;
 /// Errors returned by the Cognitum SDK.
 #[derive(Error, Debug)]
 pub enum Error {
-    /// Authentication failed (401).
+    /// Authentication failed (401) or the key is not allowed (403).
     #[error("authentication failed: {0}")]
     Auth(String),
 

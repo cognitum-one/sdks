@@ -85,6 +85,8 @@ export {
   RateLimitError,
   ValidationError,
   NotFoundError,
+  ParseError,
+  NetworkError,
 } from "./errors.js";
 
 // Re-export resource classes for advanced usage

@@ -17,6 +17,17 @@ This package follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The meta-llm, HarnessaaS and Meta Proxy clients no longer inherit
+  httpx's 5-second timeout.** Their default transport now bounds only the
+  connection (10 s); read, write and pool waits are unbounded, as in Node
+  and Rust. A generation, a `solve()` or a stream's first byte that took
+  longer than 5 s used to fail with `"... request failed: "`. This applies
+  to every call on those clients, health and discovery included.
+- Meta Proxy still enforces `ProxyTimeBudget`. meta-llm and HarnessaaS do
+  not enforce a caller deadline before response headers arrive, so to cap
+  that wait pass `transport=httpx.AsyncClient(timeout=...)`.
+- Transport and stream-read errors now name the exception type, for example
+  `chat.completions request failed: ReadTimeout`.
 - The cloud client's retry wait honours `Retry-After` but never exceeds the
   ADR-0005 30-second cap, whatever the server asks for.
 
