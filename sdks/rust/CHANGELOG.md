@@ -5,6 +5,16 @@ This crate follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The seed client no longer runs a mutating POST twice** (#190). After a
+  500, 502, 504, a 503 without `Retry-After`, a read timeout or a connection
+  dropped once the request was written, `store().ingest()` and the other
+  non-idempotent seed POSTs were replayed on the next peer and then retried;
+  a dropped connection could send one ingest six times. They are now sent
+  once and the error is returned. A refused connection or connect timeout
+  still fails over, and `store().query()` and GETs keep their failover.
+
 ### Changed
 
 - **A POST is no longer resent after a 500, 502, 503 or 504** (ADR-0005
@@ -15,6 +25,10 @@ This crate follows [Semantic Versioning](https://semver.org/).
 - 502 and 504 are now retried for GETs and the read-only POSTs above.
 - **403 now maps to `Error::Auth`**, as in Node and Python. Code that matched
   `Error::Api { code: 403, .. }` must match `Error::Auth` instead.
+- `seed::retry::is_post_retriable` and `should_retry` no longer treat a POST
+  503 as retriable unless the caller attests idempotency; a 503 is a refusal
+  only with `Retry-After`, which the new `should_retry_response` checks. New
+  `should_retry_transport` decides retries after a transport failure.
 
 ## [0.4.0] — 2026-09-20
 

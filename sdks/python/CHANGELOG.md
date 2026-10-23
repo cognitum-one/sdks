@@ -7,6 +7,15 @@ This package follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The seed clients no longer run a mutating POST twice** (#190), sync and
+  async. After a 500, 502, 504, a 503 without `Retry-After`, a read timeout
+  or a connection dropped mid-request, `store.ingest` was replayed on the
+  next peer and then retried. It is now sent once and the error raised.
+  `ConnectError`, `ConnectTimeout` and `PoolTimeout` still fail over and
+  retry, and `store.query` and GETs keep their failover. `is_retriable` gains
+  `has_retry_after` and no longer treats a non-idempotent POST 503 without it
+  as retriable.
+
 - **The cloud client no longer resends a POST after a read timeout** or any
   other transport failure after the request left the process (ADR-0005).
   `ConnectError`, `ConnectTimeout` and `PoolTimeout` are still retried for
