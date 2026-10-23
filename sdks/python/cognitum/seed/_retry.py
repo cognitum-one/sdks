@@ -43,23 +43,28 @@ def is_retriable(
     timeout_phase: str | None = None,
     body_sent: bool = False,
     idempotent: bool = False,
+    has_retry_after: bool = False,
 ) -> bool:
-    """Decide if a failed attempt is safe to retry.
+    """Decide if a failed attempt is safe to retry, or to fail over.
 
-    Implements ADR-0005 §Retriable outcomes + §Idempotency rule.
+    Implements ADR-0005 §Retriable outcomes + §Idempotency rule. A request
+    that may have reached the seed (``body_sent``) is only resent when it
+    is idempotent: by method, or attested by the caller.
     """
+    safe_to_resend = idempotent or method.upper() in _IDEMPOTENT_METHODS
     if is_transport_error:
-        return True
+        return not body_sent or safe_to_resend
     if is_timeout:
         if timeout_phase == "connect":
             return True
-        return not body_sent or method.upper() in _IDEMPOTENT_METHODS
+        return not body_sent or safe_to_resend
     if status_code is None:
         return False
     if status_code not in _RETRIABLE_STATUS:
         return False
     if method.upper() == "POST":
-        if status_code in (429, 503):
+        # 429 is a refusal. A 503 is one only when it says when to come back.
+        if status_code == 429 or (status_code == 503 and has_retry_after):
             return True
         if idempotent:
             return True

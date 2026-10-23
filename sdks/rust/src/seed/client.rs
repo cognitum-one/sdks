@@ -541,17 +541,23 @@ impl SeedClient {
                         }
                     }
 
+                    let retriable =
+                        retry::should_retry_response(&method, status, idempotent, &headers);
                     match dispatch_status_outcome(status) {
                         StatusOutcome::Cycle => {
+                            // A non-idempotent POST that got a 5xx may have
+                            // been committed; replaying it on another peer
+                            // would run it twice (ADR-0005, #190).
+                            if !retriable {
+                                return Err(seed_err::from_response(status, &body_text, path));
+                            }
                             peers_tried += 1;
                             last_err = Some(seed_err::from_response(status, &body_text, path));
                             if peers_tried >= total_peers {
                                 // All peers tried at least once — fall
                                 // through to ADR-0005 retry on the
                                 // current (last) peer.
-                                if retry::should_retry(&method, status, idempotent)
-                                    && attempt < self.inner.max_retries
-                                {
+                                if attempt < self.inner.max_retries {
                                     let hint = retry::parse_retry_after(&headers, &body_text);
                                     let delay = delay_for(attempt, hint);
                                     if started.elapsed() + delay > self.inner.timeouts.total {
@@ -580,9 +586,7 @@ impl SeedClient {
                         StatusOutcome::PinAndBackoff => {
                             // 429: stay on the same peer, honour ADR-0005
                             // budget. Do NOT cycle (trust-score protection).
-                            if retry::should_retry(&method, status, idempotent)
-                                && attempt < self.inner.max_retries
-                            {
+                            if retriable && attempt < self.inner.max_retries {
                                 let hint = retry::parse_retry_after(&headers, &body_text);
                                 let delay = delay_for(attempt, hint);
                                 if started.elapsed() + delay > self.inner.timeouts.total {
@@ -608,7 +612,18 @@ impl SeedClient {
                         PeerErrorClass::Network
                     };
                     self.mark_peer_failure(&peer_key, class);
-                    last_err = Some(Error::from(reqwest_error_into_transport(e)));
+                    // Only a failure to connect (including a connect
+                    // timeout) is known to precede sending the request.
+                    // After a read timeout or a dropped connection the
+                    // seed may already have run it (ADR-0005, #190).
+                    let request_sent = !(e.is_connect() || e.is_builder());
+                    let retriable =
+                        retry::should_retry_transport(&method, idempotent, request_sent);
+                    let err = Error::from(reqwest_error_into_transport(e));
+                    if !retriable {
+                        return Err(err);
+                    }
+                    last_err = Some(err);
 
                     peers_tried += 1;
                     if peers_tried < total_peers {
@@ -619,8 +634,7 @@ impl SeedClient {
                     }
 
                     // All peers attempted. Fall through to ADR-0005 retry
-                    // on the most recent peer for POSTs (if idempotent /
-                    // connection-phase failure) and all other methods.
+                    // on the most recent peer (eligibility checked above).
                     if attempt < self.inner.max_retries {
                         let delay = retry::compute_delay(
                             attempt,

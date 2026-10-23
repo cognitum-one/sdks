@@ -101,14 +101,15 @@ pub fn is_retriable(status: StatusCode) -> bool {
     matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504)
 }
 
-/// POST-specific retry rule. POSTs retry only when the failure is
-/// transparent (connect refused / 429 / 503) OR the caller attests
-/// idempotency.
+/// POST-specific retry rule. A POST is resent only when the server refused
+/// it without acting (429) OR the caller attests idempotency. A 503 is a
+/// refusal only when it carries `Retry-After`, which this function cannot
+/// see; use [`should_retry_response`] for that case.
 pub fn is_post_retriable(status: StatusCode, idempotent: bool) -> bool {
     if idempotent {
         return is_retriable(status);
     }
-    matches!(status.as_u16(), 429 | 503)
+    status.as_u16() == 429
 }
 
 /// Full retry-eligibility decision combining method + idempotency + status.
@@ -120,6 +121,32 @@ pub fn should_retry(method: &Method, status: StatusCode, idempotent: bool) -> bo
         return is_post_retriable(status, idempotent);
     }
     true
+}
+
+/// [`should_retry`] for a response in hand: a POST may also be resent
+/// after a 503 that carries `Retry-After` (ADR-0005 §Idempotency rule).
+/// Also decides whether a failed POST may be replayed on another peer.
+pub fn should_retry_response(
+    method: &Method,
+    status: StatusCode,
+    idempotent: bool,
+    headers: &HeaderMap,
+) -> bool {
+    if *method == Method::POST
+        && status == StatusCode::SERVICE_UNAVAILABLE
+        && headers.contains_key(reqwest::header::RETRY_AFTER)
+    {
+        return true;
+    }
+    should_retry(method, status, idempotent)
+}
+
+/// Whether a transport failure may be retried, or failed over to another
+/// peer. `request_sent` is false only when the request never left the
+/// process (connection refused, connect timeout); after that the seed may
+/// already have run it, so a non-idempotent POST is not sent again.
+pub fn should_retry_transport(method: &Method, idempotent: bool, request_sent: bool) -> bool {
+    !request_sent || idempotent || *method != Method::POST
 }
 
 /// Resolution order per ADR-0005 §"429 handling (seed specific)":
@@ -238,6 +265,47 @@ mod tests {
             StatusCode::TOO_MANY_REQUESTS,
             false
         ));
+    }
+
+    #[test]
+    fn post_on_503_retried_only_with_retry_after() {
+        let none = HeaderMap::new();
+        let mut hinted = HeaderMap::new();
+        hinted.insert("retry-after", HeaderValue::from_static("1"));
+        let unavailable = StatusCode::SERVICE_UNAVAILABLE;
+        assert!(!should_retry(&Method::POST, unavailable, false));
+        assert!(!should_retry_response(
+            &Method::POST,
+            unavailable,
+            false,
+            &none
+        ));
+        assert!(should_retry_response(
+            &Method::POST,
+            unavailable,
+            false,
+            &hinted
+        ));
+        assert!(should_retry_response(
+            &Method::POST,
+            unavailable,
+            true,
+            &none
+        ));
+        assert!(should_retry_response(
+            &Method::GET,
+            unavailable,
+            false,
+            &none
+        ));
+    }
+
+    #[test]
+    fn transport_failure_after_send_not_retried_for_post() {
+        assert!(should_retry_transport(&Method::POST, false, false));
+        assert!(!should_retry_transport(&Method::POST, false, true));
+        assert!(should_retry_transport(&Method::POST, true, true));
+        assert!(should_retry_transport(&Method::GET, false, true));
     }
 
     #[test]
