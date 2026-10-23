@@ -34,6 +34,17 @@ def _http_date(offset_s: int) -> str:
     return formatdate(time.time() + offset_s, usegmt=True)
 
 
+# A whole-second instant, so an HTTP-date built from it parses back exactly.
+_NOW = 1_790_000_000.0
+
+
+@pytest.fixture
+def frozen_now():
+    """Freeze the clock the Retry-After parser reads, so delays are exact."""
+    with mock.patch("time.time", return_value=_NOW):
+        yield lambda offset_s: formatdate(_NOW + offset_s, usegmt=True)
+
+
 @pytest.fixture(autouse=True)
 def sleeps():
     with mock.patch("cognitum._http.time.sleep") as sync_sleep, mock.patch(
@@ -127,11 +138,11 @@ def test_429_with_http_date_retry_after_raises_rate_limit_error() -> None:
 
 
 @respx.mock
-def test_retry_loop_waits_for_http_date_retry_after(sleeps) -> None:
+def test_retry_loop_waits_for_http_date_retry_after(sleeps, frozen_now) -> None:
     sync_sleep, _ = sleeps
     route = respx.get(f"{BASE_URL}/health").mock(
         side_effect=[
-            httpx.Response(503, headers={"Retry-After": _http_date(20)}),
+            httpx.Response(503, headers={"Retry-After": frozen_now(20)}),
             httpx.Response(200, json={"status": "ok"}),
         ]
     )
@@ -139,16 +150,15 @@ def test_retry_loop_waits_for_http_date_retry_after(sleeps) -> None:
         assert client.health().status == "ok"
     assert route.call_count == 2
     # The hint, not the 0.5 s backoff, decides the wait.
-    (delay,), _ = sync_sleep.call_args
-    assert 15 <= delay <= 20
+    sync_sleep.assert_called_once_with(20.0)
 
 
 @respx.mock
-def test_retry_after_hint_is_capped_at_30_seconds(sleeps) -> None:
+def test_retry_after_hint_is_capped_at_30_seconds(sleeps, frozen_now) -> None:
     sync_sleep, _ = sleeps
     respx.get(f"{BASE_URL}/health").mock(
         side_effect=[
-            httpx.Response(503, headers={"Retry-After": _http_date(3600)}),
+            httpx.Response(503, headers={"Retry-After": frozen_now(3600)}),
             httpx.Response(200, json={"status": "ok"}),
         ]
     )
@@ -159,11 +169,11 @@ def test_retry_after_hint_is_capped_at_30_seconds(sleeps) -> None:
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_async_retry_after_hint_is_honoured_and_capped(sleeps) -> None:
+async def test_async_retry_after_hint_is_honoured_and_capped(sleeps, frozen_now) -> None:
     _, async_sleep = sleeps
     respx.get(f"{BASE_URL}/health").mock(
         side_effect=[
-            httpx.Response(503, headers={"Retry-After": _http_date(20)}),
+            httpx.Response(503, headers={"Retry-After": frozen_now(20)}),
             httpx.Response(503, headers={"Retry-After": "7200"}),
             httpx.Response(200, json={"status": "ok"}),
         ]
@@ -173,10 +183,7 @@ async def test_async_retry_after_hint_is_honoured_and_capped(sleeps) -> None:
         await client.get("/health")
     finally:
         await client.close()
-    delays = [call.args[0] for call in async_sleep.call_args_list]
-    assert len(delays) == 2
-    assert 15 <= delays[0] <= 20
-    assert delays[1] == 30.0
+    assert [call.args[0] for call in async_sleep.call_args_list] == [20.0, 30.0]
 
 
 @pytest.mark.asyncio
