@@ -90,9 +90,14 @@ def _map_error(response: httpx.Response) -> CognitumError:
     return CognitumError(str(message), code=f"http_{status}")
 
 
+# ADR-0005 delay cap. It also caps a server's Retry-After hint, which may be
+# an HTTP-date hours ahead.
+_MAX_DELAY_S = 30.0
+
+
 def _backoff_delay(attempt: int) -> float:
     """Exponential backoff: 0.5s, 1s, 2s, ..."""
-    return min(0.5 * (2**attempt), 30.0)
+    return min(0.5 * (2**attempt), _MAX_DELAY_S)
 
 
 class SyncHttpClient:
@@ -168,7 +173,7 @@ class SyncHttpClient:
                 delay = _backoff_delay(attempt)
                 retry_after = _retry_after_seconds(response)
                 if retry_after is not None:
-                    delay = max(delay, retry_after)
+                    delay = min(_MAX_DELAY_S, max(delay, retry_after))
                 time.sleep(delay)
                 last_exc = _map_error(response)
                 continue
@@ -268,7 +273,7 @@ class AsyncHttpClient:
                 delay = _backoff_delay(attempt)
                 retry_after = _retry_after_seconds(response)
                 if retry_after is not None:
-                    delay = max(delay, retry_after)
+                    delay = min(_MAX_DELAY_S, max(delay, retry_after))
                 await asyncio.sleep(delay)
                 last_exc = _map_error(response)
                 continue

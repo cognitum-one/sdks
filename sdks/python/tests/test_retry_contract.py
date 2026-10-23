@@ -35,11 +35,11 @@ def _http_date(offset_s: int) -> str:
 
 
 @pytest.fixture(autouse=True)
-def _no_sleep():
-    with mock.patch("cognitum._http.time.sleep"), mock.patch(
+def sleeps():
+    with mock.patch("cognitum._http.time.sleep") as sync_sleep, mock.patch(
         "asyncio.sleep", new=mock.AsyncMock()
-    ):
-        yield
+    ) as async_sleep:
+        yield sync_sleep, async_sleep
 
 
 # ---------------------------------------------------------------------------
@@ -127,16 +127,56 @@ def test_429_with_http_date_retry_after_raises_rate_limit_error() -> None:
 
 
 @respx.mock
-def test_retry_loop_accepts_http_date_retry_after() -> None:
+def test_retry_loop_waits_for_http_date_retry_after(sleeps) -> None:
+    sync_sleep, _ = sleeps
     route = respx.get(f"{BASE_URL}/health").mock(
         side_effect=[
-            httpx.Response(503, headers={"Retry-After": _http_date(1)}),
+            httpx.Response(503, headers={"Retry-After": _http_date(20)}),
             httpx.Response(200, json={"status": "ok"}),
         ]
     )
     with Cognitum(api_key="k", base_url=BASE_URL, max_retries=2) as client:
         assert client.health().status == "ok"
     assert route.call_count == 2
+    # The hint, not the 0.5 s backoff, decides the wait.
+    (delay,), _ = sync_sleep.call_args
+    assert 15 <= delay <= 20
+
+
+@respx.mock
+def test_retry_after_hint_is_capped_at_30_seconds(sleeps) -> None:
+    sync_sleep, _ = sleeps
+    respx.get(f"{BASE_URL}/health").mock(
+        side_effect=[
+            httpx.Response(503, headers={"Retry-After": _http_date(3600)}),
+            httpx.Response(200, json={"status": "ok"}),
+        ]
+    )
+    with Cognitum(api_key="k", base_url=BASE_URL, max_retries=2) as client:
+        client.health()
+    sync_sleep.assert_called_once_with(30.0)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_async_retry_after_hint_is_honoured_and_capped(sleeps) -> None:
+    _, async_sleep = sleeps
+    respx.get(f"{BASE_URL}/health").mock(
+        side_effect=[
+            httpx.Response(503, headers={"Retry-After": _http_date(20)}),
+            httpx.Response(503, headers={"Retry-After": "7200"}),
+            httpx.Response(200, json={"status": "ok"}),
+        ]
+    )
+    client = AsyncHttpClient(BASE_URL, "k", max_retries=3)
+    try:
+        await client.get("/health")
+    finally:
+        await client.close()
+    delays = [call.args[0] for call in async_sleep.call_args_list]
+    assert len(delays) == 2
+    assert 15 <= delays[0] <= 20
+    assert delays[1] == 30.0
 
 
 @pytest.mark.asyncio
