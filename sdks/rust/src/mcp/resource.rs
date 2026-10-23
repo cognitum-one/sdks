@@ -93,7 +93,7 @@ impl<'a> McpResource<'a> {
             "query": query,
             "limit": limit.unwrap_or(10),
         });
-        self.client.post("/docsSearch", &body).await
+        self.client.post_idempotent("/docsSearch", &body).await
     }
 
     /// Perform the MCP initialize handshake.
