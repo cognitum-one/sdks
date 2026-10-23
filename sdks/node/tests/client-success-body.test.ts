@@ -4,6 +4,7 @@
  *
  *   - An empty 2xx body (what contact/leads/device POSTs return) resolves.
  *   - A non-JSON 2xx body raises PARSE_ERROR once, with no retry.
+ *   - A 2xx body that fails mid-read raises NETWORK_ERROR once, with no retry.
  *
  * Before this, `response.json()` threw on both, the catch block treated the
  * SyntaxError as a network failure, and a single contact message was POSTed
@@ -11,13 +12,22 @@
  */
 
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { Cognitum, CognitumError } from "../src/index.js";
-import { ParseError } from "../src/errors.js";
+import {
+  Cognitum,
+  CognitumError,
+  HttpClient,
+  NetworkError,
+  ParseError,
+} from "../src/index.js";
 
 function stubFetch(body: string, status = 200): ReturnType<typeof vi.fn> {
   const fn = vi.fn(async () => new Response(body, { status }));
   vi.stubGlobal("fetch", fn);
   return fn;
+}
+
+function http(): HttpClient {
+  return new HttpClient({ apiKey: "test-key", baseUrl: "http://mock.invalid", retries: 3 });
 }
 
 function client(): Cognitum {
@@ -38,9 +48,35 @@ describe("HttpClient 2xx bodies", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("resolves a whitespace-only 201 body", async () => {
+  // ContactResource.send() discards the client's return value, so assert
+  // what HttpClient.request itself resolves to.
+  it("HttpClient.request resolves undefined for an empty 200 body", async () => {
+    const fetchMock = stubFetch("");
+    await expect(http().request("POST", "/sendContactEmail", message)).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("HttpClient.request resolves undefined for a whitespace-only 201 body", async () => {
     const fetchMock = stubFetch("\n", 201);
-    await expect(client().contact.send(message)).resolves.toBeUndefined();
+    await expect(http().request("POST", "/sendContactEmail", message)).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("raises NETWORK_ERROR once when a 200 body fails mid-read", async () => {
+    const fetchMock = vi.fn(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.error(new TypeError("terminated"));
+        },
+      });
+      return new Response(body, { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const err = await http()
+      .request("POST", "/sendContactEmail", message)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NetworkError);
+    expect((err as CognitumError).code).toBe("NETWORK_ERROR");
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 

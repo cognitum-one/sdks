@@ -6,6 +6,7 @@ import {
   ValidationError,
   NotFoundError,
   ParseError,
+  NetworkError,
 } from "./errors.js";
 
 const DEFAULT_BASE_URL = "https://api.cognitum.one";
@@ -92,19 +93,32 @@ export class HttpClient {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), this.timeout);
       init.signal = controller.signal;
+      // Set once a 2xx arrives. From then on the server has accepted the
+      // request, so no failure (an unreadable or undecodable body) may
+      // resend it.
+      let accepted = false;
 
       try {
         const response = await fetch(url, init);
         clearTimeout(timer);
 
         if (response.ok) {
+          accepted = true;
           // Several endpoints (contact, leads, device registration) answer a
           // successful POST with an empty body. Read text first so an empty
           // 2xx resolves instead of failing JSON.parse, and so a non-JSON
           // 2xx surfaces as a ParseError rather than looking like a network
           // failure: the server already accepted the request, and retrying
           // would execute it again.
-          const text = await response.text();
+          let text: string;
+          try {
+            text = await response.text();
+          } catch (cause) {
+            throw new NetworkError(
+              `Response body could not be read (HTTP ${response.status}); not resent because the server accepted the request`,
+              cause,
+            );
+          }
           if (response.status === 204 || text.trim() === "") {
             return undefined as T;
           }
@@ -181,13 +195,17 @@ export class HttpClient {
       } catch (error) {
         clearTimeout(timer);
 
-        // Don't retry typed client errors, or a 2xx whose body we could
-        // not decode (the server already acted on the request).
+        // Never retry once a 2xx arrived: the server already acted on the
+        // request (ParseError, or NetworkError from reading the body).
+        if (accepted) {
+          throw error;
+        }
+
+        // Don't retry typed client errors.
         if (
           error instanceof AuthError ||
           error instanceof NotFoundError ||
-          error instanceof ValidationError ||
-          error instanceof ParseError
+          error instanceof ValidationError
         ) {
           throw error;
         }
