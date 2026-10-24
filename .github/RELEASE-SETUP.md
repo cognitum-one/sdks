@@ -90,12 +90,52 @@ Do this before every release. It is the only safe rehearsal available:
   design -- a published release tag must be immutable. The consequence is that
   a tag which fails burns that version string permanently.
 
+## Before you tag
+
+Both of these are confirmations, not commands. Skipping the second one is what
+made the v0.4.0 release land half-published on 2026-09-20.
+
+1. **Dispatch rehearsal is green** at the exact commit you are about to tag.
+2. **A PyPI project owner has confirmed the trusted publisher exists** for
+   `cognitum-sdk`, with the claims in step 4 above. Nothing in this repository
+   can prove this: PyPI does not expose the binding publicly, the workflow
+   passes no token, and `rehearse-only` never reaches the PyPI job. The first
+   thing that tests it is a real publish -- which happens *after* npm has
+   already gone public, because the jobs are serialized npm -> PyPI ->
+   crates.io. Look it up on pypi.org and say so out loud before tagging.
+
+   When it is missing, the job fails with
+   `invalid-publisher: valid token, but no corresponding publisher`, and the
+   failure log renders the exact claims GitHub presented. Configure the
+   publisher from *those*, not from this document -- they are what PyPI will
+   actually be asked to match.
+
+## Tagging and approving
+
 After the PR passes the required `GA gate (maturity + evidence)` and is merged,
 a release maintainer creates and pushes the matching tag from that exact `main`
-commit. Approve the `release` environment only after reviewing the tag, commit,
-workflow-built checksums, and GA result. After publication, open a follow-up PR
-updating `registryVersion`, `verifiedAt`, `sourceCommit`, and `generatedAt` in
-the capability manifest with the verified release evidence.
+commit.
+
+**Each publish job is its own deployment to the `release` environment, and each
+one pauses for its own approval.** One approval does not release the chain: the
+run returns to `waiting` after npm succeeds, again before PyPI, and again
+before crates.io. A release therefore needs an approver present for the whole
+sequence, not just at the start -- and a run sitting in `waiting` after a
+successful npm publish is a *half-published release*, not a finished one.
+Measured on 2026-09-20: tag `v0.4.0` produced two separate `release`
+deployments (`6555889808`, `6557399952`) and two approval records for one tag.
+
+Approve each one only after reviewing the tag, commit, workflow-built
+checksums, and GA result. After publication, open a follow-up PR updating
+`registryVersion`, `verifiedAt`, `sourceCommit`, and `generatedAt` in the
+capability manifest with the verified release evidence.
+
+**The manifest follow-up is not optional and not cosmetic.** The
+`capability manifest` CI job re-checks each `registryVersion` against the live
+registry and *fails* on a mismatch, and it is in `ga-gate.needs`. From the
+moment a publish succeeds until that PR merges, the GA gate cannot pass on
+`main` or on any open PR. Land it promptly, and if a release is partially
+published, record the per-language truth rather than leaving all three stale.
 
 Registry uploads are immutable and the three registries have no atomic commit.
 If a later registry fails after an earlier publish succeeds, do not retag or
