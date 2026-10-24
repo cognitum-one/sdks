@@ -20,8 +20,10 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // src/sse/index.ts
 var sse_exports = {};
 __export(sse_exports, {
+  SseEventSequence: () => SseEventSequence,
   SseParseError: () => SseParseError,
-  SseParser: () => SseParser
+  SseParser: () => SseParser,
+  SseSequenceError: () => SseSequenceError
 });
 module.exports = __toCommonJS(sse_exports);
 
@@ -227,9 +229,58 @@ var SseParser = class {
     return event;
   }
 };
+
+// src/sse/sequence.ts
+var SseSequenceError = class extends Error {
+  expected;
+  received;
+  constructor(expected, received) {
+    super(`SSE event gap: expected id ${expected}, received ${received}`);
+    this.name = "SseSequenceError";
+    this.expected = expected;
+    this.received = received;
+  }
+};
+var SseEventSequence = class {
+  requireContiguous;
+  seen = /* @__PURE__ */ new Set();
+  current;
+  numeric;
+  constructor(options = {}) {
+    this.requireContiguous = options.requireContiguous ?? false;
+    this.current = options.lastEventId;
+    if (options.lastEventId !== void 0) {
+      this.seen.add(options.lastEventId);
+      if (/^\d+$/.test(options.lastEventId)) this.numeric = Number(options.lastEventId);
+    }
+  }
+  /** Header value for a reconnect request, or undefined before any event. */
+  get lastEventId() {
+    return this.current;
+  }
+  accept(event) {
+    if (event.id === void 0) return true;
+    if (this.seen.has(event.id)) return false;
+    const next = /^\d+$/.test(event.id) ? Number(event.id) : void 0;
+    if (this.requireContiguous && this.numeric !== void 0 && next !== void 0) {
+      const expected = this.numeric + 1;
+      if (next !== expected) throw new SseSequenceError(expected, next);
+    }
+    this.seen.add(event.id);
+    this.current = event.id;
+    this.numeric = next;
+    return true;
+  }
+  /** Filter a batch while preserving order and dropping duplicate ids. */
+  filter(events) {
+    return events.filter((event) => this.accept(event));
+  }
+};
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  SseEventSequence,
   SseParseError,
-  SseParser
+  SseParser,
+  SseSequenceError
 });
 //# sourceMappingURL=index.cjs.map
