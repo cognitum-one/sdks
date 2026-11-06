@@ -23,16 +23,34 @@ test("live smoke installs and drives all three public registry artifacts", async
   assert.match(workflow, /scripts\/live-smoke\.rs/);
 });
 
-// @tier durable — one resolved version must select every registry artifact;
-// otherwise a green run can compare unrelated releases.
-test("one validated version is reused by npm, PyPI, and crates.io", async () => {
+// @tier durable — each registry is smoked at the version IT serves (issue
+// #177): a half-published release must not skip every published-SDK check.
+test("each language job consumes its own validated registry version", async () => {
   const workflow = await source(".github/workflows/live-smoke.yml");
 
   assert.match(workflow, /id: version/);
-  assert.match(workflow, /version: \$\{\{ steps\.version\.outputs\.version \}\}/);
-  assert.match(workflow, /registryVersion mismatch/);
+  for (const job of ["node", "python", "rust"]) {
+    assert.match(workflow, new RegExp(`${job}: \\$\\{\\{ steps\\.version\\.outputs\\.${job} \\}\\}`));
+    assert.equal(
+      (workflow.match(new RegExp(`(?<![A-Z_])VERSION: \\$\\{\\{ needs\\.resolve_version\\.outputs\\.${job} \\}\\}`, "g")) ?? []).length,
+      1,
+      `exactly one install step must consume the ${job} version`,
+    );
+  }
+  assert.doesNotMatch(workflow, /outputs\.version\b/);
   assert.match(workflow, /invalid release version/);
-  assert.equal((workflow.match(/needs\.resolve_version\.outputs\.version/g) ?? []).length, 3);
+  // An empty (invalid) version must fail its job, never install @latest.
+  assert.equal((workflow.match(/no valid published version was resolved/g) ?? []).length, 3);
+});
+
+// @tier durable — the one-version-everywhere invariant is still enforced,
+// loudly, but in its own job so it cannot switch off the three smokes.
+test("registry parity is a separate failing job, not a gate on the smokes", async () => {
+  const workflow = await source(".github/workflows/live-smoke.yml");
+
+  assert.match(workflow, /\n  registry_parity:\n/);
+  assert.match(workflow, /registryVersion mismatch/);
+  assert.doesNotMatch(workflow, /needs: \[?[^\n]*registry_parity/);
 });
 
 // @tier durable — registry availability is independent. A missing PyPI
@@ -43,7 +61,7 @@ test("each language runs in its own job after shared version resolution", async 
   for (const job of ["node", "python", "rust"]) {
     assert.match(workflow, new RegExp(`\\n  ${job}:\\n`));
   }
-  assert.equal((workflow.match(/needs: resolve_version/g) ?? []).length, 3);
+  assert.equal((workflow.match(/needs: resolve_version/g) ?? []).length, 4);
   assert.doesNotMatch(workflow, /name: published Node, Python, and Rust SDKs/);
 });
 
