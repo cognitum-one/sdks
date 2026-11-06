@@ -85,10 +85,18 @@ describe("retry: parseRetryAfterHeader", () => {
     expect(parseRetryAfterHeader("1.5")).toBe(1500);
   });
   it("parses HTTP-date", () => {
-    const future = new Date(Date.now() + 2000).toUTCString();
-    const ms = parseRetryAfterHeader(future)!;
-    expect(ms).toBeGreaterThan(1000);
-    expect(ms).toBeLessThan(3000);
+    // An HTTP-date has 1 s resolution, so against a free-running clock the
+    // result lands anywhere in (1000, 2000] and can hit exactly 1000 when a
+    // millisecond ticks between building the header and parsing it. Pin the
+    // clock mid-second so the expected delay is exact.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.500Z"));
+      const future = new Date(Date.now() + 2000).toUTCString();
+      expect(parseRetryAfterHeader(future)).toBe(1500);
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it("returns undefined on null / garbage", () => {
     expect(parseRetryAfterHeader(null)).toBeUndefined();
