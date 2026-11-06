@@ -35,12 +35,14 @@ permissions:
 
 jobs:
   resolve_version:
-    name: resolve one published version
+    name: resolve the published version per registry
     # On a release trigger, only bother if the release actually succeeded.
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.version.outputs.version }}
+      node: ${{ steps.version.outputs.node }}
+      python: ${{ steps.version.outputs.python }}
+      rust: ${{ steps.version.outputs.rust }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -48,13 +50,20 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
-      - name: Resolve the published version
+      - name: Resolve the published version of each SDK
         id: version
         # Both values go through `env`, never into the script body. A `${{ }}`
         # expression is substituted before bash parses the line, so a dispatch
         # input of `"; id; echo "` would be executed as shell -- and the
         # release tag, while trusted today, is attacker-influenceable the
         # moment tag creation is opened up.
+        #
+        # One output per language (issue #177). A partially finished release
+        # (npm published, PyPI/crates.io not yet) leaves the manifest's
+        # registryVersions unequal; each job must still smoke the version its
+        # registry actually serves, so a gateway break or a regression in the
+        # published SDK is not hidden behind the release defect. The
+        # all-registries-equal invariant is enforced by `registry_parity`.
         env:
           VERSION_INPUT: ${{ inputs.version }}
           # On a workflow_run trigger there is no input, and `@latest` would be
@@ -65,26 +74,56 @@ jobs:
           RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
-          VERSION="${VERSION_INPUT:-}"
-          if [ -z "${VERSION}" ] && [ -n "${RELEASE_TAG:-}" ]; then
-            VERSION="${RELEASE_TAG#v}"
+          OVERRIDE="${VERSION_INPUT:-}"
+          if [ -z "${OVERRIDE}" ] && [ -n "${RELEASE_TAG:-}" ]; then
+            OVERRIDE="${RELEASE_TAG#v}"
           fi
-          if [ -z "${VERSION}" ]; then
-            VERSION="$(node -e '
-              const manifest = require("./capabilities/sdk-release.v1.json");
-              const versions = Object.values(manifest.languages).map((language) => language.registryVersion);
-              if (new Set(versions).size !== 1) {
-                throw new Error("registryVersion mismatch: " + versions.join(", "));
-              }
-              process.stdout.write(versions[0]);
-            ')"
-          fi
-          if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "invalid release version: ${VERSION}" >&2
+          {
+            echo "| registry | version smoked |"
+            echo "|---|---|"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          for SDK in node python rust; do
+            # An explicit dispatch version or release tag selects ONE release
+            # for all three registries, which is what those triggers need.
+            if [ -n "${OVERRIDE}" ]; then
+              VERSION="${OVERRIDE}"
+            else
+              VERSION="$(SDK_KEY="${SDK}" node -e '
+                const manifest = require("./capabilities/sdk-release.v1.json");
+                process.stdout.write(String(manifest.languages[process.env.SDK_KEY]?.registryVersion ?? ""));
+              ')"
+            fi
+            # An unparseable value fails that language's job (empty output),
+            # not the whole run.
+            if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::invalid release version for ${SDK}: '${VERSION}'"
+              VERSION=""
+            fi
+            echo "${SDK}=${VERSION}" >> "${GITHUB_OUTPUT}"
+            echo "| ${SDK} | ${VERSION:-invalid} |" >> "${GITHUB_STEP_SUMMARY}"
+            echo "smoking published ${SDK} SDK ${VERSION:-<invalid>}"
+          done
+
+  registry_parity:
+    name: one release version across npm, PyPI and crates.io
+    # The invariant is a real release defect (a half-published release), so
+    # it fails loudly -- but in its own job, so it cannot switch off the three
+    # published-SDK smokes below (issue #177).
+    needs: resolve_version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every registry to serve the same version
+        env:
+          NODE_VERSION: ${{ needs.resolve_version.outputs.node }}
+          PYTHON_VERSION: ${{ needs.resolve_version.outputs.python }}
+          RUST_VERSION: ${{ needs.resolve_version.outputs.rust }}
+        run: |
+          set -euo pipefail
+          if [ "${NODE_VERSION}" != "${PYTHON_VERSION}" ] || [ "${NODE_VERSION}" != "${RUST_VERSION}" ]; then
+            echo "::error::registryVersion mismatch: node=${NODE_VERSION} python=${PYTHON_VERSION} rust=${RUST_VERSION} -- a release is half-published; finish it from the same artifacts or issue a coordinated patch release (.github/RELEASE-SETUP.md)"
             exit 1
           fi
-          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
-          echo "smoking published version ${VERSION} in all registries"
+          echo "all registries serve ${NODE_VERSION}"
 
   node:
     name: published Node SDK against api.cognitum.one
@@ -99,9 +138,13 @@ jobs:
           node-version: "22"
       - name: Install the published SDK from npm
         env:
-          VERSION: ${{ needs.resolve_version.outputs.version }}
+          VERSION: ${{ needs.resolve_version.outputs.node }}
         run: |
           set -euo pipefail
+          if [ -z "${VERSION}" ]; then
+            echo "::error::no valid published version was resolved for this SDK; see the resolve job"
+            exit 1
+          fi
           SPEC="@cognitum-one/sdk@${VERSION}"
           echo "installing ${SPEC}"
           mkdir -p live/node && cd live/node
@@ -128,9 +171,13 @@ jobs:
           python-version: "3.12"
       - name: Install the published SDK from PyPI
         env:
-          VERSION: ${{ needs.resolve_version.outputs.version }}
+          VERSION: ${{ needs.resolve_version.outputs.python }}
         run: |
           set -euo pipefail
+          if [ -z "${VERSION}" ]; then
+            echo "::error::no valid published version was resolved for this SDK; see the resolve job"
+            exit 1
+          fi
           python -m venv live/python
           SPEC="cognitum-sdk${VERSION:+==${VERSION}}"
           echo "installing ${SPEC}"
@@ -153,9 +200,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
       - name: Install the published SDK from crates.io
         env:
-          VERSION: ${{ needs.resolve_version.outputs.version }}
+          VERSION: ${{ needs.resolve_version.outputs.rust }}
         run: |
           set -euo pipefail
+          if [ -z "${VERSION}" ]; then
+            echo "::error::no valid published version was resolved for this SDK; see the resolve job"
+            exit 1
+          fi
           mkdir -p live/rust/src
           cp scripts/live-smoke.rs live/rust/src/main.rs
           cat > live/rust/Cargo.toml <<EOF
