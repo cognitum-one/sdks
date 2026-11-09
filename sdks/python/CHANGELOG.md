@@ -7,6 +7,10 @@ This package follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`Cognitum.health()` and `AsyncCognitum.health()` reach the gateway
+  again** (#193). They called `/health`, which `api.cognitum.one` answers
+  with 404. Both now call `/v1/health`.
+
 - **The seed clients no longer run a mutating POST twice** (#190), sync and
   async. After a 500, 502, 504, a 503 without `Retry-After`, a read timeout
   or a connection dropped mid-request, `store.ingest` was replayed on the

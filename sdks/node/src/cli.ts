@@ -116,7 +116,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   try {
     switch (command) {
       case "health": {
-        const health = await client.request<any>("GET", "/apiHealth");
+        const health = await client.request<any>("GET", "/v1/health");
         if (json) {
           console.log(JSON.stringify(health, null, 2));
         } else {

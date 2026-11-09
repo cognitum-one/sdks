@@ -60,7 +60,7 @@ class Cognitum:
 
     def health(self) -> HealthResponse:
         """Check API health status."""
-        data: dict[str, Any] = self._http.get("/health")
+        data: dict[str, Any] = self._http.get("/v1/health")
         return HealthResponse(
             status=data.get("status", "ok"),
             version=data.get("version"),

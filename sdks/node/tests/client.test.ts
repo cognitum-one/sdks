@@ -55,6 +55,16 @@ describe("Cognitum SDK", () => {
 
       expect(result).toEqual(payload);
     });
+
+    it("calls the gateway's /v1/health on the default base URL (sdks#193)", async () => {
+      const fetchMock = mockFetch(200, { status: "ok" });
+      globalThis.fetch = fetchMock;
+
+      await createClient().health();
+
+      // api.cognitum.one answers 404 for /health and /apiHealth; /v1/health is 200.
+      expect(String(fetchMock.mock.calls[0][0])).toBe("https://api.cognitum.one/v1/health");
+    });
   });
 
   // -------------------------------------------------------------------------

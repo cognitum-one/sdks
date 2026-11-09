@@ -81,7 +81,7 @@ def test_post_is_retried_after_connect_error() -> None:
 
 @respx.mock
 def test_get_is_retried_after_read_timeout() -> None:
-    route = respx.get(f"{BASE_URL}/health").mock(
+    route = respx.get(f"{BASE_URL}/v1/health").mock(
         side_effect=[httpx.ReadTimeout("slow"), httpx.Response(200, json={"status": "ok"})]
     )
     with Cognitum(api_key="k", base_url=BASE_URL, max_retries=3) as client:
@@ -140,7 +140,7 @@ def test_429_with_http_date_retry_after_raises_rate_limit_error() -> None:
 @respx.mock
 def test_retry_loop_waits_for_http_date_retry_after(sleeps, frozen_now) -> None:
     sync_sleep, _ = sleeps
-    route = respx.get(f"{BASE_URL}/health").mock(
+    route = respx.get(f"{BASE_URL}/v1/health").mock(
         side_effect=[
             httpx.Response(503, headers={"Retry-After": frozen_now(20)}),
             httpx.Response(200, json={"status": "ok"}),
@@ -156,7 +156,7 @@ def test_retry_loop_waits_for_http_date_retry_after(sleeps, frozen_now) -> None:
 @respx.mock
 def test_retry_after_hint_is_capped_at_30_seconds(sleeps, frozen_now) -> None:
     sync_sleep, _ = sleeps
-    respx.get(f"{BASE_URL}/health").mock(
+    respx.get(f"{BASE_URL}/v1/health").mock(
         side_effect=[
             httpx.Response(503, headers={"Retry-After": frozen_now(3600)}),
             httpx.Response(200, json={"status": "ok"}),

@@ -18,7 +18,7 @@ async fn health_check_returns_ok() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .and(path("/health"))
+        .and(path("/v1/health"))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(json!({"status": "ok", "version": "1.0.0"})),
         )
@@ -193,7 +193,7 @@ async fn not_found_returns_error() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .and(path("/health"))
+        .and(path("/v1/health"))
         .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
         .mount(&server)
         .await;
@@ -211,7 +211,7 @@ async fn unauthorized_returns_auth_error() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .and(path("/health"))
+        .and(path("/v1/health"))
         .respond_with(ResponseTemplate::new(401).set_body_string("invalid token"))
         .mount(&server)
         .await;
@@ -252,7 +252,7 @@ async fn default_client_sends_x_api_key_not_bearer() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .and(path("/health"))
+        .and(path("/v1/health"))
         .and(header("x-api-key", "test-key"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
         .expect(1)
@@ -273,7 +273,7 @@ async fn default_client_does_not_send_authorization_header() {
     };
 
     Mock::given(method("GET"))
-        .and(path("/health"))
+        .and(path("/v1/health"))
         .respond_with(responder)
         .mount(&server)
         .await;
@@ -302,7 +302,7 @@ async fn deprecated_bearer_auth_sends_both_headers() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .and(path("/health"))
+        .and(path("/v1/health"))
         .and(header("x-api-key", "test-key"))
         .and(header("authorization", "Bearer test-key"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
@@ -402,7 +402,7 @@ async fn retries_default_config_header_is_absent() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .and(path("/health"))
+        .and(path("/v1/health"))
         .and(header_exists("x-api-key"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
         .expect(1)
@@ -438,7 +438,7 @@ async fn assert_rate_limit_hint(
     upper_ms: u64,
 ) {
     Mock::given(method("GET"))
-        .and(path("/health"))
+        .and(path("/v1/health"))
         .respond_with(response)
         .expect(1)
         .mount(server)
@@ -525,7 +525,7 @@ async fn retry_loop_sleeps_for_body_hint() {
     // Use wiremock's response scheduling: two separate mocks, the first
     // limited to 1 response, the second always-on.
     Mock::given(method("GET"))
-        .and(path("/health"))
+        .and(path("/v1/health"))
         .respond_with(
             ResponseTemplate::new(429).set_body_json(json!({"retry_after_us": 2_500_000u64})),
         )
@@ -534,7 +534,7 @@ async fn retry_loop_sleeps_for_body_hint() {
         .await;
 
     Mock::given(method("GET"))
-        .and(path("/health"))
+        .and(path("/v1/health"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
         .mount(&server)
         .await;

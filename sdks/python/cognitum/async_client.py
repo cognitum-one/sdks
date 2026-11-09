@@ -60,7 +60,7 @@ class AsyncCognitum:
 
     async def health(self) -> HealthResponse:
         """Check API health status."""
-        data: dict[str, Any] = await self._http.get("/health")
+        data: dict[str, Any] = await self._http.get("/v1/health")
         return HealthResponse(
             status=data.get("status", "ok"),
             version=data.get("version"),

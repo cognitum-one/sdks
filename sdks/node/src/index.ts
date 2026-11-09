@@ -50,7 +50,7 @@ export class Cognitum {
 
   /** Check the API health status. */
   async health(): Promise<HealthResponse> {
-    return this.client.request<HealthResponse>("GET", "/health");
+    return this.client.request<HealthResponse>("GET", "/v1/health");
   }
 }
 
