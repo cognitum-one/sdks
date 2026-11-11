@@ -40,7 +40,7 @@ describe("CLI command boundaries", () => {
   });
   it("uses the environment credential and prints health JSON", async () => {
     vi.stubEnv("COGNITUM_API_KEY", "fixture-key");request.mockResolvedValue({ status: "ok" });
-    await run("health", "--json"); expect(request).toHaveBeenCalledWith("GET", "/apiHealth"); expect(log).toHaveBeenCalledWith('{\n  "status": "ok"\n}');
+    await run("health", "--json"); expect(request).toHaveBeenCalledWith("GET", "/v1/health"); expect(log).toHaveBeenCalledWith('{\n  "status": "ok"\n}');
   });
   it("prints human-readable health fields", async () => {
     request.mockResolvedValue({ status: "ok", version: "v1", timestamp: "now" }); await run("health", "--key", "fixture");

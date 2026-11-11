@@ -84,13 +84,13 @@ async fn post_is_retried_after_429() {
 async fn get_recovers_after(status: u16) {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/health"))
+        .and(path("/v1/health"))
         .respond_with(ResponseTemplate::new(status))
         .up_to_n_times(1)
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/health"))
+        .and(path("/v1/health"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
         .mount(&server)
         .await;
@@ -118,7 +118,7 @@ async fn get_is_retried_after_504() {
 async fn forbidden_maps_to_auth_error() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/health"))
+        .and(path("/v1/health"))
         .respond_with(ResponseTemplate::new(403).set_body_string("key not allowed"))
         .mount(&server)
         .await;

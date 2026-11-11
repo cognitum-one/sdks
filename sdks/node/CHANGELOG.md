@@ -7,6 +7,11 @@ This package follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`cognitum health` and `Cognitum.health()` reach the gateway again** (#193).
+  They called `/apiHealth` and `/health`, which `api.cognitum.one` answers
+  with 404, so the first command a new user runs always failed. Both now
+  call `/v1/health`.
+
 - **A successful POST is no longer resent because of its body.** An empty
   2xx body made `response.json()` throw, the failure was retried as a
   network error, and one `contact.send()` sent the message four times. Once

@@ -284,7 +284,7 @@ impl Client {
 
     /// Perform a health check against the API.
     pub async fn health(&self) -> Result<HealthResponse, Error> {
-        self.get("/health").await
+        self.get("/v1/health").await
     }
 
     // -- internal HTTP helpers -----------------------------------------------

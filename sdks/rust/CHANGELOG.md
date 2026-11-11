@@ -7,6 +7,10 @@ This crate follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`Client::health()` reaches the gateway again** (#193). It called
+  `/health`, which `api.cognitum.one` answers with 404. It now calls
+  `/v1/health`.
+
 - **The seed client no longer runs a mutating POST twice** (#190). After a
   500, 502, 504, a 503 without `Retry-After`, a read timeout or a connection
   dropped once the request was written, `store().ingest()` and the other

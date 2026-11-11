@@ -45,7 +45,7 @@ def async_client() -> AsyncCognitum:
 
 @respx.mock
 def test_health(client: Cognitum) -> None:
-    respx.get(f"{BASE_URL}/health").mock(
+    respx.get(f"{BASE_URL}/v1/health").mock(
         return_value=httpx.Response(
             200, json={"status": "ok", "version": "1.2.3", "timestamp": "2026-01-01T00:00:00Z"}
         )
@@ -58,7 +58,7 @@ def test_health(client: Cognitum) -> None:
 @respx.mock
 @pytest.mark.asyncio
 async def test_health_async(async_client: AsyncCognitum) -> None:
-    respx.get(f"{BASE_URL}/health").mock(
+    respx.get(f"{BASE_URL}/v1/health").mock(
         return_value=httpx.Response(
             200, json={"status": "ok", "version": "1.2.3"}
         )
@@ -151,7 +151,7 @@ def test_order_create(client: Cognitum) -> None:
 
 @respx.mock
 def test_api_key_header_injected(client: Cognitum) -> None:
-    route = respx.get(f"{BASE_URL}/health").mock(
+    route = respx.get(f"{BASE_URL}/v1/health").mock(
         return_value=httpx.Response(200, json={"status": "ok"})
     )
     client.health()
@@ -166,7 +166,7 @@ def test_api_key_header_injected(client: Cognitum) -> None:
 
 @respx.mock
 def test_auth_error(client: Cognitum) -> None:
-    respx.get(f"{BASE_URL}/health").mock(
+    respx.get(f"{BASE_URL}/v1/health").mock(
         return_value=httpx.Response(401, json={"error": "Invalid API key"})
     )
     with pytest.raises(AuthError) as exc_info:
@@ -177,7 +177,7 @@ def test_auth_error(client: Cognitum) -> None:
 
 @respx.mock
 def test_forbidden_error(client: Cognitum) -> None:
-    respx.get(f"{BASE_URL}/health").mock(
+    respx.get(f"{BASE_URL}/v1/health").mock(
         return_value=httpx.Response(403, json={"error": "Forbidden"})
     )
     with pytest.raises(AuthError):
@@ -206,7 +206,7 @@ def test_validation_error(client: Cognitum) -> None:
 
 @respx.mock
 def test_rate_limit_error(client: Cognitum) -> None:
-    respx.get(f"{BASE_URL}/health").mock(
+    respx.get(f"{BASE_URL}/v1/health").mock(
         return_value=httpx.Response(
             429,
             json={"error": "Too many requests"},
@@ -221,7 +221,7 @@ def test_rate_limit_error(client: Cognitum) -> None:
 
 @respx.mock
 def test_generic_server_error(client: Cognitum) -> None:
-    respx.get(f"{BASE_URL}/health").mock(
+    respx.get(f"{BASE_URL}/v1/health").mock(
         return_value=httpx.Response(502, json={"error": "Bad gateway"})
     )
     with pytest.raises(CognitumError) as exc_info:
@@ -236,7 +236,7 @@ def test_generic_server_error(client: Cognitum) -> None:
 
 @respx.mock
 def test_context_manager() -> None:
-    respx.get(f"{BASE_URL}/health").mock(
+    respx.get(f"{BASE_URL}/v1/health").mock(
         return_value=httpx.Response(200, json={"status": "ok"})
     )
     with Cognitum(api_key=API_KEY, base_url=BASE_URL, max_retries=0) as client:
@@ -247,7 +247,7 @@ def test_context_manager() -> None:
 @respx.mock
 @pytest.mark.asyncio
 async def test_async_context_manager() -> None:
-    respx.get(f"{BASE_URL}/health").mock(
+    respx.get(f"{BASE_URL}/v1/health").mock(
         return_value=httpx.Response(200, json={"status": "ok"})
     )
     async with AsyncCognitum(api_key=API_KEY, base_url=BASE_URL, max_retries=0) as client:
@@ -313,7 +313,7 @@ def test_mcp_call_tool(client: Cognitum) -> None:
 @respx.mock
 def test_retry_on_500() -> None:
     """Client with max_retries=1 should retry once on 500 then succeed."""
-    route = respx.get(f"{BASE_URL}/health").mock(
+    route = respx.get(f"{BASE_URL}/v1/health").mock(
         side_effect=[
             httpx.Response(500, json={"error": "Internal"}),
             httpx.Response(200, json={"status": "ok"}),
@@ -328,7 +328,7 @@ def test_retry_on_500() -> None:
 @respx.mock
 def test_retry_exhaustion_raises() -> None:
     """After exhausting retries on 500, the error is raised."""
-    respx.get(f"{BASE_URL}/health").mock(
+    respx.get(f"{BASE_URL}/v1/health").mock(
         return_value=httpx.Response(500, json={"error": "Down"})
     )
     with Cognitum(api_key=API_KEY, base_url=BASE_URL, max_retries=1) as client:

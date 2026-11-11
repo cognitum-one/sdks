@@ -35,7 +35,7 @@ API_KEY = "test-api-key-retry"
 @respx.mock
 def test_retry_on_502_three_attempts() -> None:
     """502 Bad Gateway is retriable per ADR-0005 (closes #8)."""
-    route = respx.get(f"{BASE_URL}/health").mock(
+    route = respx.get(f"{BASE_URL}/v1/health").mock(
         side_effect=[
             httpx.Response(502, json={"error": "Bad gateway"}),
             httpx.Response(502, json={"error": "Bad gateway"}),
@@ -51,7 +51,7 @@ def test_retry_on_502_three_attempts() -> None:
 @respx.mock
 def test_retry_on_504_three_attempts() -> None:
     """504 Gateway Timeout is retriable per ADR-0005 (closes #8)."""
-    route = respx.get(f"{BASE_URL}/health").mock(
+    route = respx.get(f"{BASE_URL}/v1/health").mock(
         side_effect=[
             httpx.Response(504, json={"error": "Gateway timeout"}),
             httpx.Response(504, json={"error": "Gateway timeout"}),
@@ -67,7 +67,7 @@ def test_retry_on_504_three_attempts() -> None:
 @respx.mock
 def test_500_on_get_still_retries() -> None:
     """Regression: 500 on an idempotent GET still retries (unchanged)."""
-    route = respx.get(f"{BASE_URL}/health").mock(
+    route = respx.get(f"{BASE_URL}/v1/health").mock(
         side_effect=[
             httpx.Response(500, json={"error": "Down"}),
             httpx.Response(500, json={"error": "Down"}),
