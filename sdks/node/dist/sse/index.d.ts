@@ -122,4 +122,34 @@ declare class SseParser {
     private dispatch;
 }
 
-export { type SseEvent, SseParseError, SseParser, type SseParserFinishResult, type SseParserOptions };
+/** Error raised when a numeric SSE sequence skips an event. */
+declare class SseSequenceError extends Error {
+    readonly expected: number;
+    readonly received: number;
+    constructor(expected: number, received: number);
+}
+interface SseSequenceOptions {
+    /** Last id already delivered before reconnecting; it is sent as Last-Event-ID. */
+    lastEventId?: string;
+    /** Reject numeric ids that are not contiguous (default false). */
+    requireContiguous?: boolean;
+}
+/**
+ * Small, protocol-neutral state machine for resumable SSE consumers.
+ * Duplicate ids are ignored, while accepted events advance `lastEventId`.
+ * Numeric ids can optionally be checked for gaps; opaque ids remain valid.
+ */
+declare class SseEventSequence {
+    private readonly requireContiguous;
+    private readonly seen;
+    private current?;
+    private numeric?;
+    constructor(options?: SseSequenceOptions);
+    /** Header value for a reconnect request, or undefined before any event. */
+    get lastEventId(): string | undefined;
+    accept(event: SseEvent): boolean;
+    /** Filter a batch while preserving order and dropping duplicate ids. */
+    filter(events: readonly SseEvent[]): SseEvent[];
+}
+
+export { type SseEvent, SseEventSequence, SseParseError, SseParser, type SseParserFinishResult, type SseParserOptions, SseSequenceError, type SseSequenceOptions };

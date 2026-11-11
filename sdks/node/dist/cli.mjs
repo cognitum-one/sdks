@@ -468,7 +468,7 @@ async function startStdioServer(apiKey, baseUrl) {
 }
 
 // src/cli.ts
-var VERSION = "0.4.0-rc.1";
+var VERSION = "0.4.0";
 function usage() {
   console.log(`
 @cognitum/sdk CLI v${VERSION}
