@@ -2,7 +2,7 @@
   "schema": "cognitum.sdk.supply-chain-locks.v1",
   "lockfiles": {
     "sdks/node/package-lock.json": "sha256:dba67ce55163698c9f3083b801bb29980c9e1ce444f89ed1aee43a2cb03fb76d",
-    "sdks/rust/Cargo.lock": "sha256:89706d49eb975fac3b1b427b765af8ef8f6ae9974ce07c170e06b9676beb12fe"
+    "sdks/rust/Cargo.lock": "sha256:33526670ae7dd8f21425d21b6d3ce24d0a04b01be40059e843e58f925227fe9a"
   },
   "policy": {
     "githubActionsRequireFullSha": true,
